@@ -1,0 +1,19 @@
+Avoid giving DIY electrical troubleshooting steps. Keep the page focused on symptoms, what Grizzly can inspect, and why a qualified electrician should diagnose the issue.
+
+Draft URL suggestion:
+/electrical-troubleshooting/
+
+This page should diagnose symptoms and route customers to the right next step. It should not try to fully sell panel replacement or service upgrades. Those should be internally linked when symptoms point that direction.
+
+## Service Page Brief Rule
+
+When creating a service page brief, always include:
+
+- Draft URL suggestion
+- Overlap control notes
+- Safety / DIY boundary notes
+- Internal link strategy
+- Owner approval items
+- Delegated task if another agent should review structure or implementation
+
+For electrical service pages, do not provide DIY repair instructions. Focus on symptoms, customer concerns, what the service covers, and when to call a qualified electrician.

@@ -1,0 +1,3 @@
+crewai==1.14.5
+crewai-tools==1.14.5
+python-dotenv==1.2.2
