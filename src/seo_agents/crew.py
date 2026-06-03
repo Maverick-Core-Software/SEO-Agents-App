@@ -104,7 +104,7 @@ def build_grizzly_crew(
 
     gbp_agent = Agent(
         role="Grizzly GBP and Local Rankings Agent",
-        goal="Audit Google Business Profile visibility, local ranking factors, and GBP action opportunities.",
+        goal="Audit Google Business Profile visibility, local ranking factors, and strategic profile optimization opportunities.",
         backstory=agent_backstory("gbp-local-rankings-agent.txt"),
         tools=tools,
         llm=llm,
@@ -129,6 +129,15 @@ def build_grizzly_crew(
         allow_delegation=False,
     )
 
+    scheduling_agent = Agent(
+        role="Grizzly Delegation and Scheduling Agent",
+        goal="Convert manager recommendations into a practical execution queue with ownership, timing, and verification criteria.",
+        backstory=agent_backstory("delegation-scheduling-agent.txt"),
+        llm=llm,
+        verbose=is_verbose(),
+        allow_delegation=False,
+    )
+
     content_task = Task(
         description=(
             f"{shared_context}\n\n"
@@ -140,6 +149,7 @@ def build_grizzly_crew(
             "website copy suggestions, priority ranking, ready-to-publish drafts, and owner approval needs."
         ),
         agent=content_agent,
+        output_file=str(Path("outputs") / "content_report.md"),
         markdown=True,
     )
 
@@ -154,6 +164,7 @@ def build_grizzly_crew(
             "recommended actions, draft copy, and owner approval needs."
         ),
         agent=website_agent,
+        output_file=str(Path("outputs") / "website_report.md"),
         markdown=True,
     )
 
@@ -165,9 +176,10 @@ def build_grizzly_crew(
         ),
         expected_output=(
             "A GBP / Local Rankings Report with status summary, ranking notes, GBP issues, competitor notes, "
-            "recommended actions, GBP drafts, and owner approval needs."
+            "recommended actions, and owner approval needs."
         ),
         agent=gbp_agent,
+        output_file=str(Path("outputs") / "gbp_report.md"),
         markdown=True,
     )
 
@@ -182,6 +194,7 @@ def build_grizzly_crew(
             "reputation risks, recommended actions, reusable drafts, and owner approval needs."
         ),
         agent=reputation_agent,
+        output_file=str(Path("outputs") / "reputation_report.md"),
         markdown=True,
     )
 
@@ -202,10 +215,28 @@ def build_grizzly_crew(
         markdown=True,
     )
 
+    scheduling_task = Task(
+        description=(
+            "Transform the Local Presence Manager Plan into a simple execution queue for implementation. "
+            "For each task, assign one execution owner, priority, due window, exact implementation steps, "
+            "dependencies, and a verifiable definition of done. Delegate only to these execution-agent territories: "
+            "Local Content Production Executor, Local Presence Assets Executor, Technical SEO and CRO Executor. "
+            "Use Owner/Admin only where approval, access, or business decisions are required."
+        ),
+        expected_output=(
+            "A markdown execution queue containing discrete task blocks with task ID, title, assigned execution agent, "
+            "priority, due window, action steps, dependencies, definition of done, and verification checklist."
+        ),
+        agent=scheduling_agent,
+        context=[manager_task],
+        output_file=str(Path("outputs") / "grizzly_execution_queue.md"),
+        markdown=True,
+    )
+
     return Crew(
         name="Grizzly Local Presence Crew",
-        agents=[content_agent, website_agent, gbp_agent, reputation_agent, manager_agent],
-        tasks=[content_task, website_task, gbp_task, reputation_task, manager_task],
+        agents=[content_agent, website_agent, gbp_agent, reputation_agent, manager_agent, scheduling_agent],
+        tasks=[content_task, website_task, gbp_task, reputation_task, manager_task, scheduling_task],
         process=Process.sequential,
         verbose=is_verbose(),
     )
