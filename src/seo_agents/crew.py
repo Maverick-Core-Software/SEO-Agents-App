@@ -200,7 +200,12 @@ def build_grizzly_crew(
 
     manager_task = Task(
         description=(
-            "Synthesize the four specialist reports into one implementation-ready local presence plan for Grizzly. "
+            "First, perform a strict audit of the input reports. "
+            "Verify that each report (Content, Website, GBP, and Reputation) is present and wrapped in its required markers "
+            "(e.g., [START:CONTENT]...[END:CONTENT]).\n\n"
+            "If any report is missing, empty, or missing its markers, explicitly list it as 'CRITICAL FAILURE: MISSING' "
+            "in the Executive Summary of your plan and flag it for the owner.\n\n"
+            "Once audited, synthesize the available reports into one implementation-ready local presence plan for Grizzly. "
             "Prioritize residential lead-generating services first, especially troubleshooting, recessed lighting, "
             "panel replacement, service upgrades, EV chargers, generator work, and remodel electrical. "
             "Keep recommendations practical, evidence-based, and separated from draft copy."

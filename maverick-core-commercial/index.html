@@ -1,0 +1,405 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        background: #000000;
+        color: #d7e6f7;
+        font-family: "IBM Plex Mono", monospace;
+      }
+
+      #root {
+        position: relative;
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        background: #000000;
+        perspective: 1600px;
+      }
+
+      .blackout,
+      .atmosphere,
+      .camera,
+      .product-stage,
+      .energy-field,
+      .macro-layer,
+      .final-vignette {
+        position: absolute;
+        inset: 0;
+      }
+
+      .blackout {
+        z-index: 40;
+        background: #000000;
+        pointer-events: none;
+      }
+
+      .atmosphere {
+        z-index: 0;
+        background:
+          radial-gradient(circle at 50% 58%, rgba(23, 107, 255, 0.13), rgba(0, 0, 0, 0) 31%),
+          radial-gradient(circle at 50% 78%, rgba(127, 199, 255, 0.05), rgba(0, 0, 0, 0) 28%),
+          #000000;
+      }
+
+      .floor-glow {
+        position: absolute;
+        left: 535px;
+        right: 535px;
+        bottom: 58px;
+        height: 145px;
+        border-radius: 50%;
+        background: radial-gradient(ellipse, rgba(23, 107, 255, 0.22), rgba(23, 107, 255, 0.03) 48%, rgba(0, 0, 0, 0) 72%);
+        filter: blur(24px);
+        opacity: 0.55;
+      }
+
+      .camera {
+        z-index: 8;
+        opacity: 0;
+        transform-style: preserve-3d;
+        will-change: transform, opacity;
+      }
+
+      .product-stage {
+        display: grid;
+        place-items: center;
+        transform-style: preserve-3d;
+      }
+
+      .product-shell {
+        position: relative;
+        width: 930px;
+        height: 1080px;
+        opacity: 0;
+        transform-style: preserve-3d;
+        will-change: transform, opacity, filter;
+      }
+
+      .appliance {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+        filter: contrast(1.08) saturate(1.12) brightness(0.76);
+        will-change: transform, filter;
+      }
+
+      .hardware-rim {
+        position: absolute;
+        left: 246px;
+        right: 176px;
+        top: 232px;
+        height: 617px;
+        border-radius: 18px;
+        box-shadow:
+          inset 0 0 0 1px rgba(215, 230, 247, 0.12),
+          inset 0 0 48px rgba(23, 107, 255, 0.1),
+          0 0 74px rgba(23, 107, 255, 0.14);
+        opacity: 0;
+      }
+
+      .logo-ignite {
+        position: absolute;
+        left: 418px;
+        top: 448px;
+        width: 180px;
+        height: 180px;
+        border-radius: 50%;
+        background: radial-gradient(circle, rgba(127, 199, 255, 0.5), rgba(23, 107, 255, 0.16) 34%, rgba(0, 0, 0, 0) 72%);
+        mix-blend-mode: screen;
+        filter: blur(18px);
+        opacity: 0;
+      }
+
+      .internal-map {
+        position: absolute;
+        left: 302px;
+        top: 326px;
+        width: 418px;
+        height: 430px;
+        opacity: 0;
+        mix-blend-mode: screen;
+        filter: drop-shadow(0 0 9px rgba(23, 107, 255, 0.95));
+      }
+
+      .energy-field {
+        z-index: 12;
+        pointer-events: none;
+        mix-blend-mode: screen;
+      }
+
+      .pulse-svg,
+      .loop-svg {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        overflow: visible;
+      }
+
+      .route {
+        fill: none;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+
+      .route.base {
+        stroke: rgba(23, 107, 255, 0.28);
+        stroke-width: 3;
+      }
+
+      .route.hot {
+        stroke: #7fc7ff;
+        stroke-width: 7;
+        stroke-dasharray: 14 650;
+        filter: drop-shadow(0 0 16px #176bff) drop-shadow(0 0 34px rgba(23, 107, 255, 0.9));
+      }
+
+      .data-line {
+        fill: none;
+        stroke: #176bff;
+        stroke-width: 3;
+        stroke-linecap: round;
+        stroke-dasharray: 10 500;
+        opacity: 0;
+        filter: drop-shadow(0 0 10px rgba(23, 107, 255, 0.95));
+      }
+
+      .data-return {
+        stroke: #7fc7ff;
+        stroke-width: 2.5;
+        stroke-dasharray: 12 500;
+        opacity: 0;
+      }
+
+      .closed-loop {
+        fill: none;
+        stroke: #176bff;
+        stroke-width: 4;
+        stroke-linecap: round;
+        stroke-dasharray: 18 82;
+        filter: drop-shadow(0 0 10px rgba(23, 107, 255, 0.9)) drop-shadow(0 0 28px rgba(23, 107, 255, 0.55));
+      }
+
+      .macro-layer {
+        z-index: 20;
+        pointer-events: none;
+        opacity: 0;
+      }
+
+      .macro-window {
+        position: absolute;
+        overflow: hidden;
+        border-radius: 10px;
+        background: #000000;
+        box-shadow:
+          inset 0 0 0 1px rgba(127, 199, 255, 0.16),
+          0 0 70px rgba(23, 107, 255, 0.2);
+        opacity: 0;
+      }
+
+      .macro-image {
+        position: absolute;
+        width: 1920px;
+        height: 1080px;
+        background-image: url("assets/maverick-core-rack-reference.png");
+        background-repeat: no-repeat;
+        background-size: 1920px 1080px;
+        filter: contrast(1.14) saturate(1.18) brightness(0.72);
+        will-change: transform;
+      }
+
+      .macro-a {
+        left: 504px;
+        top: 202px;
+        width: 486px;
+        height: 448px;
+      }
+
+      .macro-a .macro-image {
+        left: -404px;
+        top: -176px;
+        transform: scale(1.85);
+        transform-origin: 48% 42%;
+      }
+
+      .macro-b {
+        left: 632px;
+        top: 606px;
+        width: 396px;
+        height: 278px;
+      }
+
+      .macro-b .macro-image {
+        left: -562px;
+        top: -512px;
+        transform: scale(2.15);
+        transform-origin: 50% 68%;
+      }
+
+      .macro-c {
+        right: 520px;
+        top: 210px;
+        width: 310px;
+        height: 598px;
+      }
+
+      .macro-c .macro-image {
+        left: -780px;
+        top: -196px;
+        transform: scale(1.58);
+        transform-origin: 63% 48%;
+      }
+
+      .scan-sheen {
+        position: absolute;
+        inset: 0;
+        background: linear-gradient(105deg, rgba(0, 0, 0, 0), rgba(127, 199, 255, 0.22), rgba(0, 0, 0, 0));
+        mix-blend-mode: screen;
+      }
+
+      .final-vignette {
+        z-index: 30;
+        pointer-events: none;
+        box-shadow: inset 0 0 260px 70px #000000;
+        opacity: 0.42;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root" data-composition-id="main" data-start="0" data-duration="15" data-width="1920" data-height="1080">
+      <div class="atmosphere" data-layout-ignore>
+        <div class="floor-glow"></div>
+      </div>
+
+      <div class="camera" data-layout-ignore>
+        <div class="product-stage">
+          <div class="product-shell">
+            <img class="appliance" src="assets/maverick-core-rack-reference.png" alt="" crossorigin="anonymous" />
+            <div class="hardware-rim"></div>
+            <div class="logo-ignite"></div>
+            <svg class="internal-map" viewBox="0 0 665 215" aria-hidden="true">
+              <path class="route base" d="M48 76 H178 C234 76 216 196 282 196 H362 C426 196 390 348 496 348 H614" />
+              <path class="route base" d="M62 334 H190 C242 334 244 254 318 254 H456 C526 254 528 104 620 104" />
+              <path class="route base" d="M116 408 H262 C320 408 318 292 398 292 H586" />
+              <path class="route hot chip-run-a" d="M48 76 H178 C234 76 216 196 282 196 H362 C426 196 390 348 496 348 H614" />
+              <path class="route hot chip-run-b" d="M62 334 H190 C242 334 244 254 318 254 H456 C526 254 528 104 620 104" />
+              <path class="route hot chip-run-c" d="M116 408 H262 C320 408 318 292 398 292 H586" />
+            </svg>
+          </div>
+        </div>
+      </div>
+
+      <svg class="energy-field pulse-svg" viewBox="0 0 1920 1080" aria-hidden="true">
+        <path class="route base opening-carrier" d="M-60 575 C218 548 356 498 526 506 C718 516 738 590 925 570 C1100 552 1126 466 1345 484 C1512 498 1702 552 1980 528" />
+        <path class="route hot opening-pulse" d="M-60 575 C218 548 356 498 526 506 C718 516 738 590 925 570 C1100 552 1126 466 1345 484 C1512 498 1702 552 1980 528" />
+        <path class="data-line inbound-a" d="M-80 392 C318 432 516 510 756 546" />
+        <path class="data-line inbound-b" d="M2000 362 C1630 404 1376 482 1148 548" />
+        <path class="data-line inbound-c" d="M960 -80 C960 202 960 362 960 512" />
+        <path class="data-line inbound-d" d="M958 1160 C960 928 960 748 960 610" />
+        <path class="data-line data-return return-a" d="M756 546 C516 510 318 432 -80 392" />
+        <path class="data-line data-return return-b" d="M1148 548 C1376 482 1630 404 2000 362" />
+        <path class="data-line data-return return-c" d="M960 512 C960 362 960 202 960 -80" />
+        <path class="data-line data-return return-d" d="M960 610 C960 748 960 928 958 1160" />
+      </svg>
+
+      <svg class="energy-field loop-svg" viewBox="0 0 1920 1080" aria-hidden="true">
+        <ellipse class="closed-loop loop-a" cx="960" cy="555" rx="438" ry="340" />
+        <ellipse class="closed-loop loop-b" cx="960" cy="555" rx="350" ry="264" transform="rotate(-8 960 555)" />
+      </svg>
+
+      <div class="macro-layer" data-layout-ignore>
+        <div class="macro-window macro-a">
+          <div class="macro-image"></div>
+          <div class="scan-sheen"></div>
+        </div>
+        <div class="macro-window macro-b">
+          <div class="macro-image"></div>
+          <div class="scan-sheen"></div>
+        </div>
+        <div class="macro-window macro-c">
+          <div class="macro-image"></div>
+          <div class="scan-sheen"></div>
+        </div>
+      </div>
+
+      <div class="final-vignette" data-layout-ignore></div>
+      <div class="blackout" data-layout-ignore></div>
+    </div>
+
+    <script>
+      window.__timelines = window.__timelines || {};
+
+      const duration = 15;
+      const tl = gsap.timeline({ paused: true, defaults: { ease: "power2.inOut" } });
+
+      tl.from(".opening-carrier", { opacity: 0, duration: 0.5, ease: "sine.out" }, 0.16);
+      tl.from(".opening-pulse", { strokeDashoffset: 760, opacity: 0, duration: 1.65, ease: "expo.out" }, 0.18);
+      tl.to(".blackout", { opacity: 0, duration: 1.85, ease: "sine.inOut" }, 0.65);
+      tl.from(".energy-field", { opacity: 0, scale: 0.96, duration: 1.25, ease: "power3.out" }, 0.45);
+
+      tl.set(".camera", { opacity: 0, scale: 1.08, x: 0, y: 0, transformOrigin: "50% 50%" }, 0);
+      tl.set(".product-shell", { opacity: 0, y: 28, filter: "brightness(0.28)" }, 0);
+      tl.to(".camera", { opacity: 1, scale: 1.16, duration: 1.25, ease: "power2.out" }, 1.55);
+      tl.to(".product-shell", { opacity: 1, y: 0, filter: "brightness(1)", duration: 1.05, ease: "circ.out" }, 1.95);
+      tl.from(".floor-glow", { opacity: 0, scaleX: 0.45, duration: 1.35, ease: "sine.out" }, 1.85);
+
+      tl.to(".camera", { scale: 1.34, x: -76, y: -8, duration: 2.75, ease: "sine.inOut" }, 3.1);
+      tl.to(".product-shell", { y: -8, duration: 2.75, ease: "power1.inOut" }, 3.1);
+      tl.to(".internal-map", { opacity: 0.9, duration: 0.7, ease: "power2.out" }, 3.05);
+      tl.to(".hardware-rim", { opacity: 0.8, duration: 0.9, ease: "sine.out" }, 3.3);
+
+      tl.to(".chip-run-a", { strokeDashoffset: -1040, duration: 2.6, ease: "none", repeat: 4 }, 2.4);
+      tl.to(".chip-run-b", { strokeDashoffset: -920, duration: 2.3, ease: "none", repeat: 4 }, 2.55);
+      tl.to(".chip-run-c", { strokeDashoffset: -980, duration: 2.45, ease: "none", repeat: 4 }, 2.75);
+
+      tl.to(".macro-layer", { opacity: 1, duration: 0.45, ease: "power2.out" }, 4.75);
+      tl.from(".macro-a", { opacity: 0, scale: 0.82, x: -70, filter: "blur(10px)", duration: 0.72, ease: "expo.out" }, 4.85);
+      tl.from(".macro-b", { opacity: 0, scale: 0.88, y: 54, filter: "blur(8px)", duration: 0.7, ease: "power3.out" }, 5.55);
+      tl.from(".macro-c", { opacity: 0, scale: 0.82, x: 62, filter: "blur(10px)", duration: 0.72, ease: "circ.out" }, 6.2);
+      tl.to(".macro-a .macro-image", { x: -84, duration: 2.2, ease: "sine.inOut" }, 5.05);
+      tl.to(".macro-b .macro-image", { x: 92, duration: 2.2, ease: "sine.inOut" }, 5.6);
+      tl.to(".macro-c .macro-image", { y: -74, duration: 2.2, ease: "sine.inOut" }, 6.25);
+      tl.fromTo(".scan-sheen", { xPercent: -120 }, { xPercent: 140, duration: 1.2, ease: "power2.inOut", stagger: 0.32 }, 5.15);
+
+      tl.to(".macro-layer", { opacity: 0, duration: 0.62, ease: "sine.inOut" }, 7.85);
+      tl.to(".camera", { scale: 1.38, x: 38, y: -18, duration: 2.3, ease: "sine.inOut" }, 7.7);
+      tl.to(".appliance", { x: 42, filter: "contrast(1.12) saturate(1.15) brightness(0.72)", duration: 2.3, ease: "sine.inOut" }, 7.7);
+      tl.to(".logo-ignite", { opacity: 0.95, scale: 1.12, duration: 1.2, ease: "power2.out" }, 8.05);
+
+      tl.to(".data-line", { opacity: 0.95, duration: 0.55, ease: "power2.out", stagger: 0.05 }, 8.45);
+      tl.to(".inbound-a", { strokeDashoffset: -980, duration: 1.4, ease: "power1.inOut" }, 8.6);
+      tl.to(".inbound-b", { strokeDashoffset: -980, duration: 1.4, ease: "power1.inOut" }, 8.72);
+      tl.to(".inbound-c", { strokeDashoffset: -840, duration: 1.35, ease: "power1.inOut" }, 8.84);
+      tl.to(".inbound-d", { strokeDashoffset: -840, duration: 1.35, ease: "power1.inOut" }, 8.96);
+      tl.to(".data-return", { strokeDashoffset: -980, duration: 1.55, ease: "power2.inOut" }, 10.05);
+      tl.to(".data-line", { opacity: 0.26, duration: 0.7, ease: "sine.inOut" }, 11.55);
+
+      tl.to(".camera", { scale: 1.72, x: -142, y: -36, duration: 2.35, ease: "power3.inOut" }, 11.1);
+      tl.to(".appliance", { x: 82, filter: "contrast(1.16) saturate(1.2) brightness(0.7)", duration: 2.35, ease: "power3.inOut" }, 11.1);
+      tl.from(".closed-loop", { opacity: 0, scale: 0.82, transformOrigin: "50% 50%", duration: 0.85, ease: "expo.out", stagger: 0.14 }, 11.7);
+      tl.to(".closed-loop", { strokeDashoffset: -420, duration: 1.6, ease: "none", repeat: 1 }, 11.8);
+      tl.to(".logo-ignite", { opacity: 0.62, scale: 0.96, duration: 1.1, ease: "sine.inOut" }, 12.0);
+      tl.to(".hardware-rim", { opacity: 0.45, duration: 1.0, ease: "sine.inOut" }, 12.2);
+      tl.to(".final-vignette", { opacity: 0.68, duration: 1.2, ease: "sine.inOut" }, 12.8);
+      tl.to(".atmosphere", { opacity: 0.78, duration: 1.4, ease: "sine.inOut" }, 13.05);
+
+      window.__timelines["main"] = tl;
+    </script>
+  </body>
+</html>

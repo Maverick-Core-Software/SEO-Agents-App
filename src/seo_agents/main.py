@@ -50,8 +50,12 @@ def main() -> None:
             print(f"- {agent.role}")
         return
 
-    result = crew.kickoff()
-    print(result)
+    try:
+        result = crew.kickoff()
+        print(result)
+    except Exception as e:
+        print(f"\n❌ Crew execution failed: {e}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
