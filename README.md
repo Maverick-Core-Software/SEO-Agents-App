@@ -89,9 +89,10 @@ This file stores site structure, public URLs, Contact Form 7 IDs, safe repair pa
 Current adapter behavior:
 
 - Website actions are routed to `wordpress_browser` in `outputs/action_queue.json`.
-- Dry-runs create a structured execution payload and do not change the live site.
-- Live runs require owner approval and a configured `WORDPRESS_ACTION_ADAPTER`.
+- Dry-runs execute the WordPress adapter planner and do not change the live site.
+- Live runs require owner approval, an authenticated browser session, and a configured `WORDPRESS_ACTION_ADAPTER`.
 - Browser/session credentials stay outside the repo.
+- Contact Form 7 repair can inventory forms, update Mail sender headers, and perform non-submitting public form verification.
 
 Useful commands:
 
@@ -100,6 +101,28 @@ $env:PYTHONPATH='src'
 .\.venv\Scripts\python.exe -m seo_agents.main adapter-status
 .\.venv\Scripts\python.exe -m seo_agents.main actions --json
 .\.venv\Scripts\python.exe -m seo_agents.main run-action task-<id>
+```
+
+One-time WordPress browser auth:
+
+```powershell
+$env:WORDPRESS_BROWSER_SESSION_DIR='C:\Workspace\Shared\Agents\BrowserSessions\grizzly-wordpress'
+node .\scripts\wordpress-action-adapter.mjs --config .\config\wordpress-sites\grizzly.json --auth
+```
+
+Read-only session verification:
+
+```powershell
+$env:WORDPRESS_BROWSER_SESSION_DIR='C:\Workspace\Shared\Agents\BrowserSessions\grizzly-wordpress'
+node .\scripts\wordpress-action-adapter.mjs --config .\config\wordpress-sites\grizzly.json --check-session
+```
+
+Approved live WordPress action flow:
+
+```powershell
+$env:PYTHONPATH='src'
+.\.venv\Scripts\python.exe -m seo_agents.main approve-action task-t002 --by MCC --note "Approved WordPress CF7 repair"
+.\.venv\Scripts\python.exe -m seo_agents.main run-action task-t002 --live
 ```
 
 The first proven website repair pattern is documented in:

@@ -68,11 +68,10 @@ The test submission redirected successfully to:
 https://www.grizzlyelectricaltx.com/contact-us-thank-you/
 ```
 
-That verified the public form flow and the CF7 Redirection behavior.
+That verified the public form flow and the CF7 Redirection behavior. The owner confirmed on 2026-06-09 that the test lead arrived in the mailbox.
 
 Remaining human verification:
 
-- Confirm the test lead arrived at `contactus@grizzlyelectrical.net`.
 - Confirm the autoresponder arrived at the submitted email address.
 - If delivery is unreliable, configure SMTP/SPF/DKIM for `grizzlyelectricaltx.com`.
 

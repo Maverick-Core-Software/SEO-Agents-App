@@ -54,10 +54,10 @@ After saving, the Contact Forms list no longer showed the `2 configuration error
 - A live test submission was sent through the primary Contact Us form using the message:
   `Automated SEO agent verification test after fixing Contact Form 7 mail settings. Please ignore.`
 - The form redirected successfully to `/contact-us-thank-you/`.
+- Owner confirmed on 2026-06-09 that the test lead arrived in the mailbox.
 
 ## Follow-Up For Website Action Agent
 
-- Confirm the lead email arrives at `contactus@grizzlyelectrical.net`.
 - Confirm the autoresponder arrives at the submitted email address.
 - If delivery is unreliable, check SMTP/SPF/DKIM for `grizzlyelectricaltx.com` and consider installing/configuring a WordPress SMTP plugin.
 - Keep future form changes scoped to CF7 fields, mail headers, redirect action, and page shortcode placement.

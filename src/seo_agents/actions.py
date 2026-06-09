@@ -449,6 +449,7 @@ def wordpress_adapter_status() -> dict[str, Any]:
         "wp_session_check",
         "cf7_inventory",
         "cf7_mail_settings_dry_run",
+        "cf7_mail_edit",
         "public_form_submit_test",
         "wordpress_page_update_draft",
     ]
@@ -487,17 +488,10 @@ def _run_wordpress_adapter(action: dict[str, Any], live: bool) -> dict[str, Any]
         "live": live,
         "action": action,
     }
-    if not live:
-        return {
-            "exit_code": 0,
-            "command": "wordpress-browser --dry-run",
-            "stdout": json.dumps(payload, indent=2),
-            "stderr": "",
-        }
     if not WORDPRESS_ACTION_ADAPTER:
         return {
             "exit_code": 127,
-            "command": "wordpress-browser --live",
+            "command": "wordpress-browser",
             "stdout": "",
             "stderr": "WORDPRESS_ACTION_ADAPTER is not configured yet.",
         }
