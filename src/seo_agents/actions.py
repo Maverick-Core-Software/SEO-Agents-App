@@ -15,6 +15,11 @@ from seo_agents.crew import OUTPUT_DIR
 
 ACTION_QUEUE_FILE = OUTPUT_DIR / "action_queue.json"
 ACTION_APPROVALS_FILE = OUTPUT_DIR / "action_approvals.json"
+ACTION_COMPLETIONS_FILE = OUTPUT_DIR / "action_completions.json"
+ACTION_COMPLETIONS_CONFIG_FILE = Path(os.getenv(
+    "ACTION_COMPLETIONS_CONFIG_FILE",
+    "config/action-completions.json",
+))
 ACTION_RUN_DIR = OUTPUT_DIR / "action_runs"
 GBP_POSTER_SCRIPT = Path(os.getenv(
     "GBP_POSTER_SCRIPT",
@@ -170,6 +175,18 @@ def _load_completions() -> dict[str, dict[str, str]]:
     return completions
 
 
+def _load_action_completions() -> dict[str, dict[str, Any]]:
+    """Load owner-verified / manual completion overrides.
+
+    Keys are action IDs (e.g. ``task-t002``). Each entry must have a ``status``
+    field (e.g. ``"verified"``) and optionally ``verified_at``, ``verified_by``,
+    and ``details``.
+    """
+    completions = _load_json(ACTION_COMPLETIONS_CONFIG_FILE, {})
+    completions.update(_load_json(ACTION_COMPLETIONS_FILE, {}))
+    return completions
+
+
 def _infer_action_type(executor: str, title: str, steps: list[str]) -> str:
     haystack = f"{executor} {title} {' '.join(steps)}".lower()
     if "contact form" in haystack or "technical" in executor.lower():
@@ -201,7 +218,14 @@ def _platform_for_action(action_type: str) -> str:
     }.get(action_type, "manual")
 
 
-def _status_for_action(completion: dict[str, str], dependencies: list[str]) -> str:
+def _status_for_action(
+    completion: dict[str, str],
+    dependencies: list[str],
+    completion_override: dict[str, Any] | None = None,
+) -> str:
+    # Owner-verified / manual completion overrides short-circuit all other logic.
+    if completion_override and completion_override.get("status") == "verified":
+        return "verified"
     status = completion.get("completion_status", "").upper()
     dependency_text = " ".join(dependencies).lower()
     blocker_text = completion.get("blocker", "").lower()
@@ -219,6 +243,7 @@ def _status_for_action(completion: dict[str, str], dependencies: list[str]) -> s
 def parse_execution_actions() -> list[dict[str, Any]]:
     queue_text = _markdown_body(_read_text(OUTPUT_DIR / "grizzly_execution_queue.md"))
     completions = _load_completions()
+    completion_overrides = _load_action_completions()
     parts = re.split(r"(?=^## Task \d+:)", queue_text, flags=re.MULTILINE)
     actions: list[dict[str, Any]] = []
     for part in parts:
@@ -231,10 +256,13 @@ def parse_execution_actions() -> list[dict[str, Any]]:
         dependencies = _extract_list_after(part, "Dependencies / Required Inputs")
         verification = _extract_list_after(part, "Verification Checklist")
         completion = completions.get(task_id, {})
+        action_id = f"task-{task_id.lower()}"
+        override = completion_overrides.get(action_id)
         action_type = _infer_action_type(executor, title, steps)
         platform = _platform_for_action(action_type)
+        status = _status_for_action(completion, dependencies, override)
         actions.append({
-            "id": f"task-{task_id.lower()}",
+            "id": action_id,
             "source": "execution_queue",
             "source_task_id": task_id,
             "title": title,
@@ -242,14 +270,17 @@ def parse_execution_actions() -> list[dict[str, Any]]:
             "action_type": action_type,
             "platform": platform,
             "risk": _risk_for_action(action_type),
-            "status": _status_for_action(completion, dependencies),
+            "status": status,
             "priority": _extract_numbered_field(part, "Priority"),
             "due_window": _extract_numbered_field(part, "Due Window"),
             "steps": steps,
             "dependencies": dependencies,
             "verification_checklist": verification,
             "completion": completion,
-            "approval_required": completion.get("owner_signoff_needed", "").upper() == "YES" or bool(dependencies),
+            "completion_override": override,
+            "approval_required": status != "verified" and (
+                completion.get("owner_signoff_needed", "").upper() == "YES" or bool(dependencies)
+            ),
             "live_adapter": "wordpress_browser" if platform == "website_cms" else None,
         })
     return actions
@@ -328,6 +359,7 @@ def build_action_queue() -> dict[str, Any]:
         "total": len(actions),
         "needs_approval": sum(1 for action in actions if action["status"] == "needs_approval"),
         "approved": sum(1 for action in actions if action["status"] == "approved"),
+        "verified": sum(1 for action in actions if action["status"] == "verified"),
         "blocked_access": sum(1 for action in actions if action["status"] == "blocked_access"),
         "dry_run_ready": sum(1 for action in actions if action["status"] == "dry_run_ready"),
         "high_risk": sum(1 for action in actions if action["risk"] == "high"),
