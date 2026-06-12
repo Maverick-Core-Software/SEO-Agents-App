@@ -45,6 +45,19 @@ WORDPRESS_BROWSER_SESSION_DIR = Path(os.getenv(
     "WORDPRESS_BROWSER_SESSION_DIR",
     r"C:\Workspace\Shared\Agents\BrowserSessions\grizzly-wordpress",
 ))
+GBP_POSTER_TIMEOUT_S = int(os.getenv("GBP_POSTER_TIMEOUT_S", "420"))
+GBP_POSTER_HEADLESS = os.getenv("GBP_POSTER_HEADLESS", "0").lower() in {"1", "true", "yes", "on"}
+WORDPRESS_ADAPTER_TIMEOUT_S = int(os.getenv("WORDPRESS_ADAPTER_TIMEOUT_S", "300"))
+GBP_PROFILE_ADAPTER = os.getenv(
+    "GBP_PROFILE_ADAPTER",
+    r"C:\Workspace\Active\SEO-Agents-App\scripts\gbp-profile-adapter.mjs",
+).strip()
+GBP_PROFILE_ADAPTER_TIMEOUT_S = int(os.getenv("GBP_PROFILE_ADAPTER_TIMEOUT_S", "300"))
+FACEBOOK_POSTER_ADAPTER = os.getenv(
+    "FACEBOOK_POSTER_ADAPTER",
+    r"C:\Workspace\Active\SEO-Agents-App\scripts\facebook-poster-adapter.mjs",
+).strip()
+FACEBOOK_POSTER_TIMEOUT_S = int(os.getenv("FACEBOOK_POSTER_TIMEOUT_S", "600"))
 GBP_WORKBOOK_HEADERS = [
     "Date",
     "PostType",
@@ -94,6 +107,56 @@ def _write_json(path: Path, payload: Any) -> None:
     temp_path = path.with_suffix(f"{path.suffix}.tmp")
     temp_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     temp_path.replace(path)
+
+
+def _run_subprocess(command: list[str], cwd: str, timeout_s: int, display_command: str | None = None) -> dict[str, Any]:
+    """Run an adapter subprocess, returning a uniform result record.
+
+    A hung browser run must come back as an adapter failure record (exit 124),
+    not an uncaught TimeoutExpired blowing up run_action.
+    """
+    shown = display_command or " ".join(command)
+    try:
+        result = subprocess.run(
+            command,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as error:
+        return {
+            "exit_code": 124,
+            "command": shown,
+            "stdout": (error.stdout or b"").decode(errors="replace") if isinstance(error.stdout, bytes) else (error.stdout or ""),
+            "stderr": f"Adapter timed out after {timeout_s}s.",
+        }
+    except OSError as error:
+        return {
+            "exit_code": 126,
+            "command": shown,
+            "stdout": "",
+            "stderr": f"Failed to launch adapter: {error}",
+        }
+    return {
+        "exit_code": result.returncode,
+        "command": shown,
+        "stdout": result.stdout.strip(),
+        "stderr": result.stderr.strip(),
+    }
+
+
+def _last_json_line(stdout: str) -> dict[str, Any]:
+    """Adapters emit a single-line JSON result as their final stdout line."""
+    for line in reversed(stdout.splitlines()):
+        line = line.strip()
+        if line.startswith("{") and line.endswith("}"):
+            try:
+                return json.loads(line)
+            except json.JSONDecodeError:
+                continue
+    return {}
 
 
 def _extract_numbered_field(block: str, label: str) -> str:
@@ -168,10 +231,37 @@ def _extract_completion_blocks(text: str) -> dict[str, dict[str, str]]:
     return completions
 
 
+def _completions_from_json(payload: Any) -> dict[str, dict[str, str]]:
+    """Parse a structured completion report (crew output_json schema)."""
+    entries = payload.get("completions", []) if isinstance(payload, dict) else payload
+    if not isinstance(entries, list):
+        return {}
+    completions: dict[str, dict[str, str]] = {}
+    for entry in entries:
+        if not isinstance(entry, dict) or not entry.get("task_id"):
+            continue
+        completions[str(entry["task_id"]).strip()] = {
+            key: str(value).strip()
+            for key, value in entry.items()
+            if value is not None
+        }
+    return completions
+
+
 def _load_completions() -> dict[str, dict[str, str]]:
     completions: dict[str, dict[str, str]] = {}
-    for name in ("content_completion.md", "assets_completion.md", "technical_completion.md"):
-        completions.update(_extract_completion_blocks(_read_text(OUTPUT_DIR / name)))
+    for stem in ("content_completion", "assets_completion", "technical_completion"):
+        # Structured JSON (preferred, regex-free) wins; markdown is the fallback
+        # for older runs or models that failed structured output. A stale JSON
+        # from a previous run must not shadow a fresher markdown report.
+        json_path = OUTPUT_DIR / f"{stem}.json"
+        md_path = OUTPUT_DIR / f"{stem}.md"
+        if json_path.exists() and (not md_path.exists() or json_path.stat().st_mtime >= md_path.stat().st_mtime):
+            parsed = _completions_from_json(_load_json(json_path, {}))
+            if parsed:
+                completions.update(parsed)
+                continue
+        completions.update(_extract_completion_blocks(_read_text(OUTPUT_DIR / f"{stem}.md")))
     return completions
 
 
@@ -193,8 +283,12 @@ def _infer_action_type(executor: str, title: str, steps: list[str]) -> str:
         return "website_technical_change"
     if "gbp" in haystack or "google business" in haystack:
         return "gbp_profile_update"
+    if "facebook" in haystack or "fb" in executor.lower():
+        return "publish_facebook_post"
     if "review" in haystack:
         return "review_management"
+    if "blog post" in haystack or "blog" in executor.lower():
+        return "website_blog_post"
     if "service page" in haystack or "content" in executor.lower():
         return "website_content_publish"
     return "manual_followup"
@@ -203,7 +297,7 @@ def _infer_action_type(executor: str, title: str, steps: list[str]) -> str:
 def _risk_for_action(action_type: str) -> str:
     if action_type in {"website_technical_change", "gbp_profile_update", "website_content_publish"}:
         return "high"
-    if action_type in {"review_management", "publish_gbp_post"}:
+    if action_type in {"review_management", "publish_gbp_post", "website_blog_post", "publish_facebook_post"}:
         return "medium"
     return "low"
 
@@ -212,8 +306,10 @@ def _platform_for_action(action_type: str) -> str:
     return {
         "website_technical_change": "website_cms",
         "website_content_publish": "website_cms",
+        "website_blog_post": "website_cms",
         "gbp_profile_update": "google_business_profile",
         "publish_gbp_post": "google_business_profile",
+        "publish_facebook_post": "facebook_page",
         "review_management": "review_platforms",
     }.get(action_type, "manual")
 
@@ -337,6 +433,57 @@ def parse_gbp_post_actions() -> list[dict[str, Any]]:
     return actions
 
 
+def _parse_facebook_post_blocks(text: str) -> list[dict[str, str]]:
+    blocks = re.split(r"^\s*---\s*$", text, flags=re.MULTILINE)
+    posts: list[dict[str, str]] = []
+    for block in blocks:
+        cleaned = block.replace("**", "")
+        if "DAY:" not in cleaned or "HOOK:" not in cleaned:
+            continue
+        post: dict[str, str] = {}
+        for label in ("DAY", "DATE", "TYPE", "SERVICE", "HOOK", "BODY", "CTA", "HASHTAGS", "PHOTO_FILE", "VIDEO_PROMPT", "STATUS"):
+            match = re.search(rf"^{label}:\s*(.+)", cleaned, flags=re.MULTILINE)
+            if match:
+                post[label.lower()] = match.group(1).strip()
+        if post:
+            posts.append(post)
+    return posts
+
+
+def parse_facebook_post_actions() -> list[dict[str, Any]]:
+    posts = _parse_facebook_post_blocks(_read_text(OUTPUT_DIR / "facebook_posting_schedule.md"))
+    actions: list[dict[str, Any]] = []
+    for index, post in enumerate(posts, start=1):
+        post_id = post.get("date") or f"day-{index}"
+        actions.append({
+            "id": f"fb-post-{post_id}",
+            "source": "facebook_posting_schedule",
+            "source_task_id": f"FB-{index:03d}",
+            "title": post.get("hook") or post.get("body", "")[:60] or f"Facebook post day {index}",
+            "assigned_agent": "Grizzly Facebook Poster Agent",
+            "action_type": "publish_facebook_post",
+            "platform": "facebook_page",
+            "risk": "medium",
+            "status": "needs_approval" if "approval" in post.get("status", "").lower() else "dry_run_ready",
+            "priority": "P2",
+            "due_window": post.get("date") or "",
+            "steps": [
+                "Review post hook, body, and hashtags.",
+                "For video posts: verify Gemini video prompt before publishing.",
+                "Publish to Facebook Page after approval.",
+            ],
+            "dependencies": ["Owner approval", "Facebook Page Access Token"],
+            "verification_checklist": [
+                "Confirm post is visible on Facebook Business Page.",
+                "For video posts: confirm video rendered correctly.",
+            ],
+            "post": post,
+            "approval_required": True,
+            "live_adapter": "facebook_page",
+        })
+    return actions
+
+
 def _apply_approvals(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
     approvals = _load_json(ACTION_APPROVALS_FILE, {})
     for action in actions:
@@ -349,11 +496,53 @@ def _apply_approvals(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return actions
 
 
+def _load_latest_runs() -> dict[str, dict[str, Any]]:
+    """Latest run record per action id, so executed/failed state survives queue rebuilds."""
+    latest: dict[str, dict[str, Any]] = {}
+    if not ACTION_RUN_DIR.exists():
+        return latest
+    for run_file in sorted(ACTION_RUN_DIR.glob("run-*.json")):
+        record = _load_json(run_file, None)
+        if not isinstance(record, dict) or not record.get("action_id"):
+            continue
+        latest[record["action_id"]] = record
+    return latest
+
+
+_RUN_STATUS_TO_ACTION_STATUS = {
+    "live_complete": "executed",
+    "live_unverified": "needs_verification",
+    "adapter_failed": "failed",
+}
+
+
+def _apply_run_results(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    runs = _load_latest_runs()
+    for action in actions:
+        record = runs.get(action["id"])
+        if not record:
+            continue
+        action["last_run"] = {
+            "id": record.get("id"),
+            "live": record.get("live"),
+            "status": record.get("status"),
+            "message": record.get("message"),
+            "created_at": record.get("created_at"),
+        }
+        # Owner verification still outranks everything; otherwise reflect reality.
+        if action["status"] != "verified":
+            mapped = _RUN_STATUS_TO_ACTION_STATUS.get(record.get("status", ""))
+            if mapped:
+                action["status"] = mapped
+    return actions
+
+
 def build_action_queue() -> dict[str, Any]:
-    actions = _apply_approvals([*parse_execution_actions(), *parse_gbp_post_actions()])
+    actions = _apply_run_results(_apply_approvals([*parse_execution_actions(), *parse_gbp_post_actions(), *parse_facebook_post_actions()]))
     adapters = {
         "wordpress_browser": wordpress_adapter_status(),
         "google_business_profile": gbp_adapter_status(),
+        "facebook_page": facebook_adapter_status(),
     }
     summary = {
         "total": len(actions),
@@ -362,6 +551,9 @@ def build_action_queue() -> dict[str, Any]:
         "verified": sum(1 for action in actions if action["status"] == "verified"),
         "blocked_access": sum(1 for action in actions if action["status"] == "blocked_access"),
         "dry_run_ready": sum(1 for action in actions if action["status"] == "dry_run_ready"),
+        "executed": sum(1 for action in actions if action["status"] == "executed"),
+        "failed": sum(1 for action in actions if action["status"] == "failed"),
+        "needs_verification": sum(1 for action in actions if action["status"] == "needs_verification"),
         "high_risk": sum(1 for action in actions if action["risk"] == "high"),
     }
     return {
@@ -407,12 +599,55 @@ def run_action(action_id: str, live: bool = False) -> dict[str, Any]:
         result_status = "blocked_approval"
         message = "Live execution requires approval first."
         command_result = None
+    elif action.get("action_type") == "gbp_profile_update":
+        command_result = _run_gbp_profile_adapter(action, live=live)
+        driver_result = _last_json_line(command_result.get("stdout", ""))
+        command_result["driver_result"] = driver_result or None
+        if command_result["exit_code"] == 0 and not live:
+            result_status = "dry_run_complete"
+            message = "GBP profile update dry run completed."
+        elif command_result["exit_code"] == 0:
+            result_status = "live_complete"
+            message = f"GBP profile updated: {', '.join(driver_result.get('updates_requested', []))}"
+        else:
+            result_status = "adapter_failed"
+            message = "GBP profile adapter failed."
     elif action.get("live_adapter") == "google_business_profile":
         command_result = _run_gbp_poster(action, live=live)
-        result_status = "live_complete" if live and command_result["exit_code"] == 0 else "dry_run_complete" if command_result["exit_code"] == 0 else "adapter_failed"
-        message = "GBP poster adapter completed." if command_result["exit_code"] == 0 else "GBP poster adapter failed."
-        if live and command_result["exit_code"] == 0:
-            _mark_gbp_workbook_posted(action)
+        driver_result = _last_json_line(command_result.get("stdout", ""))
+        command_result["driver_result"] = driver_result or None
+        if command_result["exit_code"] == 0 and not live:
+            result_status = "dry_run_complete"
+            message = "GBP poster dry run completed."
+        elif command_result["exit_code"] == 0 and driver_result.get("verified"):
+            result_status = "live_complete"
+            message = "GBP post published and verified in the Posts list."
+            try:
+                _mark_gbp_workbook_posted(action, post_url=driver_result.get("postUrl"))
+            except Exception as error:
+                # The post IS live; never lose that fact over a workbook write issue.
+                message = f"GBP post published and verified, but the workbook could not be updated: {error}"
+        elif command_result["exit_code"] == 3 or (command_result["exit_code"] == 0 and driver_result.get("result") == "posted"):
+            # Submitted but unverified: do NOT mark posted and do NOT auto-retry —
+            # a blind retry can publish a duplicate.
+            result_status = "live_unverified"
+            message = "GBP post was submitted but could not be verified. Check the profile manually before retrying."
+        else:
+            result_status = "adapter_failed"
+            message = "GBP poster adapter failed."
+    elif action.get("live_adapter") == "facebook_page":
+        command_result = _run_facebook_poster(action, live=live)
+        driver_result = _last_json_line(command_result.get("stdout", ""))
+        command_result["driver_result"] = driver_result or None
+        if command_result["exit_code"] == 0 and not live:
+            result_status = "dry_run_complete"
+            message = "Facebook poster dry run completed."
+        elif command_result["exit_code"] == 0 and driver_result.get("status") == "success":
+            result_status = "live_complete"
+            message = f"Facebook post published. Post ID: {driver_result.get('post_id')}"
+        else:
+            result_status = "adapter_failed"
+            message = f"Facebook poster adapter failed: {driver_result.get('message', command_result.get('stderr', ''))}"
     elif action.get("live_adapter") == "wordpress_browser":
         command_result = _run_wordpress_adapter(action, live=live)
         result_status = "live_complete" if live and command_result["exit_code"] == 0 else "dry_run_complete" if command_result["exit_code"] == 0 else "adapter_failed"
@@ -543,20 +778,12 @@ def _run_wordpress_adapter(action: dict[str, Any], live: bool) -> dict[str, Any]
         "--payload",
         json.dumps(payload),
     ]
-    result = subprocess.run(
+    return _run_subprocess(
         command,
         cwd=str(adapter_path.parent),
-        capture_output=True,
-        text=True,
-        timeout=180,
-        check=False,
+        timeout_s=WORDPRESS_ADAPTER_TIMEOUT_S,
+        display_command=" ".join(command[:4]) + " --payload <json>",
     )
-    return {
-        "exit_code": result.returncode,
-        "command": " ".join(command[:4]) + " --payload <json>",
-        "stdout": result.stdout.strip(),
-        "stderr": result.stderr.strip(),
-    }
 
 
 def _run_gbp_poster(action: dict[str, Any], live: bool) -> dict[str, Any]:
@@ -578,19 +805,76 @@ def _run_gbp_poster(action: dict[str, Any], live: bool) -> dict[str, Any]:
     command = ["node", str(GBP_POSTER_SCRIPT), "--date", date_value, "--config", str(GBP_POSTER_CONFIG)]
     if not live:
         command.append("--dry-run")
-    result = subprocess.run(
+    if live and GBP_POSTER_HEADLESS:
+        command.append("--headless")
+    return _run_subprocess(
         command,
         cwd=str(GBP_POSTER_SCRIPT.parent),
-        capture_output=True,
-        text=True,
-        timeout=180,
-        check=False,
+        timeout_s=GBP_POSTER_TIMEOUT_S,
     )
+
+
+def _run_gbp_profile_adapter(action: dict[str, Any], live: bool) -> dict[str, Any]:
+    adapter_path = Path(GBP_PROFILE_ADAPTER)
+    if not adapter_path.exists():
+        return {
+            "exit_code": 127,
+            "command": str(adapter_path),
+            "stdout": "",
+            "stderr": f"GBP profile adapter not found: {adapter_path}",
+        }
+    payload = {"live": live, "action": action}
+    command = ["node", str(adapter_path), "--payload", json.dumps(payload)]
+    if not live:
+        command.append("--dry-run")
+    return _run_subprocess(
+        command,
+        cwd=str(adapter_path.parent),
+        timeout_s=GBP_PROFILE_ADAPTER_TIMEOUT_S,
+        display_command=" ".join(command[:3]) + " --payload <json>",
+    )
+
+
+def _run_facebook_poster(action: dict[str, Any], live: bool) -> dict[str, Any]:
+    adapter_path = Path(FACEBOOK_POSTER_ADAPTER)
+    if not adapter_path.exists():
+        return {
+            "exit_code": 127,
+            "command": str(adapter_path),
+            "stdout": "",
+            "stderr": f"Facebook poster adapter not found: {adapter_path}",
+        }
+    payload = {"live": live, "action": action}
+    command = ["node", str(adapter_path), "--payload", json.dumps(payload)]
+    if not live:
+        command.append("--dry-run")
+    return _run_subprocess(
+        command,
+        cwd=str(adapter_path.parent),
+        timeout_s=FACEBOOK_POSTER_TIMEOUT_S,
+        display_command=" ".join(command[:3]) + " --payload <json>",
+    )
+
+
+def facebook_adapter_status() -> dict[str, Any]:
+    page_id = os.getenv("FB_PAGE_ID", "").strip()
+    access_token = os.getenv("FB_PAGE_ACCESS_TOKEN", "").strip()
+    adapter_path = Path(FACEBOOK_POSTER_ADAPTER)
+    missing = []
+    if not page_id:
+        missing.append("FB_PAGE_ID not set in .env")
+    if not access_token:
+        missing.append("FB_PAGE_ACCESS_TOKEN not set in .env")
+    if not adapter_path.exists():
+        missing.append("Facebook Graph API adapter script not found")
+    state = "live_ready" if (page_id and access_token and adapter_path.exists()) else "blocked"
     return {
-        "exit_code": result.returncode,
-        "command": " ".join(command),
-        "stdout": result.stdout.strip(),
-        "stderr": result.stderr.strip(),
+        "name": "facebook-graph-api",
+        "adapter": str(adapter_path),
+        "page_id_set": bool(page_id),
+        "access_token_set": bool(access_token),
+        "state": state,
+        "missing": missing,
     }
 
 
@@ -672,6 +956,15 @@ def _open_gbp_workbook():
     return config, workbook_path, workbook, sheet, columns
 
 
+def _save_gbp_workbook(workbook: Any, workbook_path: Path) -> None:
+    try:
+        workbook.save(workbook_path)
+    except PermissionError as exc:
+        raise RuntimeError(
+            f"Could not save GBP workbook — it is likely open in Excel. Close it and retry: {workbook_path}"
+        ) from exc
+
+
 def _row_date(value: Any) -> str:
     if hasattr(value, "date"):
         return value.date().isoformat()
@@ -738,7 +1031,7 @@ def sync_gbp_schedule_to_workbook(dry_run: bool = False) -> dict[str, Any]:
     if not dry_run:
         backup_path = workbook_path.with_suffix(f".backup-seo-sync-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}{workbook_path.suffix}")
         shutil.copy2(workbook_path, backup_path)
-        workbook.save(workbook_path)
+        _save_gbp_workbook(workbook, workbook_path)
     return {
         "workbook_path": str(workbook_path),
         "backup_path": str(backup_path) if backup_path else None,
@@ -758,10 +1051,10 @@ def _mark_gbp_workbook_status(action: dict[str, Any], status: str) -> None:
         return
     sheet.cell(row, columns["Status"]).value = status
     sheet.cell(row, columns["Notes"]).value = f"{status} from SEO Agents action queue at {_now_iso()}"
-    workbook.save(workbook_path)
+    _save_gbp_workbook(workbook, workbook_path)
 
 
-def _mark_gbp_workbook_posted(action: dict[str, Any]) -> None:
+def _mark_gbp_workbook_posted(action: dict[str, Any], post_url: str | None = None) -> None:
     date_value = action.get("post", {}).get("date") or action.get("due_window")
     if not date_value:
         return
@@ -772,8 +1065,10 @@ def _mark_gbp_workbook_posted(action: dict[str, Any]) -> None:
     sheet.cell(row, columns["Status"]).value = "Posted"
     sheet.cell(row, columns["Posted"]).value = True
     sheet.cell(row, columns["PostedAt"]).value = _now_iso()
-    sheet.cell(row, columns["Notes"]).value = "Posted by MCC browser adapter."
-    workbook.save(workbook_path)
+    if post_url:
+        sheet.cell(row, columns["GBPPostUrl"]).value = post_url
+    sheet.cell(row, columns["Notes"]).value = "Posted and verified by MCC browser adapter."
+    _save_gbp_workbook(workbook, workbook_path)
 
 
 def format_action_queue_text(queue: dict[str, Any]) -> str:
