@@ -1,0 +1,240 @@
+#!/usr/bin/env node
+/**
+ * supabase-sync.mjs
+ * Parses agent output files and syncs them into Supabase.
+ * Run automatically after `seo-agents execute` completes.
+ *
+ * Usage:
+ *   node scripts/supabase-sync.mjs [--week-of YYYY-MM-DD]
+ */
+
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { createClient } from '@supabase/supabase-js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const PROJECT_ROOT = path.resolve(__dirname, '..');
+
+// Load .env
+const envPath = path.join(PROJECT_ROOT, '.env');
+if (fs.existsSync(envPath)) {
+  for (const line of fs.readFileSync(envPath, 'utf8').split(/\r?\n/)) {
+    const m = line.match(/^([A-Z_][A-Z0-9_]*)=(.*)$/);
+    if (m && !process.env[m[1]]) process.env[m[1]] = m[2].trim();
+  }
+}
+
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_KEY
+);
+
+const OUTPUTS = path.join(PROJECT_ROOT, 'outputs');
+
+// ─────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────
+
+function getWeekOf() {
+  const args = process.argv.slice(2);
+  const idx = args.indexOf('--week-of');
+  if (idx !== -1 && args[idx + 1]) return args[idx + 1];
+  // Default: next Monday
+  const d = new Date();
+  const day = d.getDay();
+  const diff = day === 0 ? 1 : 8 - day;
+  d.setDate(d.getDate() + diff);
+  return d.toISOString().slice(0, 10);
+}
+
+function readFile(filename) {
+  const p = path.join(OUTPUTS, filename);
+  return fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : null;
+}
+
+// ─────────────────────────────────────────────
+// Parse facebook_posting_schedule.md
+// ─────────────────────────────────────────────
+
+function parseFacebookSchedule(text) {
+  if (!text) return [];
+  const blocks = text.split(/\n\s*---\s*\n/).filter(b => b.includes('DAY:'));
+  return blocks.map(block => {
+    const get = key => {
+      const m = block.match(new RegExp(`^${key}:\\s*(.+)$`, 'm'));
+      return m ? m[1].trim() : '';
+    };
+    return {
+      platform: 'facebook',
+      day: parseInt(get('DAY')) || 0,
+      post_date: get('DATE'),
+      type: get('TYPE').toLowerCase(),
+      service: get('SERVICE'),
+      hook: get('HOOK'),
+      body: get('BODY'),
+      cta: get('CTA'),
+      hashtags: get('HASHTAGS'),
+      photo_file: get('PHOTO_FILE') || null,
+      video_prompt: get('VIDEO_PROMPT') || null,
+      status: 'pending_approval',
+    };
+  }).filter(p => p.day > 0 && p.post_date);
+}
+
+// ─────────────────────────────────────────────
+// Parse gbp_posting_schedule.md
+// ─────────────────────────────────────────────
+
+function parseGbpSchedule(text) {
+  if (!text) return [];
+  const blocks = text.split(/\n\s*---\s*\n/).filter(b => b.includes('DAY:'));
+  return blocks.map(block => {
+    const get = key => {
+      const m = block.match(new RegExp(`^\\*{0,2}${key}:\\*{0,2}\\s*(.+)$`, 'm'));
+      return m ? m[1].replace(/\*{0,2}$/, '').trim() : '';
+    };
+    return {
+      platform: 'gbp',
+      day: parseInt(get('DAY')) || 0,
+      post_date: get('DATE'),
+      type: 'photo',
+      service: get('SERVICE'),
+      hook: get('HEADLINE'),
+      body: get('BODY'),
+      cta: get('CTA'),
+      hashtags: null,
+      photo_file: get('PHOTO_FILE') || null,
+      video_prompt: null,
+      status: 'pending_approval',
+    };
+  }).filter(p => p.day > 0 && p.post_date);
+}
+
+// ─────────────────────────────────────────────
+// Parse website tasks from execution queue + reports
+// ─────────────────────────────────────────────
+
+function parseWebsiteTasks(executionQueueText, finalReportText) {
+  const tasks = [];
+
+  // From final_report.md — incomplete tasks become pending website tasks
+  if (finalReportText) {
+    const incompleteSection = finalReportText.match(/##\s+Incomplete.*?Tasks([\s\S]*?)(?=##|$)/i)?.[1] || '';
+    const rows = [...incompleteSection.matchAll(/\|\s*(T\d+)\s*\|\s*([^|]+)\|\s*([^|]+)\|\s*([^|]+)\|/g)];
+    for (const [, id, title, missing, next] of rows) {
+      tasks.push({
+        type: 'seo_fix',
+        priority: 'high',
+        title: title.trim(),
+        description: `Missing: ${missing.trim()}\nNext step: ${next.trim()}`,
+        details: { task_id: id.trim(), source: 'final_report' },
+        status: 'pending_approval',
+      });
+    }
+  }
+
+  // From grizzly_execution_queue.md
+  if (executionQueueText) {
+    const taskBlocks = executionQueueText.split(/\n\s*---\s*\n/).filter(b => b.includes('Task ID:') || b.includes('TASK_ID:'));
+    for (const block of taskBlocks) {
+      const getField = key => {
+        const m = block.match(new RegExp(`${key}[:\\s]+(.+)`, 'i'));
+        return m ? m[1].trim() : '';
+      };
+      const title = getField('Task Title') || getField('TASK_TITLE') || getField('Title');
+      const type = getField('Type') || getField('TYPE') || 'seo_fix';
+      const priority = getField('Priority') || getField('PRIORITY') || 'medium';
+      if (!title) continue;
+      tasks.push({
+        type: mapTaskType(type),
+        priority: mapPriority(priority),
+        title,
+        description: getField('Description') || getField('DESCRIPTION') || '',
+        details: { source: 'execution_queue' },
+        status: 'pending_approval',
+      });
+    }
+  }
+
+  return tasks;
+}
+
+function mapTaskType(raw) {
+  const r = raw.toLowerCase();
+  if (r.includes('blog')) return 'blog_post';
+  if (r.includes('service')) return 'service_update';
+  if (r.includes('promo')) return 'promotion';
+  if (r.includes('alert') || r.includes('broken') || r.includes('fix')) return 'alert';
+  return 'seo_fix';
+}
+
+function mapPriority(raw) {
+  const r = raw.toLowerCase();
+  if (r.includes('critical')) return 'critical';
+  if (r.includes('high')) return 'high';
+  if (r.includes('low')) return 'low';
+  return 'medium';
+}
+
+// ─────────────────────────────────────────────
+// Main sync
+// ─────────────────────────────────────────────
+
+async function main() {
+  const weekOf = getWeekOf();
+  console.log(`Syncing week of ${weekOf} to Supabase...`);
+
+  // Upsert seo_run row
+  const { data: runData, error: runError } = await supabase
+    .from('seo_runs')
+    .upsert({ week_of: weekOf, status: 'pending_approval', execute_completed_at: new Date().toISOString() },
+      { onConflict: 'week_of' })
+    .select()
+    .single();
+
+  if (runError) { console.error('Failed to upsert seo_run:', runError.message); process.exit(1); }
+  const runId = runData.id;
+  console.log(`Run ID: ${runId}`);
+
+  // Clear existing pending posts for this run (allow re-sync)
+  await supabase.from('weekly_posts').delete().eq('run_id', runId).eq('status', 'pending_approval');
+  await supabase.from('website_tasks').delete().eq('run_id', runId).eq('status', 'pending_approval');
+
+  // Parse and insert Facebook posts
+  const fbText = readFile('facebook_posting_schedule.md');
+  const fbPosts = parseFacebookSchedule(fbText);
+  if (fbPosts.length) {
+    const { error } = await supabase.from('weekly_posts').insert(fbPosts.map(p => ({ ...p, run_id: runId })));
+    if (error) console.error('FB posts insert error:', error.message);
+    else console.log(`Synced ${fbPosts.length} Facebook posts`);
+  } else {
+    console.log('No Facebook posts found');
+  }
+
+  // Parse and insert GBP posts
+  const gbpText = readFile('gbp_posting_schedule.md');
+  const gbpPosts = parseGbpSchedule(gbpText);
+  if (gbpPosts.length) {
+    const { error } = await supabase.from('weekly_posts').insert(gbpPosts.map(p => ({ ...p, run_id: runId })));
+    if (error) console.error('GBP posts insert error:', error.message);
+    else console.log(`Synced ${gbpPosts.length} GBP posts`);
+  } else {
+    console.log('No GBP posts found');
+  }
+
+  // Parse and insert website tasks
+  const queueText = readFile('grizzly_execution_queue.md');
+  const reportText = readFile('final_report.md');
+  const tasks = parseWebsiteTasks(queueText, reportText);
+  if (tasks.length) {
+    const { error } = await supabase.from('website_tasks').insert(tasks.map(t => ({ ...t, run_id: runId })));
+    if (error) console.error('Website tasks insert error:', error.message);
+    else console.log(`Synced ${tasks.length} website tasks`);
+  }
+
+  console.log(`\nSync complete. Run ${runId} is pending_approval in Supabase.`);
+  console.log('Open the MCC dashboard to review and approve.');
+}
+
+main().catch(e => { console.error(e.message); process.exit(1); });

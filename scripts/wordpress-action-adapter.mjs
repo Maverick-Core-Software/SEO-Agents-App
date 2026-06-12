@@ -5,13 +5,24 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import process from "node:process";
 
+// Load .env from the project root (two levels up from scripts/)
+const envPath = path.join(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Z]:)/, "$1")), "..", ".env");
+if (fs.existsSync(envPath)) {
+  for (const line of fs.readFileSync(envPath, "utf8").split(/\r?\n/)) {
+    const match = line.match(/^([A-Z_][A-Z0-9_]*)=(.*)$/);
+    if (match && !process.env[match[1]]) process.env[match[1]] = match[2].trim();
+  }
+}
+
 const CAPABILITIES = [
   "wp_session_check",
   "cf7_inventory",
   "cf7_mail_settings_dry_run",
   "cf7_mail_edit",
   "public_form_submit_test",
-  "wordpress_page_update_draft"
+  "wp_rest_update_page",
+  "wp_rest_update_post",
+  "wp_rest_create_post"
 ];
 
 function readArg(name) {
@@ -230,14 +241,107 @@ async function verifyPublicContact(page, config) {
   };
 }
 
-async function updatePageDraft(page, config, action, live) {
-  const draft = action.page_draft || action.draft || {};
+function wpRestAuth() {
+  const user = (process.env.WP_USERNAME || "").trim();
+  const pass = (process.env.WP_APP_PASSWORD || "").trim();
+  if (!user || !pass) throw new Error("WP_USERNAME and WP_APP_PASSWORD must be set in environment.");
+  return "Basic " + Buffer.from(user + ":" + pass).toString("base64");
+}
+
+async function wpRest(baseUrl, method, endpoint, body) {
+  const url = normalizeBaseUrl(baseUrl) + "/wp-json/wp/v2/" + endpoint;
+  const options = {
+    method,
+    headers: { "Authorization": wpRestAuth(), "Content-Type": "application/json" }
+  };
+  if (body) options.body = JSON.stringify(body);
+  const res = await fetch(url, options);
+  const data = await res.json();
+  if (!res.ok) throw new Error(`WP REST ${method} ${endpoint} → ${res.status}: ${data?.message || JSON.stringify(data)}`);
+  return data;
+}
+
+async function resolveContentId(baseUrl, action, contentType) {
+  if (action.page_id) return Number(action.page_id);
+  if (action.slug) {
+    const endpoint = contentType === "post" ? "posts" : "pages";
+    const results = await wpRest(baseUrl, "GET", `${endpoint}?slug=${encodeURIComponent(action.slug)}&_fields=id,title,slug`);
+    if (results.length) return results[0].id;
+  }
+  return null;
+}
+
+async function restContentAction(config, action, live) {
+  const contentType = action.content_type || "page";
+  const isPost = contentType === "post";
+  const draft = action.draft || action.page_draft || {};
+
   const title = draft.title || action.title;
+  const content = draft.content || action.content_html || "";
+  const excerpt = draft.excerpt || "";
+  const publishStatus = draft.status || action.publish_status || "draft";
+
+  const body = { status: publishStatus };
+  if (title) body.title = title;
+  if (content) body.content = content;
+  if (excerpt) body.excerpt = excerpt;
+  if (isPost && draft.categories?.length) body.categories = draft.categories;
+  if (isPost && draft.tags?.length) body.tags = draft.tags;
+  if (isPost && draft.yoast_title) body.yoast_head_json = { title: draft.yoast_title };
+
+  if (!live) {
+    let existing = null;
+    let resolvedId = null;
+    try {
+      resolvedId = await resolveContentId(config.site_url, action, contentType);
+      if (resolvedId) {
+        const endpoint = isPost ? "posts" : "pages";
+        existing = await wpRest(config.site_url, "GET", `${endpoint}/${resolvedId}?_fields=id,title,slug,link,status`);
+      }
+    } catch (_) { /* dry run — ignore lookup errors */ }
+    return {
+      capability: isPost ? "wp_rest_create_post" : "wp_rest_update_page",
+      status: "dry_run_ready",
+      content_type: contentType,
+      resolved_id: resolvedId,
+      existing: existing ? { id: existing.id, title: existing.title?.rendered, slug: existing.slug, link: existing.link } : null,
+      would_set: { ...body, content: content ? `[${content.length} chars]` : "" },
+      message: resolvedId
+        ? `Would update ${contentType} ID ${resolvedId} (status → ${publishStatus})`
+        : isPost ? "Would create new blog post" : "WARNING: no page_id or slug matched — live run would fail"
+    };
+  }
+
+  // Live execution
+  if (isPost && !action.page_id && !action.slug) {
+    const result = await wpRest(config.site_url, "POST", "posts", body);
+    return {
+      capability: "wp_rest_create_post",
+      status: "live_complete",
+      content_type: "post",
+      post_id: result.id,
+      title: result.title?.rendered,
+      slug: result.slug,
+      link: result.link,
+      post_status: result.status,
+      message: `Blog post created — ID ${result.id}, status: ${result.status}`
+    };
+  }
+
+  const resolvedId = await resolveContentId(config.site_url, action, contentType);
+  if (!resolvedId) throw new Error(`Cannot update ${contentType}: no page_id or matching slug found.`);
+  const endpoint = isPost ? `posts/${resolvedId}` : `pages/${resolvedId}`;
+  const result = await wpRest(config.site_url, "POST", endpoint, body);
   return {
-    capability: "wordpress_page_update_draft",
-    status: live ? "blocked_missing_page_draft" : "dry_run_ready",
-    title,
-    message: "Page draft/update support is wired but requires a page_id and draft payload on the action before it will edit WordPress."
+    capability: isPost ? "wp_rest_update_post" : "wp_rest_update_page",
+    status: "live_complete",
+    content_type: contentType,
+    post_id: result.id,
+    title: result.title?.rendered,
+    slug: result.slug,
+    link: result.link,
+    post_status: result.status,
+    message: `${isPost ? "Post" : "Page"} updated — ID ${result.id}, status: ${result.status}`
   };
 }
 
@@ -291,8 +395,8 @@ async function runWordPressAction(config, payload) {
         }
       });
     }
-    if (action.action_type === "website_content_publish") {
-      response.results.push(await updatePageDraft(null, config, action, false));
+    if (action.action_type === "website_content_publish" || action.action_type === "website_blog_post") {
+      response.results.push(await restContentAction(config, action, false));
     }
     return response;
   }
@@ -316,8 +420,8 @@ async function runWordPressAction(config, payload) {
         response.results.push(await repairCf7Mail(page, config, form, true));
       }
       response.results.push(await verifyPublicContact(page, config));
-    } else if (action.action_type === "website_content_publish") {
-      response.results.push(await updatePageDraft(page, config, action, true));
+    } else if (action.action_type === "website_content_publish" || action.action_type === "website_blog_post") {
+      response.results.push(await restContentAction(config, action, true));
     }
     response.status = "live_complete";
     response.message = "WordPress browser action completed.";
