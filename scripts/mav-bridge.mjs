@@ -11,6 +11,7 @@
  *   - Logs everything to run_logs table
  */
 
+import http from 'node:http';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
@@ -34,6 +35,7 @@ if (fs.existsSync(envPath)) {
 const SUPABASE_URL = process.env.SUPABASE_URL || '';
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY || '';
 const POLL_INTERVAL_MS = parseInt(process.env.MAV_BRIDGE_POLL_MS || '30000');
+const BRIDGE_PORT = parseInt(process.env.MAV_BRIDGE_PORT || '8790');
 const SEO_AGENTS_EXE = process.env.SEO_AGENTS_EXE
   || 'C:\\Users\\carte\\AppData\\Local\\Programs\\Python\\Python312\\Scripts\\seo-agents.exe';
 
@@ -73,8 +75,9 @@ async function runPhase(runId, phase, exe, args, cwd) {
     await log(runId, phase, 'info', `Done: ${stdout.slice(0, 500)}`);
     return { ok: true, stdout, stderr };
   } catch (e) {
-    await log(runId, phase, 'error', e.message.slice(0, 500));
-    return { ok: false, error: e.message };
+    const detail = [e.message, e.stderr, e.stdout].filter(Boolean).join('\n').slice(0, 1500);
+    await log(runId, phase, 'error', detail);
+    return { ok: false, error: detail };
   }
 }
 
@@ -132,7 +135,7 @@ async function executeApprovedRun(run) {
       .update({ status: 'posting' })
       .eq('run_id', runId).eq('platform', 'gbp').eq('status', 'approved');
 
-    const result = await runPhase(runId, 'gbp', SEO_AGENTS_EXE, ['gbp-post'], PROJECT_ROOT);
+    const result = await runPhase(runId, 'gbp', SEO_AGENTS_EXE, ['sync-gbp-schedule'], PROJECT_ROOT);
 
     const status = result.ok ? 'posted' : 'error';
     await supabase.from('weekly_posts')
@@ -210,11 +213,196 @@ async function poll() {
 }
 
 // ─────────────────────────────────────────────
+// HTTP server (MCC dashboard connects here)
+// ─────────────────────────────────────────────
+
+function sendJsonHttp(res, status, data) {
+  const body = JSON.stringify(data);
+  res.writeHead(status, {
+    'content-type': 'application/json; charset=utf-8',
+    'content-length': Buffer.byteLength(body),
+    'access-control-allow-origin': '*',
+  });
+  res.end(body);
+}
+
+async function readBody(req) {
+  let body = '';
+  for await (const chunk of req) body += chunk;
+  return body ? JSON.parse(body) : {};
+}
+
+async function handleHttpRequest(req, res) {
+  const url = new URL(req.url, `http://127.0.0.1:${BRIDGE_PORT}`);
+  const { method } = req;
+
+  // ── GET /health ─────────────────────────────
+  if (method === 'GET' && url.pathname === '/health') {
+    sendJsonHttp(res, 200, { state: 'online', service: 'mav-bridge', uptime: process.uptime() });
+    return;
+  }
+
+  // ── GET /seo/status ─────────────────────────
+  if (method === 'GET' && url.pathname === '/seo/status') {
+    const [runsRes, postsRes] = await Promise.all([
+      supabase.from('seo_runs').select('*').order('created_at', { ascending: false }).limit(20),
+      supabase.from('weekly_posts').select('platform,status').order('created_at', { ascending: false }).limit(100),
+    ]);
+    const runs = runsRes.data || [];
+    const posts = postsRes.data || [];
+    const latest = runs[0] || null;
+
+    const statusCounts = { complete: 0, partial: 0, blocked: 0, incomplete: 0 };
+    for (const r of runs) {
+      if (r.status === 'done') statusCounts.complete++;
+      else if (['posting', 'posted', 'executing'].includes(r.status)) statusCounts.partial++;
+      else if (r.status === 'error') statusCounts.blocked++;
+      else statusCounts.incomplete++;
+    }
+
+    const pendingPosts = posts.filter(p => p.status === 'pending_approval');
+    const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    const reports = runs
+      .filter(r => ['done', 'posted', 'pending_approval', 'approved', 'error'].includes(r.status))
+      .map(r => ({
+        id: r.id,
+        date: r.created_at,
+        updatedAt: r.done_at || r.created_at,
+        status: r.status === 'pending_approval' ? 'needs_approval' : r.status === 'error' ? 'blocked' : 'complete',
+        source: 'mav-bridge',
+        label: `Run ${r.week_of || r.id?.slice(0, 8) || '?'}`,
+      }));
+
+    sendJsonHttp(res, 200, {
+      state: latest?.status || 'idle',
+      reports,
+      faults: runs.filter(r => r.status === 'error').slice(0, 3)
+        .map(r => r.error || `Run ${r.id?.slice(0, 8)} failed`),
+      activeWorkflow: {
+        name: 'SEO Automation',
+        phase: latest?.status || 'idle',
+        reportsGenerated: reports.filter(r => new Date(r.date).getTime() > sevenDaysAgo).length,
+      },
+      statusCounts,
+      workflowStatus: {
+        actions: {
+          actions: [],
+          summary: {
+            needs_approval: pendingPosts.length,
+            blocked_access: posts.filter(p => p.status === 'error').length,
+          },
+        },
+      },
+      runHealth: null,
+      updatedAt: new Date().toISOString(),
+    });
+    return;
+  }
+
+  // ── GET /seo/actions ────────────────────────
+  if (method === 'GET' && url.pathname === '/seo/actions') {
+    const [runsRes, postsRes, tasksRes] = await Promise.all([
+      supabase.from('seo_runs').select('*').eq('status', 'pending_approval').order('created_at').limit(10),
+      supabase.from('weekly_posts').select('*').in('status', ['pending_approval', 'error']).order('day').limit(50),
+      supabase.from('website_tasks').select('*').eq('status', 'pending_approval').order('priority').limit(20),
+    ]);
+    const runs = runsRes.data || [];
+    const posts = postsRes.data || [];
+    const tasks = tasksRes.data || [];
+
+    const actions = [
+      ...runs.map(r => ({
+        id: r.id,
+        type: 'seo_run',
+        status: 'needs_approval',
+        label: `SEO Run ${r.week_of || r.id?.slice(0, 8)}`,
+        approval_required: true,
+        approval: null,
+        live_adapter: 'mav-bridge',
+        posts_count: posts.filter(p => p.run_id === r.id).length,
+      })),
+      ...tasks.map(t => ({
+        id: t.id,
+        type: 'website_task',
+        status: 'needs_approval',
+        label: t.title || `Task ${t.id?.slice(0, 8)}`,
+        approval_required: true,
+        approval: null,
+        live_adapter: 'mav-bridge',
+      })),
+    ];
+
+    sendJsonHttp(res, 200, {
+      actions,
+      summary: {
+        needs_approval: runs.length + tasks.length,
+        blocked_access: posts.filter(p => p.status === 'error').length,
+      },
+    });
+    return;
+  }
+
+  // ── POST /seo/actions/approve ────────────────
+  if (method === 'POST' && url.pathname === '/seo/actions/approve') {
+    const { actionId, note } = await readBody(req);
+    if (!actionId) { sendJsonHttp(res, 400, { error: 'actionId required' }); return; }
+
+    // Try seo_run first
+    const { data: run } = await supabase.from('seo_runs')
+      .update({ status: 'approved', approved_by: 'MCC', approved_at: new Date().toISOString(), note: note || null })
+      .eq('id', actionId).eq('status', 'pending_approval')
+      .select().maybeSingle();
+
+    if (run) { sendJsonHttp(res, 200, { ok: true, type: 'seo_run', id: run.id }); return; }
+
+    // Try website_task
+    const { data: task } = await supabase.from('website_tasks')
+      .update({ status: 'approved', approved_at: new Date().toISOString() })
+      .eq('id', actionId)
+      .select().maybeSingle();
+
+    if (task) { sendJsonHttp(res, 200, { ok: true, type: 'website_task', id: task.id }); return; }
+
+    sendJsonHttp(res, 404, { error: 'Action not found or already approved' });
+    return;
+  }
+
+  // ── POST /seo/actions/run ────────────────────
+  if (method === 'POST' && url.pathname === '/seo/actions/run') {
+    const { actionId, live } = await readBody(req);
+    if (!live) {
+      sendJsonHttp(res, 200, { ok: true, mode: 'dry_run', message: 'Dry run — no changes made.' });
+      return;
+    }
+    const { data: run } = await supabase.from('seo_runs')
+      .update({ status: 'approved' })
+      .eq('id', actionId)
+      .select().maybeSingle();
+
+    if (!run) { sendJsonHttp(res, 404, { error: 'Run not found' }); return; }
+    sendJsonHttp(res, 200, { ok: true, mode: 'live', runId: run.id, message: 'Approved — bridge will execute on next poll.' });
+    return;
+  }
+
+  sendJsonHttp(res, 404, { error: 'Not found' });
+}
+
+// ─────────────────────────────────────────────
 // Start
 // ─────────────────────────────────────────────
 
 console.log(`[mav-bridge] Starting — polling Supabase every ${POLL_INTERVAL_MS / 1000}s`);
 console.log(`[mav-bridge] Project root: ${PROJECT_ROOT}`);
+
+const httpServer = http.createServer((req, res) => {
+  handleHttpRequest(req, res).catch(e => {
+    console.error('[mav-bridge][http] Unhandled error:', e.message);
+    try { sendJsonHttp(res, 500, { error: 'Internal server error' }); } catch {}
+  });
+});
+httpServer.listen(BRIDGE_PORT, '127.0.0.1', () => {
+  console.log(`[mav-bridge] HTTP server listening on http://127.0.0.1:${BRIDGE_PORT}`);
+});
 
 poll(); // run immediately on start
 setInterval(poll, POLL_INTERVAL_MS);

@@ -79,7 +79,8 @@ function parseSchedule(filePath) {
   const blocks = text.split(/\n\s*---\s*\n/).filter(b => b.includes('DAY:'));
   return blocks.map(block => {
     const get = (key) => {
-      const m = block.match(new RegExp(`^${key}:\\s*(.+)$`, 'm'));
+      // Handles both plain `KEY: value` and bold markdown `**KEY: value**`
+      const m = block.match(new RegExp(`^\\*{0,2}${key}:\\s*(.*?)\\*{0,2}\\s*$`, 'm'));
       return m ? m[1].trim() : '';
     };
     return {
