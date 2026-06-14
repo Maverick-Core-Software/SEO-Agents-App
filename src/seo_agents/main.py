@@ -42,18 +42,6 @@ from seo_agents.status import (
     write_workflow_status,
 )
 
-APPROVAL_BANNER = """
-╔══════════════════════════════════════════════════════════════════╗
-║           ✅  RESEARCH + PLAN COMPLETE — OWNER REVIEW           ║
-╠══════════════════════════════════════════════════════════════════╣
-║  Review these files before running execution:                   ║
-║  • outputs/grizzly_local_presence_plan.md  (manager plan)       ║
-║  • outputs/grizzly_execution_queue.md      (task queue)         ║
-║                                                                  ║
-║  When ready to execute:                                          ║
-║    seo-agents execute                                            ║
-╚══════════════════════════════════════════════════════════════════╝
-"""
 
 RESEARCH_OUTPUTS = [
     "content_report.md",
@@ -623,6 +611,86 @@ def ensure_dirs() -> None:
     ARCHIVE_DIR.mkdir(exist_ok=True)
 
 
+def _run_execute_pipeline() -> None:
+    """Run execute → GBP schedule → Facebook schedule → Supabase sync.
+
+    Called automatically after research and also when `seo-agents execute` is
+    invoked directly.
+    """
+    queue_path = OUTPUT_DIR / "grizzly_execution_queue.md"
+    if not queue_path.exists():
+        print("❌ No execution queue found. Run research first:")
+        print("   seo-agents research <topic>")
+        sys.exit(1)
+
+    crew = build_executor_crew()
+    t0 = time.monotonic()
+    try:
+        result = crew.kickoff()
+        print(result)
+        final = OUTPUT_DIR / "final_report.md"
+        archived_path = ""
+        if final.exists():
+            stamp = date.today().isoformat()
+            archived_file = ARCHIVE_DIR / f"final_report_{stamp}.md"
+            archived_file.write_bytes(final.read_bytes())
+            archived_path = str(archived_file)
+            print(f"\n✅ Final report archived to: {archived_file}")
+        write_run_health("execute", "success", started_at=t0)
+        write_workflow_status(
+            phase="execute",
+            phase_status="complete",
+            extra={"archived_final_report": archived_path},
+        )
+    except Exception as e:
+        write_run_health("execute", "failed", error=str(e), started_at=t0)
+        write_workflow_status(phase="execute", phase_status="failed", error=str(e))
+        print(f"\n❌ Executor crew failed: {e}")
+        sys.exit(1)
+
+    start_date = date.today().isoformat()
+
+    print(f"\n{'─'*60}")
+    print(f"📅 Auto-running GBP post schedule (starting {start_date})...")
+    t1 = time.monotonic()
+    try:
+        gbp_crew = build_poster_crew(start_date=start_date, days=7)
+        gbp_result = gbp_crew.kickoff()
+        print(gbp_result)
+        schedule_path = OUTPUT_DIR / "gbp_posting_schedule.md"
+        photo_path = os.getenv("GBP_PHOTO_PATH", r"C:\Workspace\Shared\Assets\Media\Grizzly\GBP Post Photos")
+        archived_photos = archive_used_photos(schedule_path, Path(photo_path))
+        if archived_photos:
+            print(f"📁 Archived {len(archived_photos)} photo(s) to Archive folder")
+        write_run_health("post_schedule", "success", started_at=t1)
+        write_workflow_status(
+            phase="post_schedule",
+            phase_status="complete",
+            args={"start_date": start_date, "days": 7},
+            extra={"archived_photos": archived_photos},
+        )
+        print(f"✅ GBP posting schedule saved")
+    except Exception as e:
+        write_run_health("post_schedule", "failed", error=str(e), started_at=t1)
+        write_workflow_status(phase="post_schedule", phase_status="failed", error=str(e))
+        print(f"⚠ GBP post schedule failed (non-fatal): {e}")
+
+    print(f"\n{'─'*60}")
+    print(f"📘 Auto-running Facebook post schedule (starting {start_date})...")
+    t2 = time.monotonic()
+    try:
+        fb_crew = build_facebook_crew(start_date=start_date, days=7)
+        fb_result = fb_crew.kickoff()
+        print(fb_result)
+        write_run_health("facebook_schedule", "success", started_at=t2)
+        print(f"✅ Facebook posting schedule saved")
+    except Exception as e:
+        write_run_health("facebook_schedule", "failed", error=str(e), started_at=t2)
+        print(f"⚠ Facebook schedule failed (non-fatal): {e}")
+
+    _run_supabase_sync()
+
+
 def main() -> None:
     reconfigure_stdio()
     load_dotenv()
@@ -689,7 +757,10 @@ def main() -> None:
             print(f"\n📁 Research outputs archived to: {run_dir}")
             write_run_health("research", "success", topic=topic, started_at=t0)
             write_workflow_status(phase="research", phase_status="complete", args=run_args)
-            print(APPROVAL_BANNER)
+            print(f"\n{'─'*60}")
+            print("🚀 Research complete — auto-starting execution pipeline...")
+            print(f"{'─'*60}")
+            _run_execute_pipeline()
         except Exception as e:
             write_run_health("research", "failed", topic=topic, error=str(e), started_at=t0)
             write_workflow_status(phase="research", phase_status="failed", args=run_args, error=str(e))
@@ -697,87 +768,15 @@ def main() -> None:
             sys.exit(1)
 
     elif command == "execute":
-        queue_path = OUTPUT_DIR / "grizzly_execution_queue.md"
-        if not queue_path.exists():
-            print("❌ No execution queue found. Run research first:")
-            print("   seo-agents research <topic>")
-            sys.exit(1)
-
-        crew = build_executor_crew()
         if args.dry_run:
+            crew = build_executor_crew()
             print(f"Ready: {crew.name}")
             print(f"Agents ({len(crew.agents)}):")
             for agent in crew.agents:
                 print(f"  - {agent.role}")
             print(f"Tasks: {len(crew.tasks)}")
             return
-        t0 = time.monotonic()
-        try:
-            result = crew.kickoff()
-            print(result)
-            # Archive final report with timestamp
-            final = OUTPUT_DIR / "final_report.md"
-            archived_path = ""
-            if final.exists():
-                stamp = date.today().isoformat()
-                archived_file = ARCHIVE_DIR / f"final_report_{stamp}.md"
-                archived_file.write_bytes(final.read_bytes())
-                archived_path = str(archived_file)
-                print(f"\n✅ Final report archived to: {archived_file}")
-            write_run_health("execute", "success", started_at=t0)
-            write_workflow_status(
-                phase="execute",
-                phase_status="complete",
-                extra={"archived_final_report": archived_path},
-            )
-        except Exception as e:
-            write_run_health("execute", "failed", error=str(e), started_at=t0)
-            write_workflow_status(phase="execute", phase_status="failed", error=str(e))
-            print(f"\n❌ Executor crew failed: {e}")
-            sys.exit(1)
-
-        # ── Auto-run posting schedule phases ─────────────────────────────
-        start_date = date.today().isoformat()
-
-        print(f"\n{'─'*60}")
-        print(f"📅 Auto-running GBP post schedule (starting {start_date})...")
-        t1 = time.monotonic()
-        try:
-            gbp_crew = build_poster_crew(start_date=start_date, days=7)
-            gbp_result = gbp_crew.kickoff()
-            print(gbp_result)
-            schedule_path = OUTPUT_DIR / "gbp_posting_schedule.md"
-            photo_path = os.getenv("GBP_PHOTO_PATH", r"C:\Workspace\Shared\Assets\Media\Grizzly\GBP Post Photos")
-            archived_photos = archive_used_photos(schedule_path, Path(photo_path))
-            if archived_photos:
-                print(f"📁 Archived {len(archived_photos)} photo(s) to Archive folder")
-            write_run_health("post_schedule", "success", started_at=t1)
-            write_workflow_status(
-                phase="post_schedule",
-                phase_status="complete",
-                args={"start_date": start_date, "days": 7},
-                extra={"archived_photos": archived_photos},
-            )
-            print(f"✅ GBP posting schedule saved")
-        except Exception as e:
-            write_run_health("post_schedule", "failed", error=str(e), started_at=t1)
-            write_workflow_status(phase="post_schedule", phase_status="failed", error=str(e))
-            print(f"⚠ GBP post schedule failed (non-fatal): {e}")
-
-        print(f"\n{'─'*60}")
-        print(f"📘 Auto-running Facebook post schedule (starting {start_date})...")
-        t2 = time.monotonic()
-        try:
-            fb_crew = build_facebook_crew(start_date=start_date, days=7)
-            fb_result = fb_crew.kickoff()
-            print(fb_result)
-            write_run_health("facebook_schedule", "success", started_at=t2)
-            print(f"✅ Facebook posting schedule saved")
-        except Exception as e:
-            write_run_health("facebook_schedule", "failed", error=str(e), started_at=t2)
-            print(f"⚠ Facebook schedule failed (non-fatal): {e}")
-
-        _run_supabase_sync()
+        _run_execute_pipeline()
 
     elif command == "post-schedule":
         # Default start_date to today so the agent doesn't hallucinate a date
