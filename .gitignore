@@ -21,3 +21,6 @@ Thumbs.db
 node_modules/
 *.mp4
 *.zip
+
+state/
+.claude/
