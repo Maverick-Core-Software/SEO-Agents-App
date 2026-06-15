@@ -12,6 +12,18 @@ Imported agents:
 
 Imported baseline reports live in `knowledge/baselines/`. Agent prompt files live in `prompts/agents/`.
 
+## Current Role
+
+This repo is the SEO workflow engine behind MCC. It produces research reports, execution queues, owner-approval actions, GBP post schedules, and machine-readable workflow status for the mav-console dashboard.
+
+Primary outputs live in `outputs/`:
+
+- `workflow_status.json` - parsed workflow state for MCC.
+- `action_queue.json` - approval/action queue for MCC.
+- `action_approvals.json` - owner/MCC approval records.
+- `action_runs/` - dry-run and live execution records.
+- `gbp_posting_schedule.md` - weekly GBP content schedule.
+
 ## Setup
 
 ```powershell
@@ -37,3 +49,115 @@ seo-agents "electrical troubleshooting service page" --site-url "https://www.gri
 ```
 
 The crew writes the final manager plan to `outputs/grizzly_local_presence_plan.md`.
+
+## Status And Actions
+
+Generate or inspect the workflow state:
+
+```powershell
+$env:PYTHONPATH='src'
+.\.venv\Scripts\python.exe -m seo_agents.main status
+.\.venv\Scripts\python.exe -m seo_agents.main status --json
+.\.venv\Scripts\python.exe -m seo_agents.main validate
+```
+
+Inspect and operate the action queue:
+
+```powershell
+$env:PYTHONPATH='src'
+.\.venv\Scripts\python.exe -m seo_agents.main actions
+.\.venv\Scripts\python.exe -m seo_agents.main actions --json
+.\.venv\Scripts\python.exe -m seo_agents.main adapter-status
+.\.venv\Scripts\python.exe -m seo_agents.main adapter-status --json
+.\.venv\Scripts\python.exe -m seo_agents.main approve-action gbp-post-YYYY-MM-DD --by MCC --note "Approved in MCC"
+.\.venv\Scripts\python.exe -m seo_agents.main run-action gbp-post-YYYY-MM-DD
+.\.venv\Scripts\python.exe -m seo_agents.main run-action gbp-post-YYYY-MM-DD --live
+```
+
+Live actions require approval first. Dry-runs create run records without changing external systems.
+
+## Website / WordPress Action Adapter
+
+The website action layer is configured for Grizzly WordPress repair work at:
+
+```text
+config/wordpress-sites/grizzly.json
+```
+
+This file stores site structure, public URLs, Contact Form 7 IDs, safe repair patterns, and verification steps. It must not store WordPress credentials.
+
+Current adapter behavior:
+
+- Website actions are routed to `wordpress_browser` in `outputs/action_queue.json`.
+- Dry-runs execute the WordPress adapter planner and do not change the live site.
+- Live runs require owner approval, an authenticated browser session, and a configured `WORDPRESS_ACTION_ADAPTER`.
+- Browser/session credentials stay outside the repo.
+- Contact Form 7 repair can inventory forms, update Mail sender headers, and perform non-submitting public form verification.
+
+Useful commands:
+
+```powershell
+$env:PYTHONPATH='src'
+.\.venv\Scripts\python.exe -m seo_agents.main adapter-status
+.\.venv\Scripts\python.exe -m seo_agents.main actions --json
+.\.venv\Scripts\python.exe -m seo_agents.main run-action task-<id>
+```
+
+One-time WordPress browser auth:
+
+```powershell
+$env:WORDPRESS_BROWSER_SESSION_DIR='C:\Workspace\Shared\Agents\BrowserSessions\grizzly-wordpress'
+node .\scripts\wordpress-action-adapter.mjs --config .\config\wordpress-sites\grizzly.json --auth
+```
+
+Read-only session verification:
+
+```powershell
+$env:WORDPRESS_BROWSER_SESSION_DIR='C:\Workspace\Shared\Agents\BrowserSessions\grizzly-wordpress'
+node .\scripts\wordpress-action-adapter.mjs --config .\config\wordpress-sites\grizzly.json --check-session
+```
+
+Approved live WordPress action flow:
+
+```powershell
+$env:PYTHONPATH='src'
+.\.venv\Scripts\python.exe -m seo_agents.main approve-action task-t002 --by MCC --note "Approved WordPress CF7 repair"
+.\.venv\Scripts\python.exe -m seo_agents.main run-action task-t002 --live
+```
+
+The first proven website repair pattern is documented in:
+
+```text
+knowledge/baselines/wordpress-contact-form-access-2026-06-08.md
+knowledge/baselines/contact-form-repair-success-story-2026-06-08.md
+```
+
+## GBP Posting Adapter
+
+GBP live posting currently uses the Playwright browser adapter at:
+
+```text
+C:\Users\carte\.claude\skills\gbp-poster\driver.mjs
+```
+
+It reads config from:
+
+```text
+C:\Users\carte\.codex\plugins\grizzly-gbp-poster\config.local.json
+```
+
+The active workbook and photos should stay under shared workspace paths, not OneDrive:
+
+```text
+C:\Workspace\Shared\Operations\Grizzly\GBP\Grizzly GBP Schedule.xlsx
+C:\Workspace\Shared\Assets\Media\Grizzly\GBP Post Photos
+```
+
+One-time browser auth:
+
+```powershell
+cd C:\Users\carte\.claude\skills\gbp-poster
+node .\driver.mjs --auth
+```
+
+The adapter refuses live-posting rows that are not `Approved` or are already marked `Posted`. Successful live runs mark the workbook row as `Posted`.

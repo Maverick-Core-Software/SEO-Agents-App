@@ -9,6 +9,31 @@ from pathlib import Path
 from crewai import Agent, Crew, LLM, Process, Task
 from crewai_tools import ScrapeWebsiteTool, SerpApiGoogleSearchTool
 from dotenv import load_dotenv
+from pydantic import BaseModel, Field
+
+
+class TaskCompletion(BaseModel):
+    """One completed (or blocked) execution-queue task. Field names match what
+    actions.py expects in its completion dicts — do not rename casually."""
+
+    task_id: str = Field(description="Task ID from the execution queue, e.g. T001")
+    title: str = ""
+    agent: str = ""
+    completion_status: str = Field(default="", description="COMPLETE, PARTIAL, or BLOCKED")
+    action_taken: str = ""
+    deliverable_location: str = Field(default="", description="File path or place the deliverable lives")
+    deliverable: str = Field(default="", description="The full deliverable text itself, when it is a text artifact")
+    definition_of_done: str = Field(default="", description="YES, NO, or PARTIAL")
+    blocker: str = Field(default="", description="If partial or blocked, what is blocking")
+    owner_signoff_needed: str = Field(default="", description="YES or NO")
+
+
+class CompletionReport(BaseModel):
+    completions: list[TaskCompletion]
+
+
+def structured_completions_enabled() -> bool:
+    return os.getenv("CREWAI_STRUCTURED_COMPLETIONS", "true").lower() in {"1", "true", "yes", "on"}
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -41,6 +66,23 @@ def read_baselines() -> str:
     return "\n\n---\n\n".join(sections)
 
 
+def read_latest_baseline(stem_prefix: str) -> str:
+    """Return content of the most recently modified baseline file matching stem_prefix*.md.
+
+    Using the newest file by mtime means adding an updated baseline (e.g.
+    wordpress-contact-form-access-2026-07-01.md) automatically supersedes the
+    old one — no code change required.
+    """
+    matches = sorted(
+        BASELINE_DIR.glob(f"{stem_prefix}*.md"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    if not matches:
+        return f"[BASELINE NOT FOUND: no file matching {stem_prefix}*.md in {BASELINE_DIR}]"
+    return read_text(matches[0])
+
+
 def read_output(name: str) -> str:
     path = OUTPUT_DIR / name
     if path.exists():
@@ -65,7 +107,10 @@ def _serper_key_valid() -> bool:
 def build_tools() -> list:
     tools = [ScrapeWebsiteTool()]
     if _serper_key_valid():
-        tools.insert(0, SerpApiGoogleSearchTool())
+        try:
+            tools.insert(0, SerpApiGoogleSearchTool())
+        except Exception:
+            pass  # serpapi package version incompatible — scraping only
     return tools
 
 
@@ -81,11 +126,30 @@ def agent_backstory(prompt_file: str) -> str:
 # LLM builders
 # ---------------------------------------------------------------------------
 
+def _llm_kwargs(tier: str) -> dict:
+    """Optional per-tier routing to a local OpenAI-compatible server.
+
+    Set CREWAI_<TIER>_API_BASE (e.g. http://127.0.0.1:8080/v1) to route that
+    tier to local llama-server; the model name still comes from
+    CREWAI_<TIER>_MODEL (use the openai/ prefix, e.g. openai/qwen3.6-35b-a3b).
+    """
+    kwargs: dict = {}
+    api_base = os.getenv(f"CREWAI_{tier}_API_BASE")
+    if api_base:
+        kwargs["base_url"] = api_base
+        kwargs["api_key"] = os.getenv(f"CREWAI_{tier}_API_KEY", "local")
+    max_tokens = os.getenv(f"CREWAI_{tier}_MAX_TOKENS")
+    if max_tokens:
+        kwargs["max_tokens"] = int(max_tokens)
+    return kwargs
+
+
 def build_research_llm() -> LLM:
     load_dotenv()
     return LLM(
         model=os.getenv("CREWAI_RESEARCH_MODEL", "openai/gpt-4o-mini"),
         temperature=float(os.getenv("CREWAI_TEMPERATURE", "0.2")),
+        **_llm_kwargs("RESEARCH"),
     )
 
 
@@ -94,6 +158,7 @@ def build_exec_llm() -> LLM:
     return LLM(
         model=os.getenv("CREWAI_EXEC_MODEL", "openai/gpt-4o"),
         temperature=float(os.getenv("CREWAI_TEMPERATURE", "0.2")),
+        **_llm_kwargs("EXEC"),
     )
 
 
@@ -107,6 +172,8 @@ def build_grizzly_crew(
     audience: str = "",
     region: str = "",
     keywords: str = "",
+    previous_context: str = "",
+    completed_tasks: str = "",
 ) -> Crew:
     research_llm = build_research_llm()
     exec_llm = build_exec_llm()
@@ -126,6 +193,10 @@ def build_grizzly_crew(
         "Baseline knowledge from imported Grizzly reports:\n\n"
         f"{baselines}"
     )
+    if previous_context:
+        shared_context += f"\n\n---\n\n{previous_context}"
+    if completed_tasks:
+        shared_context += f"\n\n---\n\n{completed_tasks}"
 
     # --- Research agents (gpt-4o-mini) ---
     content_agent = Agent(
@@ -203,8 +274,20 @@ def build_grizzly_crew(
     website_task = Task(
         description=(
             f"{shared_context}\n\n"
-            "Review website SEO for the current focus using the baseline report and live/public page evidence "
-            "available through tools. Do not claim access to Search Console, CMS, forms, or rankings unless proven."
+            "Review website SEO for the current focus using the baseline report AND live verification via ScrapeWebsiteTool.\n\n"
+            "STEP 1 — VERIFY COMPLETED TASKS FIRST (mandatory before any new research):\n"
+            "The shared context above includes a 'COMPLETED TASKS FROM PREVIOUS RUNS' section. For each completed task, "
+            "scrape the relevant live page and confirm the work is still in place. Report each as:\n"
+            "  ✅ CONFIRMED LIVE: [task title] — [what you saw on the page]\n"
+            "  ❌ REGRESSION: [task title] — [what is missing or broken now]\n"
+            "Do this check for every completed task before writing any new recommendations.\n\n"
+            "STEP 2 — LIVE VERIFICATION RULE (mandatory for all issues):\n"
+            "For every issue mentioned in the baseline, scrape the relevant live page and confirm the issue still exists "
+            "before recommending it. If the page looks fine, the form works, or the issue is gone — mark it RESOLVED "
+            "and do not recommend it. Only surface issues that are present right now.\n\n"
+            "For conversion issues specifically (contact form, phone visibility, CTAs): scrape the contact page and the "
+            "homepage. Report what you actually see, not what the baseline says to expect.\n\n"
+            "Do not claim access to Search Console, CMS backend, or rankings data unless proven by tool output."
         ),
         expected_output=(
             "A Website SEO Report wrapped in [START:WEBSITE]...[END:WEBSITE] markers, containing: "
@@ -319,10 +402,22 @@ def build_executor_crew() -> Crew:
 
     execution_queue = read_output("grizzly_execution_queue.md")
     manager_plan = read_output("grizzly_local_presence_plan.md")
+    wordpress_handoff = read_latest_baseline("wordpress-contact-form-access")
+    contact_form_story = read_latest_baseline("contact-form-repair-success-story")
+    wordpress_config_path = PROJECT_ROOT / "config" / "wordpress-sites" / "grizzly.json"
+    wordpress_config = read_text(wordpress_config_path) if wordpress_config_path.exists() else "{}"
 
     queue_context = (
-        "You are reading the execution queue cold — treat it as your only source of task instructions.\n\n"
-        f"EXECUTION QUEUE:\n\n{execution_queue}"
+        "You are reading the execution queue plus current system handoff evidence. "
+        "Use the queue for task scope, and use the handoff evidence to avoid stale blockers. "
+        "If a task was previously blocked but current handoff evidence proves access or repair, reflect the current state.\n\n"
+        f"EXECUTION QUEUE:\n\n{execution_queue}\n\n"
+        "CURRENT WORDPRESS SITE CONFIG (no credentials):\n\n"
+        f"```json\n{wordpress_config}\n```\n\n"
+        "CURRENT WORDPRESS CONTACT FORM HANDOFF:\n\n"
+        f"{wordpress_handoff}\n\n"
+        "CONTACT FORM REPAIR SUCCESS STORY:\n\n"
+        f"{contact_form_story}"
     )
 
     # --- Executor agents ---
@@ -373,56 +468,50 @@ def build_executor_crew() -> Crew:
     )
 
     # --- Execution tasks ---
-    content_exec_task = Task(
-        description=(
-            f"{queue_context}\n\n"
-            "Execute all tasks in the queue assigned to: Local Content Production Executor.\n"
-            "For each task: read it, gather evidence using your tools, produce the deliverable, "
-            "and append a COMPLETION REPORT block. If a task is blocked, document the blocker clearly."
-        ),
-        expected_output=(
-            "All content tasks completed with deliverables and structured COMPLETION REPORT blocks. "
-            "Each block includes: Task ID, status (COMPLETE/PARTIAL/BLOCKED), action taken, "
-            "definition of done met (YES/NO/PARTIAL), and owner sign-off needed."
-        ),
-        agent=content_executor,
-        output_file=out("content_completion.md"),
-        markdown=True,
-    )
+    structured = structured_completions_enabled()
 
-    assets_exec_task = Task(
-        description=(
-            f"{queue_context}\n\n"
-            "Execute all tasks in the queue assigned to: Local Presence Assets Executor.\n"
-            "For each task: read it, gather evidence using your tools, produce the deliverable, "
-            "and append a COMPLETION REPORT block. If a task is blocked, document the blocker clearly."
-        ),
-        expected_output=(
-            "All GBP/assets tasks completed with deliverables and structured COMPLETION REPORT blocks. "
-            "Each block includes: Task ID, status (COMPLETE/PARTIAL/BLOCKED), action taken, "
-            "definition of done met (YES/NO/PARTIAL), and owner sign-off needed."
-        ),
-        agent=assets_executor,
-        output_file=out("assets_completion.md"),
-        markdown=True,
-    )
+    def exec_task(agent: Agent, executor_role: str, scope_label: str, stem: str) -> Task:
+        if structured:
+            # Structured JSON: actions.py parses this directly instead of
+            # regex-scraping markdown, so format drift can't drop tasks.
+            return Task(
+                description=(
+                    f"{queue_context}\n\n"
+                    f"Execute all tasks in the queue assigned to: {executor_role}.\n"
+                    "For each task: read it, gather evidence using your tools, produce the deliverable, "
+                    "and record a completion entry. If a task is blocked, document the blocker clearly. "
+                    "Put the full text of any text deliverable in the entry's 'deliverable' field."
+                ),
+                expected_output=(
+                    f"A JSON completion report covering every {scope_label} task in the queue: "
+                    "a 'completions' list with one entry per task containing task_id, title, agent, "
+                    "completion_status (COMPLETE/PARTIAL/BLOCKED), action_taken, deliverable_location, "
+                    "deliverable, definition_of_done (YES/NO/PARTIAL), blocker, owner_signoff_needed (YES/NO)."
+                ),
+                agent=agent,
+                output_json=CompletionReport,
+                output_file=out(f"{stem}.json"),
+            )
+        return Task(
+            description=(
+                f"{queue_context}\n\n"
+                f"Execute all tasks in the queue assigned to: {executor_role}.\n"
+                "For each task: read it, gather evidence using your tools, produce the deliverable, "
+                "and append a COMPLETION REPORT block. If a task is blocked, document the blocker clearly."
+            ),
+            expected_output=(
+                f"All {scope_label} tasks completed with deliverables and structured COMPLETION REPORT blocks. "
+                "Each block includes: Task ID, status (COMPLETE/PARTIAL/BLOCKED), action taken, "
+                "definition of done met (YES/NO/PARTIAL), and owner sign-off needed."
+            ),
+            agent=agent,
+            output_file=out(f"{stem}.md"),
+            markdown=True,
+        )
 
-    technical_exec_task = Task(
-        description=(
-            f"{queue_context}\n\n"
-            "Execute all tasks in the queue assigned to: Technical SEO and CRO Executor.\n"
-            "For each task: read it, gather evidence using your tools, produce the deliverable, "
-            "and append a COMPLETION REPORT block. If a task is blocked, document the blocker clearly."
-        ),
-        expected_output=(
-            "All technical SEO tasks completed with deliverables and structured COMPLETION REPORT blocks. "
-            "Each block includes: Task ID, status (COMPLETE/PARTIAL/BLOCKED), action taken, "
-            "definition of done met (YES/NO/PARTIAL), and owner sign-off needed."
-        ),
-        agent=technical_executor,
-        output_file=out("technical_completion.md"),
-        markdown=True,
-    )
+    content_exec_task = exec_task(content_executor, "Local Content Production Executor", "content", "content_completion")
+    assets_exec_task = exec_task(assets_executor, "Local Presence Assets Executor", "GBP/assets", "assets_completion")
+    technical_exec_task = exec_task(technical_executor, "Technical SEO and CRO Executor", "technical SEO", "technical_completion")
 
     # --- Verification tasks ---
     delegation_verify_task = Task(
@@ -674,7 +763,9 @@ def build_poster_crew(
             f"Build a {days}-day GBP posting schedule starting from {start_date or 'the next business day'}. "
             "CRITICAL: Only assign photos from the AVAILABLE PHOTOS list — never repeat a photo "
             "already in the manifest with status used/archived/posted. "
-            "Use the DAY/DATE/SERVICE/TOPIC/TREND_TIE/HEADLINE/BODY/CAPTION/PHOTO_FILE/CTA/STATUS format. "
+            "Use the DAY/DATE/SERVICE/TOPIC/TREND_TIE/HEADLINE/BODY/CAPTION/PHOTO_FILE/CTA/HASHTAGS/STATUS format. "
+            "HASHTAGS must include 3-5 relevant hashtags (e.g. #DallasElectrician #ElectricalPanel #RowlettTX). "
+            "Always include at least one local hashtag and one service hashtag. "
             "All posts must have STATUS: Needs approval."
         ),
         expected_output=(
@@ -696,6 +787,118 @@ def build_poster_crew(
 
 
 # ---------------------------------------------------------------------------
+# Facebook Schedule Crew  (seo-agents facebook-schedule)
+# ---------------------------------------------------------------------------
+
+def build_facebook_crew(
+    start_date: str = "",
+    days: int = 7,
+) -> Crew:
+    """
+    Generates a 7-day Facebook posting schedule for Grizzly.
+    Tone is punchy and story-driven (not informational like GBP).
+    Every 4th day (days 1, 4, 7) is a VIDEO post with a Gemini video prompt.
+    All other days are PHOTO or TEXT posts with strong hooks and hashtags.
+    """
+    exec_llm = build_exec_llm()
+
+    photo_path = os.getenv("GBP_PHOTO_PATH", r"C:\Workspace\Shared\Assets\Media\Grizzly\GBP Post Photos")
+    photo_dir = Path(photo_path)
+    manifest_path = photo_dir / "gbp-photo-manifest.csv"
+
+    if photo_dir.exists():
+        available = _available_photos(photo_dir, manifest_path)
+        photo_list = "\n".join(available) if available else "No unused photos available."
+    else:
+        available = []
+        photo_list = f"Photo directory not found: {photo_path}"
+
+    content_report = read_output("content_report.md")
+    gbp_report = read_output("gbp_report.md")
+
+    fb_context = (
+        f"START DATE: {start_date or 'Next business day'}\n"
+        f"DAYS TO SCHEDULE: {days}\n\n"
+        "VIDEO DAYS: Days 1, 4, and 7 must be VIDEO posts. All other days are PHOTO (if photos available) or TEXT posts.\n\n"
+        "AVAILABLE PHOTOS (for non-video days):\n"
+        f"{photo_list}\n\n"
+        "CONTENT REPORT:\n\n"
+        f"{content_report}\n\n"
+        "GBP REPORT (includes trend signals):\n\n"
+        f"{gbp_report}"
+    )
+
+    fb_agent = Agent(
+        role="Grizzly Facebook Content Agent",
+        goal=(
+            "Write scroll-stopping Facebook posts for Grizzly Electrical Solutions. "
+            "Posts must grab attention instantly, tell a mini-story, and drive action. "
+            "Use punchy hooks, local references, and emotional angles. Never sound corporate. "
+            "Video posts must include a cinematic, specific Gemini video prompt."
+        ),
+        backstory=(
+            "You are an expert social media copywriter for a local electrical contractor in DFW, Texas. "
+            "You know that Facebook users scroll fast — your job is to STOP the scroll with the first line. "
+            "You write the way homeowners talk, not the way companies talk. "
+            "You use fear, curiosity, humor, and local pride to drive engagement. "
+            "Every post must feel human, urgent, and worth reading all the way through."
+        ),
+        tools=[],
+        llm=exec_llm,
+        verbose=is_verbose(),
+    )
+
+    fb_task = Task(
+        description=(
+            f"{fb_context}\n\n"
+            f"Build a {days}-day Facebook posting schedule starting from {start_date or 'the next business day'}.\n\n"
+            "TONE RULES (mandatory):\n"
+            "- HOOK must be the first line — make it impossible to scroll past (question, bold claim, or shocking stat)\n"
+            "- BODY tells a mini-story (30-80 words). No bullet points. Conversational, local, real.\n"
+            "- CTA is specific: 'Call us today', 'DM us for a free quote', 'Link in bio to book'\n"
+            "- HASHTAGS: 5-8 tags. Always include #DFW or #Dallas, one service tag, one brand tag (#GrizzlyElectrical)\n\n"
+            "VIDEO POST RULES (days 1, 4, 7):\n"
+            "- TYPE must be: video\n"
+            "- VIDEO_PROMPT must be a cinematic description for Gemini Veo: include setting, action, lighting, mood, duration hint\n"
+            "- Example: 'Professional electrician replacing a circuit breaker panel in a modern Dallas home, "
+            "close-up of hands working, warm workshop lighting, confident and skilled, 8 seconds'\n\n"
+            "PHOTO POST RULES (days 2, 3, 5, 6):\n"
+            "- TYPE must be: photo (if photo available from list) or text\n"
+            "- PHOTO_FILE: pick from AVAILABLE PHOTOS list. Leave blank if none available.\n\n"
+            "Use the following format for each post (one per day, separated by ---):\n\n"
+            "DAY: [number]\n"
+            "DATE: [YYYY-MM-DD]\n"
+            "TYPE: [video|photo|text]\n"
+            "SERVICE: [service area this post covers]\n"
+            "HOOK: [first line — the scroll-stopper]\n"
+            "BODY: [the story, 30-80 words]\n"
+            "CTA: [specific call to action]\n"
+            "HASHTAGS: [5-8 hashtags]\n"
+            "PHOTO_FILE: [path or blank]\n"
+            "VIDEO_PROMPT: [Gemini Veo prompt or blank]\n"
+            "STATUS: Needs approval\n\n"
+            "---\n\n"
+            "After all 7 posts, add a CONTENT NOTES section with trend signals used and photo gaps."
+        ),
+        expected_output=(
+            f"A {days}-day Facebook posting schedule with one structured entry per day, "
+            "including hooks, stories, hashtags, and Gemini video prompts for video days."
+        ),
+        agent=fb_agent,
+        output_file=out("facebook_posting_schedule.md"),
+        markdown=True,
+    )
+
+    return Crew(
+        name="Grizzly Facebook Schedule Crew",
+        agents=[fb_agent],
+        tasks=[fb_task],
+        process=Process.sequential,
+        verbose=is_verbose(),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Public alias (backward compat)
 # ---------------------------------------------------------------------------
 
@@ -705,6 +908,8 @@ def build_seo_crew(
     audience: str = "",
     region: str = "",
     keywords: str = "",
+    previous_context: str = "",
+    completed_tasks: str = "",
 ) -> Crew:
     return build_grizzly_crew(
         topic=topic,
@@ -712,4 +917,6 @@ def build_seo_crew(
         audience=audience,
         region=region,
         keywords=keywords,
+        previous_context=previous_context,
+        completed_tasks=completed_tasks,
     )

@@ -55,6 +55,13 @@ For social posts:
 - Platform-specific copy (Facebook ~100 words, Instagram shorter, Nextdoor neighborhood-focused)
 - Label each as draft copy
 
+For review request strategy tasks:
+- Draft 3 ready-to-send review request messages: one for immediately after job completion (SMS format, under 160 characters), one follow-up (48h later, SMS), and one longer email format
+- Tailor the tone to Grizzly's voice: direct, not pushy, mention the specific job type if possible
+- Include a placeholder for the Google review link: [GOOGLE_REVIEW_LINK]
+- Note which job types should trigger the request (panel upgrades, EV charger installs, new construction)
+- Mark the task COMPLETE — drafting is the full definition of done for this agent. Sending and CRM integration is an owner action handled outside this system.
+
 ### Step 5 — Write the Completion Report
 After completing the task, append a completion report block in exactly this format:
 

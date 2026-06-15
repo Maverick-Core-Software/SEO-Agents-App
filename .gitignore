@@ -17,3 +17,7 @@ logs.txt
 .cache/
 .DS_Store
 Thumbs.db
+
+node_modules/
+*.mp4
+*.zip
