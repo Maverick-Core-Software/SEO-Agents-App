@@ -18,6 +18,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createClient } from '@supabase/supabase-js';
+import xlsx from 'xlsx';
 
 const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -40,6 +41,8 @@ const SEO_AGENTS_EXE = process.env.SEO_AGENTS_EXE
   || 'C:\\Users\\carte\\AppData\\Local\\Programs\\Python\\Python312\\Scripts\\seo-agents.exe';
 const PENDING_PROMPT_FILE = path.join(PROJECT_ROOT, 'outputs', 'pending_prompt.json');
 const GBP_POSTER_PATH = 'C:\\Users\\carte\\.claude\\skills\\gbp-poster\\driver.mjs';
+const GBP_WORKBOOK_PATH = process.env.GBP_WORKBOOK_PATH || '';
+const GBP_ARCHIVE_FOLDER = process.env.GBP_ARCHIVE_FOLDER || 'M:\\backups\\gbp-archive';
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
 
 if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
@@ -84,6 +87,87 @@ async function runPhase(runId, phase, exe, args, cwd) {
     const detail = [e.message, stderr, stdout].filter(Boolean).join('\n').slice(0, 1500);
     await log(runId, phase, 'error', detail);
     return { ok: false, stdout, stderr, exitCode, error: detail };
+  }
+}
+
+// ─────────────────────────────────────────────
+// GBP Excel + photo archive helpers
+// ─────────────────────────────────────────────
+
+function excelDateToIso(value) {
+  if (value instanceof Date) return value.toISOString().slice(0, 10);
+  if (typeof value === 'number') {
+    const parsed = xlsx.SSF.parse_date_code(value);
+    if (parsed) return `${parsed.y}-${String(parsed.m).padStart(2, '0')}-${String(parsed.d).padStart(2, '0')}`;
+  }
+  return String(value || '').slice(0, 10);
+}
+
+// Called after every driver.mjs run.
+// exit 0 (verified)   → mark Posted=TRUE in Excel + move photo to archive
+// exit 3 (unverified) → mark Posted=TRUE in Excel only, leave photo in place
+async function markGbpPostedAndArchive(postDate, exitCode, runId) {
+  if (exitCode !== 0 && exitCode !== 3) return;
+  if (!GBP_WORKBOOK_PATH) {
+    console.log('[mav-bridge][gbp] GBP_WORKBOOK_PATH not set — skipping Excel update');
+    return;
+  }
+  if (!fs.existsSync(GBP_WORKBOOK_PATH)) {
+    await log(runId, 'gbp', 'warn', `GBP workbook not found: ${GBP_WORKBOOK_PATH}`);
+    return;
+  }
+
+  try {
+    const workbook = xlsx.readFile(GBP_WORKBOOK_PATH);
+    const sheetName = workbook.SheetNames.includes('Posts') ? 'Posts' : workbook.SheetNames[0];
+    const sheet = workbook.Sheets[sheetName];
+    const rows = xlsx.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+    if (!rows.length) return;
+
+    const header = rows[0].map(h => String(h).trim());
+    const dateCol = header.findIndex(h => h.toLowerCase() === 'date');
+    const postedCol = header.findIndex(h => h.toLowerCase() === 'posted');
+    const photoCol = header.findIndex(h =>
+      h === 'AssetIdOrDescription' || h === 'Related Picture' || h.toLowerCase().includes('asset')
+    );
+
+    if (dateCol === -1) {
+      await log(runId, 'gbp', 'warn', 'GBP workbook: Date column not found — check sheet column names');
+      return;
+    }
+
+    let targetRow = -1;
+    let photoPath = '';
+    for (let i = 1; i < rows.length; i++) {
+      if (excelDateToIso(rows[i][dateCol]) === postDate) {
+        targetRow = i;
+        if (photoCol >= 0) photoPath = String(rows[i][photoCol] || '').trim();
+        break;
+      }
+    }
+
+    if (targetRow === -1) {
+      await log(runId, 'gbp', 'warn', `GBP workbook: no row found for ${postDate}`);
+      return;
+    }
+
+    if (postedCol >= 0) {
+      sheet[xlsx.utils.encode_cell({ r: targetRow, c: postedCol })] = { t: 'b', v: true };
+      xlsx.writeFile(workbook, GBP_WORKBOOK_PATH);
+      await log(runId, 'gbp', 'info', `Excel Posted=TRUE set for ${postDate}`);
+    }
+
+    if (exitCode === 0 && photoPath && fs.existsSync(photoPath)) {
+      const monthDir = path.join(GBP_ARCHIVE_FOLDER, postDate.slice(0, 7));
+      fs.mkdirSync(monthDir, { recursive: true });
+      const dest = path.join(monthDir, path.basename(photoPath));
+      fs.renameSync(photoPath, dest);
+      await log(runId, 'gbp', 'info', `Photo archived: ${path.basename(photoPath)} → ${monthDir}`);
+    } else if (exitCode === 3) {
+      await log(runId, 'gbp', 'info', `Photo kept in place (unverified post) — verify manually then re-run or archive manually: ${postDate}`);
+    }
+  } catch (e) {
+    await log(runId, 'gbp', 'warn', `markGbpPostedAndArchive error: ${e.message}`);
   }
 }
 
@@ -289,6 +373,7 @@ async function executeApprovedRun(run) {
               .update({ status: 'posted', posted_at: new Date().toISOString() })
               .eq('id', day1Post.id);
           }
+          await markGbpPostedAndArchive(day1Post.post_date, result.exitCode, runId);
         } else {
           await supabase.from('weekly_posts')
             .update({ status: 'error', error: result.error })
@@ -410,6 +495,7 @@ async function poll() {
             .update({ status: 'posted', posted_at: new Date().toISOString(), platform_post_id: parsedUrl })
             .eq('id', post.id);
           console.log(`[mav-bridge][gbp-daily] Posted ${post.post_date} (exit ${result.exitCode})`);
+          await markGbpPostedAndArchive(post.post_date, result.exitCode, post.run_id);
         } else {
           await supabase.from('weekly_posts')
             .update({ status: 'error', error: (result.stderr || result.error || 'GBP poster failed').slice(0, 300) })
