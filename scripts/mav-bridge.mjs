@@ -343,7 +343,18 @@ async function executeApprovedRun(run) {
       .update({ status: 'posting' })
       .eq('run_id', runId).eq('platform', 'gbp').eq('status', 'approved');
 
-    // First, sync posts to Excel workbook
+    // Match photos from Raw pool to post topics before syncing to Excel
+    const PHOTO_MATCHER_PATH = path.join(PROJECT_ROOT, 'scripts', 'photo-matcher.mjs');
+    if (fs.existsSync(PHOTO_MATCHER_PATH)) {
+      const matchResult = await runPhase(runId, 'gbp', 'node', [PHOTO_MATCHER_PATH], PROJECT_ROOT);
+      if (!matchResult.ok) {
+        await log(runId, 'gbp', 'warn', `photo-matcher failed (continuing): ${matchResult.error}`);
+      } else {
+        await log(runId, 'gbp', 'info', 'Photo matching complete');
+      }
+    }
+
+    // Sync posts to Excel workbook (reads updated PHOTO_FILE paths from schedule)
     const syncResult = await runPhase(runId, 'gbp', SEO_AGENTS_EXE, ['sync-gbp-schedule'], PROJECT_ROOT);
     if (!syncResult.ok) {
       await log(runId, 'gbp', 'error', `sync-gbp-schedule failed: ${syncResult.error}`);
