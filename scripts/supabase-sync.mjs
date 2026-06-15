@@ -57,6 +57,11 @@ function readFile(filename) {
 // Parse facebook_posting_schedule.md
 // ─────────────────────────────────────────────
 
+function stripMd(str) {
+  // Remove **bold** markers and trim
+  return (str || '').replace(/\*\*/g, '').trim();
+}
+
 function parseFacebookSchedule(text) {
   if (!text) return [];
   // Strip leading ```markdown code fence the LLM sometimes adds
@@ -66,18 +71,18 @@ function parseFacebookSchedule(text) {
     const get = key => {
       // Handle both plain `KEY: value` and bold `**KEY: value**` formats
       const m = block.match(new RegExp(`^\\*{0,2}${key}:\\*{0,2}\\s*(.+?)\\s*\\*{0,2}\\s*$`, 'm'));
-      return m ? m[1].trim() : '';
+      return m ? stripMd(m[1]) : '';
     };
     return {
       platform: 'facebook',
       day: parseInt(get('DAY')) || 0,
       post_date: get('DATE'),
       type: get('TYPE').toLowerCase(),
-      service: get('SERVICE'),
-      hook: get('HOOK'),
-      body: get('BODY'),
-      cta: get('CTA'),
-      hashtags: get('HASHTAGS'),
+      service: stripMd(get('SERVICE')),
+      hook: stripMd(get('HOOK')),
+      body: stripMd(get('BODY')),
+      cta: stripMd(get('CTA')),
+      hashtags: get('HASHTAGS') || null,
       photo_file: get('PHOTO_FILE') || null,
       video_prompt: get('VIDEO_PROMPT') || null,
       status: 'pending_approval',
@@ -95,7 +100,7 @@ function parseGbpSchedule(text) {
   return blocks.map(block => {
     const get = key => {
       const m = block.match(new RegExp(`^\\*{0,2}${key}:\\*{0,2}\\s*(.+)$`, 'm'));
-      return m ? m[1].replace(/\*{0,2}$/, '').trim() : '';
+      return m ? stripMd(m[1]) : '';
     };
     return {
       platform: 'gbp',

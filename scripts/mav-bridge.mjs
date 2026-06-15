@@ -113,15 +113,49 @@ async function executeApprovedRun(run) {
       path.join(PROJECT_ROOT, 'scripts', 'facebook-post-week.mjs'),
     ], PROJECT_ROOT);
 
-    const status = result.ok ? 'posted' : 'error';
-    await supabase.from('weekly_posts')
-      .update({ status, error: result.ok ? null : result.error, posted_at: new Date().toISOString() })
-      .eq('run_id', runId).eq('platform', 'facebook').eq('status', 'posting');
+    if (result.ok) {
+      // Parse per-post results from JSON output so Day 1 → 'posted', Days 2-7 → 'scheduled'
+      try {
+        const parsed = JSON.parse((result.stdout || '').trim());
+        const postResults = parsed?.results || [];
+        const dayMap = new Map(postResults.map(r => [r.day, r]));
 
-    if (!result.ok) allOk = false;
+        for (const fbPost of fbPosts) {
+          const r = dayMap.get(fbPost.day);
+          if (r) {
+            const postStatus = r.status === 'posted' ? 'posted'
+              : r.status === 'scheduled' ? 'scheduled'
+              : 'error';
+            await supabase.from('weekly_posts')
+              .update({
+                status: postStatus,
+                error: r.status === 'error' ? (r.message || 'Unknown error') : null,
+                posted_at: new Date().toISOString(),
+                platform_post_id: r.id || null,
+              })
+              .eq('id', fbPost.id);
+          }
+        }
+        // Fallback: catch any still-in-posting rows (unmapped days)
+        await supabase.from('weekly_posts')
+          .update({ status: 'posted', posted_at: new Date().toISOString() })
+          .eq('run_id', runId).eq('platform', 'facebook').eq('status', 'posting');
+      } catch (parseErr) {
+        await log(runId, 'facebook', 'warn', `Could not parse per-post results: ${parseErr.message} — marking all as posted`);
+        await supabase.from('weekly_posts')
+          .update({ status: 'posted', posted_at: new Date().toISOString() })
+          .eq('run_id', runId).eq('platform', 'facebook').eq('status', 'posting');
+      }
+    } else {
+      await supabase.from('weekly_posts')
+        .update({ status: 'error', error: result.error })
+        .eq('run_id', runId).eq('platform', 'facebook').eq('status', 'posting');
+      allOk = false;
+    }
   }
 
   // ── 2. GBP posts ───────────────────────────────────────────────
+  // Writes content to Excel workbook, then posts each date to GBP via Playwright driver.
   const { data: gbpPosts } = await supabase
     .from('weekly_posts')
     .select('*')
@@ -135,37 +169,65 @@ async function executeApprovedRun(run) {
       .update({ status: 'posting' })
       .eq('run_id', runId).eq('platform', 'gbp').eq('status', 'approved');
 
-    const result = await runPhase(runId, 'gbp', SEO_AGENTS_EXE, ['sync-gbp-schedule'], PROJECT_ROOT);
-
-    const status = result.ok ? 'posted' : 'error';
-    await supabase.from('weekly_posts')
-      .update({ status, error: result.ok ? null : result.error, posted_at: new Date().toISOString() })
-      .eq('run_id', runId).eq('platform', 'gbp').eq('status', 'posting');
-
-    if (!result.ok) allOk = false;
+    // First, sync posts to Excel workbook
+    const syncResult = await runPhase(runId, 'gbp', SEO_AGENTS_EXE, ['sync-gbp-schedule'], PROJECT_ROOT);
+    if (!syncResult.ok) {
+      await log(runId, 'gbp', 'error', `sync-gbp-schedule failed: ${syncResult.error}`);
+      await supabase.from('weekly_posts')
+        .update({ status: 'error', error: syncResult.error })
+        .eq('run_id', runId).eq('platform', 'gbp').eq('status', 'posting');
+      allOk = false;
+    } else {
+      // Then post each GBP post via Playwright driver
+      const GBP_POSTER_PATH = 'C:\\Users\\carte\\.claude\\skills\\gbp-poster\\driver.mjs';
+      for (const post of gbpPosts) {
+        const postDate = post.post_date;
+        await log(runId, 'gbp', 'info', `Posting GBP ${postDate}...`);
+        const result = await runPhase(runId, 'gbp', 'node', [GBP_POSTER_PATH, '--date', postDate], PROJECT_ROOT);
+        if (result.ok) {
+          try {
+            const lastLine = result.stdout.trim().split('\n').filter(l => l.startsWith('{')).pop();
+            const parsed = lastLine ? JSON.parse(lastLine) : { result: 'unknown' };
+            const postStatus = parsed.result === 'posted' ? 'posted' : 'error';
+            const errorMsg = postStatus === 'error' ? (parsed.error || 'Unknown error') : null;
+            await supabase.from('weekly_posts')
+              .update({
+                status: postStatus,
+                error: errorMsg,
+                posted_at: new Date().toISOString(),
+              })
+              .eq('id', post.id);
+            await log(runId, 'gbp', 'info', `GBP ${postDate}: ${postStatus}`);
+          } catch (parseErr) {
+            await log(runId, 'gbp', 'warn', `Could not parse GBP result for ${postDate}: ${parseErr.message}`);
+            await supabase.from('weekly_posts')
+              .update({ status: 'posted', posted_at: new Date().toISOString() })
+              .eq('id', post.id);
+          }
+        } else {
+          await supabase.from('weekly_posts')
+            .update({ status: 'error', error: result.error })
+            .eq('id', post.id);
+          await log(runId, 'gbp', 'error', `GBP ${postDate} failed: ${result.error}`);
+          allOk = false;
+        }
+      }
+    }
   }
 
-  // ── 3. Website tasks (approved, ordered by priority) ──────────
+  // ── 3. Website tasks ───────────────────────────────────────────
+  // website-task command was removed from seo-agents.exe; tasks are reviewed
+  // and executed manually through the dashboard action queue.
   const { data: tasks } = await supabase
     .from('website_tasks')
     .select('*')
     .eq('run_id', runId)
     .eq('status', 'approved')
-    .order('priority'); // critical first
+    .order('priority');
 
   if (tasks?.length) {
-    await log(runId, 'website', 'info', `Executing ${tasks.length} website tasks`);
-    for (const task of tasks) {
-      await supabase.from('website_tasks').update({ status: 'executing' }).eq('id', task.id);
-      const result = await runPhase(runId, 'website', SEO_AGENTS_EXE,
-        ['website-task', '--task-id', task.id], PROJECT_ROOT);
-      await supabase.from('website_tasks').update({
-        status: result.ok ? 'done' : 'error',
-        error: result.ok ? null : result.error,
-        completed_at: new Date().toISOString(),
-      }).eq('id', task.id);
-      if (!result.ok) allOk = false;
-    }
+    await log(runId, 'website', 'info', `${tasks.length} website task(s) need manual review — use the action queue in the dashboard`);
+    // Leave tasks as 'approved' so the dashboard action queue can surface them
   }
 
   // ── Mark run done ──────────────────────────────────────────────
@@ -348,18 +410,28 @@ async function handleHttpRequest(req, res) {
     if (!actionId) { sendJsonHttp(res, 400, { error: 'actionId required' }); return; }
 
     // Try seo_run first
-    const { data: run } = await supabase.from('seo_runs')
-      .update({ status: 'approved', approved_by: 'MCC', approved_at: new Date().toISOString(), note: note || null })
+    const { data: run, error: runErr } = await supabase.from('seo_runs')
+      .update({ status: 'approved', approved_at: new Date().toISOString() })
       .eq('id', actionId).eq('status', 'pending_approval')
       .select().maybeSingle();
+    if (runErr) { sendJsonHttp(res, 500, { error: runErr.message }); return; }
 
-    if (run) { sendJsonHttp(res, 200, { ok: true, type: 'seo_run', id: run.id }); return; }
+    if (run) {
+      // Auto-approve all pending weekly_posts for this run so executeApprovedRun finds them
+      await supabase.from('weekly_posts')
+        .update({ status: 'approved' })
+        .eq('run_id', run.id)
+        .eq('status', 'pending_approval');
+      sendJsonHttp(res, 200, { ok: true, type: 'seo_run', id: run.id });
+      return;
+    }
 
     // Try website_task
-    const { data: task } = await supabase.from('website_tasks')
+    const { data: task, error: taskErr } = await supabase.from('website_tasks')
       .update({ status: 'approved', approved_at: new Date().toISOString() })
       .eq('id', actionId)
       .select().maybeSingle();
+    if (taskErr) { sendJsonHttp(res, 500, { error: taskErr.message }); return; }
 
     if (task) { sendJsonHttp(res, 200, { ok: true, type: 'website_task', id: task.id }); return; }
 
@@ -377,10 +449,58 @@ async function handleHttpRequest(req, res) {
     const { data: run } = await supabase.from('seo_runs')
       .update({ status: 'approved' })
       .eq('id', actionId)
+      .eq('status', 'pending_approval')
       .select().maybeSingle();
 
-    if (!run) { sendJsonHttp(res, 404, { error: 'Run not found' }); return; }
+    if (!run) { sendJsonHttp(res, 404, { error: 'Run not found or already executed' }); return; }
+
+    // Also approve associated weekly_posts
+    await supabase.from('weekly_posts')
+      .update({ status: 'approved' })
+      .eq('run_id', run.id)
+      .eq('status', 'pending_approval');
     sendJsonHttp(res, 200, { ok: true, mode: 'live', runId: run.id, message: 'Approved — bridge will execute on next poll.' });
+    return;
+  }
+
+  // ── GET /seo/posts/week ──────────────────────
+  // Returns weekly_posts for the most recent seo_run (any status).
+  // Uses run-based anchor so posts are always visible regardless of when
+  // approval happened relative to the calendar week.
+  if (method === 'GET' && url.pathname === '/seo/posts/week') {
+    const { data: latestRun } = await supabase
+      .from('seo_runs')
+      .select('id, week_of, created_at, status')
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (!latestRun) {
+      sendJsonHttp(res, 200, { week_start: null, week_end: null, facebook: [], gbp: [] });
+      return;
+    }
+
+    const { data: posts, error } = await supabase
+      .from('weekly_posts')
+      .select('id,run_id,platform,day,post_date,type,service,hook,body,cta,photo_file,status,posted_at,platform_post_id,error')
+      .eq('run_id', latestRun.id)
+      .order('post_date')
+      .order('platform');
+
+    if (error) { sendJsonHttp(res, 500, { error: error.message }); return; }
+
+    const allPosts = posts || [];
+    const dates = allPosts.map(p => p.post_date).filter(Boolean).sort();
+    const facebook = allPosts.filter(p => p.platform === 'facebook');
+    const gbp = allPosts.filter(p => p.platform === 'gbp');
+    sendJsonHttp(res, 200, {
+      run_id: latestRun.id,
+      run_status: latestRun.status,
+      week_start: dates[0] || null,
+      week_end: dates[dates.length - 1] || null,
+      facebook,
+      gbp,
+    });
     return;
   }
 

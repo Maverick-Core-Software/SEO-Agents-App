@@ -74,14 +74,18 @@ function parseArgs(argv) {
 // Schedule file parser
 // ---------------------------------------------------------------------------
 
+function stripMd(str) {
+  return (str || '').replace(/\*\*/g, '').trim();
+}
+
 function parseSchedule(filePath) {
   const text = fs.readFileSync(filePath, 'utf8');
   const blocks = text.split(/\n\s*---\s*\n/).filter(b => b.includes('DAY:'));
   return blocks.map(block => {
     const get = (key) => {
       // Handles both plain `KEY: value` and bold markdown `**KEY: value**`
-      const m = block.match(new RegExp(`^\\*{0,2}${key}:\\s*(.*?)\\*{0,2}\\s*$`, 'm'));
-      return m ? m[1].trim() : '';
+      const m = block.match(new RegExp(`^\\*{0,2}${key}:\\s*(.*?)\\s*$`, 'm'));
+      return m ? stripMd(m[1]) : '';
     };
     return {
       day: parseInt(get('DAY')) || 0,
