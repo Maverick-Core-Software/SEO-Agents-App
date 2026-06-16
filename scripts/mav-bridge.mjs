@@ -240,26 +240,20 @@ async function executeApprovedRun(run) {
   const { id: runId } = run;
   await log(runId, 'bridge', 'info', `Executing approved run ${runId}`);
 
-  // ── Step 0: Generate Day 1 video prompt and wait for user approval ──
+  // ── Step 0: Generate Day 1 video prompt and write to schedule immediately ──
   const scheduleFile = path.join(PROJECT_ROOT, 'outputs', 'facebook_posting_schedule.md');
   if (fs.existsSync(scheduleFile)) {
-    await log(runId, 'bridge', 'info', 'Generating Day 1 video prompt via GPT-4o-mini...');
-    const prompt = await generateDay1VideoPrompt(scheduleFile);
-    if (prompt) {
-      writePendingPrompt(runId, prompt);
-      await supabase.from('seo_runs').update({ status: 'awaiting_prompt' }).eq('id', runId);
-      await log(runId, 'bridge', 'info', 'Waiting for video prompt approval in dashboard...');
-      const approvedPrompt = await waitForPromptApproval(runId);
-      if (approvedPrompt) {
-        // Write approved prompt back to markdown
+    try {
+      await log(runId, 'bridge', 'info', 'Generating Day 1 video prompt via GPT-4o-mini...');
+      const prompt = await generateDay1VideoPrompt(scheduleFile);
+      if (prompt) {
         const text = fs.readFileSync(scheduleFile, 'utf8');
-        const updated = text.replace(/^(\*{0,2}VIDEO_PROMPT:\*{0,2})\s*.*?$/m, `VIDEO_PROMPT: ${approvedPrompt}`);
+        const updated = text.replace(/^(\*{0,2}VIDEO_PROMPT:\*{0,2})\s*.*?$/m, `VIDEO_PROMPT: ${prompt}`);
         fs.writeFileSync(scheduleFile, updated, 'utf8');
-        await log(runId, 'bridge', 'info', 'Prompt approved and written to schedule.');
-      } else {
-        await log(runId, 'bridge', 'warn', 'Prompt approval timed out — using pre-generated prompt.');
+        await log(runId, 'bridge', 'info', 'Video prompt written to schedule — proceeding to post.');
       }
-      clearPendingPrompt();
+    } catch (e) {
+      await log(runId, 'bridge', 'warn', `Video prompt generation failed (${e.message.slice(0, 120)}) — continuing without it.`);
     }
   }
 
