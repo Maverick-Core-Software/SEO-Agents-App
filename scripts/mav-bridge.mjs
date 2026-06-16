@@ -227,8 +227,8 @@ function clearPendingPrompt() {
 }
 
 async function waitForPromptApproval(runId) {
-  // Poll every 5s for up to 30 minutes
-  for (let i = 0; i < 360; i++) {
+  // Poll every 5s for up to 5 minutes, then auto-proceed
+  for (let i = 0; i < 60; i++) {
     await new Promise(r => setTimeout(r, 5000));
     const state = readPendingPrompt();
     if (state?.runId === runId && state?.approved) return state.approvedPrompt;
@@ -240,17 +240,27 @@ async function executeApprovedRun(run) {
   const { id: runId } = run;
   await log(runId, 'bridge', 'info', `Executing approved run ${runId}`);
 
-  // ── Step 0: Generate Day 1 video prompt and write to schedule immediately ──
+  // ── Step 0: Generate Day 1 video prompt, surface for approval (5-min window) ──
   const scheduleFile = path.join(PROJECT_ROOT, 'outputs', 'facebook_posting_schedule.md');
   if (fs.existsSync(scheduleFile)) {
     try {
       await log(runId, 'bridge', 'info', 'Generating Day 1 video prompt via GPT-4o-mini...');
       const prompt = await generateDay1VideoPrompt(scheduleFile);
       if (prompt) {
+        writePendingPrompt(runId, prompt);
+        await supabase.from('seo_runs').update({ status: 'awaiting_prompt' }).eq('id', runId);
+        await log(runId, 'bridge', 'info', 'Video prompt ready — waiting up to 5 minutes for approval in dashboard...');
+        const approvedPrompt = await waitForPromptApproval(runId);
+        const finalPrompt = approvedPrompt || prompt;
         const text = fs.readFileSync(scheduleFile, 'utf8');
-        const updated = text.replace(/^(\*{0,2}VIDEO_PROMPT:\*{0,2})\s*.*?$/m, `VIDEO_PROMPT: ${prompt}`);
+        const updated = text.replace(/^(\*{0,2}VIDEO_PROMPT:\*{0,2})\s*.*?$/m, `VIDEO_PROMPT: ${finalPrompt}`);
         fs.writeFileSync(scheduleFile, updated, 'utf8');
-        await log(runId, 'bridge', 'info', 'Video prompt written to schedule — proceeding to post.');
+        if (approvedPrompt) {
+          await log(runId, 'bridge', 'info', 'Approved prompt written to schedule.');
+        } else {
+          await log(runId, 'bridge', 'warn', 'Approval timed out — using generated prompt and proceeding.');
+        }
+        clearPendingPrompt();
       }
     } catch (e) {
       await log(runId, 'bridge', 'warn', `Video prompt generation failed (${e.message.slice(0, 120)}) — continuing without it.`);

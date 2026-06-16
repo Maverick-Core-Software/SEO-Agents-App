@@ -163,9 +163,13 @@ function addBrandedEndCard(rawPath, finalPath) {
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
 
 async function generateCinematicPrompt(post) {
-  if (!OPENAI_API_KEY) {
-    console.error('  No OPENAI_API_KEY — using schedule VIDEO_PROMPT as-is');
+  if (post.video_prompt) {
+    console.error(`  Using approved VIDEO_PROMPT from schedule.`);
     return post.video_prompt;
+  }
+  if (!OPENAI_API_KEY) {
+    console.error('  No OPENAI_API_KEY and no schedule prompt — skipping video.');
+    return null;
   }
   const caption = buildCaption(post);
   console.error(`  Generating cinematic Veo 3 prompt via GPT-4o-mini...`);
