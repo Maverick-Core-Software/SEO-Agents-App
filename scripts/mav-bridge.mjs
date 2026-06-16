@@ -227,8 +227,8 @@ function clearPendingPrompt() {
 }
 
 async function waitForPromptApproval(runId) {
-  // Poll every 5s for up to 30 minutes
-  for (let i = 0; i < 360; i++) {
+  // Poll every 5s for up to 5 minutes, then auto-proceed
+  for (let i = 0; i < 60; i++) {
     await new Promise(r => setTimeout(r, 5000));
     const state = readPendingPrompt();
     if (state?.runId === runId && state?.approved) return state.approvedPrompt;
@@ -240,26 +240,30 @@ async function executeApprovedRun(run) {
   const { id: runId } = run;
   await log(runId, 'bridge', 'info', `Executing approved run ${runId}`);
 
-  // ── Step 0: Generate Day 1 video prompt and wait for user approval ──
+  // ── Step 0: Generate Day 1 video prompt, surface for approval (5-min window) ──
   const scheduleFile = path.join(PROJECT_ROOT, 'outputs', 'facebook_posting_schedule.md');
   if (fs.existsSync(scheduleFile)) {
-    await log(runId, 'bridge', 'info', 'Generating Day 1 video prompt via GPT-4o-mini...');
-    const prompt = await generateDay1VideoPrompt(scheduleFile);
-    if (prompt) {
-      writePendingPrompt(runId, prompt);
-      await supabase.from('seo_runs').update({ status: 'awaiting_prompt' }).eq('id', runId);
-      await log(runId, 'bridge', 'info', 'Waiting for video prompt approval in dashboard...');
-      const approvedPrompt = await waitForPromptApproval(runId);
-      if (approvedPrompt) {
-        // Write approved prompt back to markdown
+    try {
+      await log(runId, 'bridge', 'info', 'Generating Day 1 video prompt via GPT-4o-mini...');
+      const prompt = await generateDay1VideoPrompt(scheduleFile);
+      if (prompt) {
+        writePendingPrompt(runId, prompt);
+        await supabase.from('seo_runs').update({ status: 'awaiting_prompt' }).eq('id', runId);
+        await log(runId, 'bridge', 'info', 'Video prompt ready — waiting up to 5 minutes for approval in dashboard...');
+        const approvedPrompt = await waitForPromptApproval(runId);
+        const finalPrompt = approvedPrompt || prompt;
         const text = fs.readFileSync(scheduleFile, 'utf8');
-        const updated = text.replace(/^(\*{0,2}VIDEO_PROMPT:\*{0,2})\s*.*?$/m, `VIDEO_PROMPT: ${approvedPrompt}`);
+        const updated = text.replace(/^(\*{0,2}VIDEO_PROMPT:\*{0,2})\s*.*?$/m, `VIDEO_PROMPT: ${finalPrompt}`);
         fs.writeFileSync(scheduleFile, updated, 'utf8');
-        await log(runId, 'bridge', 'info', 'Prompt approved and written to schedule.');
-      } else {
-        await log(runId, 'bridge', 'warn', 'Prompt approval timed out — using pre-generated prompt.');
+        if (approvedPrompt) {
+          await log(runId, 'bridge', 'info', 'Approved prompt written to schedule.');
+        } else {
+          await log(runId, 'bridge', 'warn', 'Approval timed out — using generated prompt and proceeding.');
+        }
+        clearPendingPrompt();
       }
-      clearPendingPrompt();
+    } catch (e) {
+      await log(runId, 'bridge', 'warn', `Video prompt generation failed (${e.message.slice(0, 120)}) — continuing without it.`);
     }
   }
 
@@ -727,6 +731,27 @@ async function handleHttpRequest(req, res) {
     if (!state) { sendJsonHttp(res, 404, { error: 'No pending prompt' }); return; }
     fs.writeFileSync(PENDING_PROMPT_FILE, JSON.stringify({ ...state, approved: true, approvedPrompt: prompt }));
     sendJsonHttp(res, 200, { ok: true });
+    return;
+  }
+
+  // ── POST /seo/facebook/new-schedule ─────────
+  if (method === 'POST' && url.pathname === '/seo/facebook/new-schedule') {
+    const { days = 7, startDate = '' } = await readBody(req);
+    const safeDays = Math.max(1, Math.min(14, Number(days) || 7));
+    const args = ['facebook-schedule', '--days', String(safeDays)];
+    if (startDate) args.push('--start-date', startDate);
+    await log(null, 'bridge', 'info', `Kicking off facebook-schedule: days=${safeDays}${startDate ? ` start=${startDate}` : ''}`);
+    execFileAsync(SEO_AGENTS_EXE, args, {
+      cwd: PROJECT_ROOT,
+      timeout: 30 * 60 * 1000,
+      encoding: 'utf8',
+      windowsHide: true,
+    }).then(({ stdout }) => {
+      log(null, 'bridge', 'info', `facebook-schedule complete: ${stdout.slice(0, 400)}`);
+    }).catch(e => {
+      log(null, 'bridge', 'error', `facebook-schedule failed: ${e.message.slice(0, 400)}`);
+    });
+    sendJsonHttp(res, 200, { ok: true, message: `Schedule generation started (${safeDays} days). Check back in a few minutes.` });
     return;
   }
 

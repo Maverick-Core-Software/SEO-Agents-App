@@ -163,9 +163,13 @@ function addBrandedEndCard(rawPath, finalPath) {
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
 
 async function generateCinematicPrompt(post) {
-  if (!OPENAI_API_KEY) {
-    console.error('  No OPENAI_API_KEY — using schedule VIDEO_PROMPT as-is');
+  if (post.video_prompt) {
+    console.error(`  Using approved VIDEO_PROMPT from schedule.`);
     return post.video_prompt;
+  }
+  if (!OPENAI_API_KEY) {
+    console.error('  No OPENAI_API_KEY and no schedule prompt — skipping video.');
+    return null;
   }
   const caption = buildCaption(post);
   console.error(`  Generating cinematic Veo 3 prompt via GPT-4o-mini...`);
@@ -178,17 +182,7 @@ async function generateCinematicPrompt(post) {
       messages: [
         {
           role: 'system',
-          content: `You are a video director writing Veo 3 generation prompts for Grizzly Electrical Solutions, a licensed residential and commercial electrician in DFW, Texas.
-
-Write a single vivid, cinematic prompt (100-140 words) that:
-- Opens with an establishing shot that sets a relatable scene (home, family, business)
-- Builds tension around an electrical problem (flickering lights, sparking outlet, dead panel, etc.)
-- Includes a dramatic visual moment — arcing breakers, sparks, smoke, worried faces, a professional electrician arriving
-- Feels like a mini movie trailer — emotional, urgent, real
-- Matches the service and caption topic provided
-- Ends with: Photorealistic, cinematic, 4K, dramatic atmosphere, no text overlays.
-
-Output the prompt only. No explanation, no quotes, no title.`,
+          content: `You are a video director writing Veo 3 generation prompts for Grizzly Electrical Solutions, a licensed residential and commercial electrician in DFW, Texas.\n\nWrite a single vivid, cinematic prompt (100-140 words) that:\n- Opens with an establishing shot that sets a relatable scene (home, family, business)\n- Builds tension around an electrical problem (flickering lights, sparking outlet, dead panel, etc.)\n- Includes a dramatic visual moment — arcing breakers, sparks, smoke, worried faces, a professional electrician arriving\n- Feels like a mini movie trailer — emotional, urgent, real\n- Matches the service and caption topic provided\n- Ends with: Photorealistic, cinematic, 4K, dramatic atmosphere, no text overlays.\n\nOutput the prompt only. No explanation, no quotes, no title.`,
         },
         {
           role: 'user',
@@ -237,11 +231,18 @@ async function generateAllVideos(posts) {
       continue;
     }
     console.error(`\n  Day ${post.day}: ${post.service}`);
-    const prompt = await generateCinematicPrompt(post);
-    if (!prompt) throw new Error(`Day ${post.day}: no video prompt available`);
-    console.error(`  Day ${post.day}: generating video...`);
-    generateGeminiVideo(prompt, videoPath);
-    console.error(`  Day ${post.day}: saved ${path.basename(videoPath)}`);
+    try {
+      const prompt = await generateCinematicPrompt(post);
+      if (!prompt) {
+        console.error(`  Day ${post.day}: no video prompt available — will post without video`);
+        continue;
+      }
+      console.error(`  Day ${post.day}: generating video...`);
+      generateGeminiVideo(prompt, videoPath);
+      console.error(`  Day ${post.day}: saved ${path.basename(videoPath)}`);
+    } catch (e) {
+      console.error(`  Day ${post.day}: video generation failed (${e.message.slice(0, 120)}) — will post without video`);
+    }
   }
   console.error('\nAll videos ready.\n');
 }
