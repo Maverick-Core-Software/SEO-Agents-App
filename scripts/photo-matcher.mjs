@@ -60,7 +60,8 @@ function parseSchedule(text) {
   const blocks = text.split(/^---$/m).map(b => b.trim()).filter(Boolean);
   for (const block of blocks) {
     const get = (key) => {
-      const m = block.match(new RegExp(`^${key}:\\s*(.+)$`, 'im'));
+      // Handle both plain `KEY: value` and bold `**KEY:** value` markdown formats
+      const m = block.match(new RegExp(`^\\*{0,2}${key}:\\*{0,2}\\s*(.+?)\\s*$`, 'im'));
       return m ? m[1].trim() : '';
     };
     const date = get('DATE');
@@ -90,11 +91,11 @@ function updateSchedulePhotoFile(text, date, newPhotoFile) {
     if (line.trim() === '---') {
       inTargetBlock = false;
     }
-    if (/^DATE:\s*/i.test(line) && line.includes(date)) {
+    if (/^\*{0,2}DATE:\*{0,2}\s*/i.test(line) && line.includes(date)) {
       inTargetBlock = true;
     }
-    if (inTargetBlock && /^PHOTO_FILE:\s*/i.test(line)) {
-      result.push(`PHOTO_FILE: ${newPhotoFile}`);
+    if (inTargetBlock && /^\*{0,2}PHOTO_FILE:\*{0,2}\s*/i.test(line)) {
+      result.push(`**PHOTO_FILE:** ${newPhotoFile}`);
     } else {
       result.push(line);
     }
