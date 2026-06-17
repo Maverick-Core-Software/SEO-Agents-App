@@ -236,6 +236,46 @@ async function scan(inboxFolder) {
   console.log(`\n  Low-score photos remain in inbox for manual review: ${inboxFolder}`);
 }
 
+// ── Retag command ──────────────────────────────────────────────────────────
+
+async function retag() {
+  if (!OPENAI_API_KEY) {
+    console.error('OPENAI_API_KEY not set in .env');
+    process.exit(1);
+  }
+
+  const index = loadIndex();
+  const toRetag = index.filter(e => e.path && fs.existsSync(e.path) && !e.service_type);
+
+  console.log(`\nRetag: ${toRetag.length} existing Raw photos missing service_type`);
+  console.log(`(${index.length - toRetag.length} already have service_type — skipping)\n`);
+
+  if (!toRetag.length) {
+    console.log('Nothing to retag. All index entries already have service_type.');
+    return;
+  }
+
+  let updated = 0;
+  for (const entry of toRetag) {
+    process.stdout.write(`  Retagging ${entry.filename}... `);
+    try {
+      const result = await scorePhoto(entry.path);
+      entry.service_type = result.service_type || 'other';
+      entry.tags = result.tags || entry.tags || [];
+      // Update score only if the new score is valid (don't downgrade a photo already in Raw)
+      if (result.score > 0) entry.score = result.score;
+      console.log(`✓ service_type=${entry.service_type} | tags: ${entry.tags.join(', ')}`);
+      updated++;
+      saveIndex(index);
+      await new Promise(r => setTimeout(r, 200));
+    } catch (e) {
+      console.log(`ERROR: ${e.message}`);
+    }
+  }
+
+  console.log(`\n✓ Retag complete: ${updated}/${toRetag.length} entries updated`);
+}
+
 // ── Main ───────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -244,18 +284,21 @@ async function main() {
   const folderFlag = args.indexOf('--folder');
   const inboxFolder = folderFlag >= 0 ? args[folderFlag + 1] : INBOX_FOLDER;
 
-  if (command !== 'scan') {
+  if (command === 'scan') {
+    await scan(inboxFolder);
+  } else if (command === 'retag') {
+    await retag();
+  } else {
     console.log('Usage:');
     console.log('  node photo-scanner.mjs scan                  Score photos in default inbox');
     console.log('  node photo-scanner.mjs scan --folder <path>  Score photos in a specific folder');
+    console.log('  node photo-scanner.mjs retag                 Add service_type to existing Raw photos');
     console.log('');
     console.log(`Default inbox: ${INBOX_FOLDER}`);
     console.log(`Raw pool:      ${RAW_FOLDER}`);
     console.log(`Min score:     ${MIN_SCORE}`);
     process.exit(0);
   }
-
-  await scan(inboxFolder);
 }
 
 main().catch(e => { console.error(e.message || e); process.exit(1); });
