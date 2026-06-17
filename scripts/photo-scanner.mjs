@@ -94,7 +94,17 @@ High score (70-100): shows professional electrical work clearly — panels, wiri
 Medium score (40-69): shows electrical work but partially obscured, cluttered, or poorly lit.
 Low score (0-39): not electrical work, has faces/PII, is a screenshot, receipt, personal photo, or unrelated.
 
-Reply ONLY with JSON: {"score": <0-100>, "tags": ["tag1","tag2"], "reject_reason": "<blank if score>=65>"}`,
+For tags, use SPECIFIC service-type terms from this vocabulary (pick all that apply):
+  Panel work: panel-upgrade, panel-replacement, main-panel, subpanel, breaker-box, breaker-replacement
+  EV charging: ev-charger, ev-charging-station, level-2-charger, ev-outlet
+  Lighting: lighting-fixture, recessed-lighting, outdoor-lighting, ceiling-fan, light-switch, dimmer
+  Wiring/conduit: wiring, wire-run, conduit, romex, junction-box
+  Outlets: outlet-installation, gfci-outlet, usb-outlet, dedicated-circuit
+  Other electrical: electrical-safety, smoke-detector, whole-home, service-upgrade
+
+Also set "service_type" to ONE of: "panel", "ev-charger", "lighting", "wiring", "outlet", "other"
+
+Reply ONLY with JSON: {"score": <0-100>, "service_type": "<type>", "tags": ["tag1","tag2"], "reject_reason": "<blank if score>=65>"}`,
           },
           { type: 'image_url', image_url: { url: dataUrl, detail: 'low' } },
         ],
@@ -181,6 +191,7 @@ async function scan(inboxFolder) {
         source_path: filePath,
         filename,
         score: result.score,
+        service_type: result.service_type || 'other',
         tags: result.tags || [],
         scanned_at: new Date().toISOString(),
         used: false,

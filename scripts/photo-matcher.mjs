@@ -113,15 +113,17 @@ async function pickBestPhotos(posts, availablePhotos) {
     idx: i,
     filename: p.filename,
     score: p.score,
+    service_type: p.service_type || 'other',
     tags: (p.tags || []).join(', ') || 'electrical work',
   }));
 
   const postSummaries = posts.map((p, i) =>
-    `Post ${i + 1} (${p.date}): Service="${p.service}", Topic="${p.topic}", Headline="${p.headline}"`
+    `Post ${i + 1} (${p.date}): Service="${p.service}", Topic="${p.topic}", Headline="${p.headline}"` +
+    (p.body ? `, Body="${p.body.slice(0, 200)}"` : '')
   ).join('\n');
 
   const catalogText = catalog.map(p =>
-    `Photo ${p.idx + 1}: "${p.filename}" | score=${p.score} | tags: ${p.tags}`
+    `Photo ${p.idx + 1}: "${p.filename}" | score=${p.score} | service_type=${p.service_type} | tags: ${p.tags}`
   ).join('\n');
 
   const res = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -142,9 +144,11 @@ ${catalogText}
 
 Rules:
 - Each post gets exactly one photo. No photo can be used twice.
-- Match based on electrical service type + tags. EV charger posts get EV/charger photos, panel posts get panel photos, etc.
-- Prefer higher-scoring photos when quality is equal.
-- If no strong match exists for a post, pick the highest-scored available photo.
+- FIRST match on service_type: panel posts → panel photos, ev-charger posts → ev-charger photos, lighting posts → lighting photos, etc.
+- A "lighting" service_type photo must NEVER be assigned to a panel post (and vice versa).
+- Within matching service_type, prefer higher-scoring photos.
+- Only use a mismatched service_type photo if there are ZERO photos of the correct type available.
+- Read the post Body text carefully — it describes exactly what the photo must show.
 
 Reply ONLY with a JSON array of ${posts.length} photo indices (1-based, matching the Photo number above), one per post in order:
 [photoIdx1, photoIdx2, ...]`,
@@ -162,6 +166,63 @@ Reply ONLY with a JSON array of ${posts.length} photo indices (1-based, matching
   } catch {
     throw new Error(`Failed to parse GPT response: ${text}`);
   }
+}
+
+// ── Service type helpers ───────────────────────────────────────────────────
+
+const SERVICE_TYPE_KEYWORDS = {
+  panel: ['panel', 'breaker', 'main panel', 'subpanel', 'electrical panel', 'box'],
+  'ev-charger': ['ev', 'charger', 'electric vehicle', 'level 2', 'charging station', 'tesla'],
+  lighting: ['light', 'fixture', 'recessed', 'ceiling fan', 'dimmer', 'lamp', 'led', 'illuminat'],
+  wiring: ['wiring', 'wire', 'conduit', 'romex', 'junction', 'rewir'],
+  outlet: ['outlet', 'gfci', 'receptacle', 'plug', 'usb', 'circuit'],
+};
+
+function derivePostServiceType(post) {
+  const text = `${post.service} ${post.topic} ${post.headline} ${post.body || ''}`.toLowerCase();
+  for (const [type, keywords] of Object.entries(SERVICE_TYPE_KEYWORDS)) {
+    if (keywords.some(kw => text.includes(kw))) return type;
+  }
+  return 'other';
+}
+
+function isCompatible(postServiceType, photoServiceType) {
+  if (postServiceType === 'other' || photoServiceType === 'other') return true;
+  return postServiceType === photoServiceType;
+}
+
+// After GPT picks, validate and replace any clear service-type mismatches
+function validateAndFixMatches(posts, matches, available) {
+  const usedFilenames = new Set();
+  const fixed = matches.map((photo, i) => {
+    if (!photo) return null;
+    usedFilenames.add(photo.filename);
+    return photo;
+  });
+
+  for (let i = 0; i < posts.length; i++) {
+    const photo = fixed[i];
+    if (!photo) continue;
+    const postType = derivePostServiceType(posts[i]);
+    const photoType = photo.service_type || 'other';
+
+    if (!isCompatible(postType, photoType)) {
+      // Find best replacement: same service_type, not already used, highest score
+      const replacement = available
+        .filter(p => !usedFilenames.has(p.filename) || p.filename === photo.filename)
+        .filter(p => isCompatible(postType, p.service_type || 'other'))
+        .sort((a, b) => b.score - a.score)[0];
+
+      if (replacement && replacement.filename !== photo.filename) {
+        console.log(`  ⚠ Fixing mismatch: Post "${posts[i].date}" [${postType}] had photo service_type="${photoType}" → replacing with "${replacement.filename}" [${replacement.service_type}]`);
+        usedFilenames.delete(photo.filename);
+        usedFilenames.add(replacement.filename);
+        fixed[i] = replacement;
+      }
+    }
+  }
+
+  return fixed;
 }
 
 // ── Slug helper ────────────────────────────────────────────────────────────
@@ -211,7 +272,8 @@ async function main() {
   }
 
   console.log('Asking GPT-4o to match posts to photos...');
-  const matches = await pickBestPhotos(postsToMatch, available);
+  const rawMatches = await pickBestPhotos(postsToMatch, available);
+  const matches = validateAndFixMatches(postsToMatch, rawMatches, available);
 
   fs.mkdirSync(CURATED_FOLDER, { recursive: true });
 
