@@ -94,7 +94,17 @@ High score (70-100): shows professional electrical work clearly — panels, wiri
 Medium score (40-69): shows electrical work but partially obscured, cluttered, or poorly lit.
 Low score (0-39): not electrical work, has faces/PII, is a screenshot, receipt, personal photo, or unrelated.
 
-Reply ONLY with JSON: {"score": <0-100>, "tags": ["tag1","tag2"], "reject_reason": "<blank if score>=65>"}`,
+For tags, use SPECIFIC service-type terms from this vocabulary (pick all that apply):
+  Panel work: panel-upgrade, panel-replacement, main-panel, subpanel, breaker-box, breaker-replacement
+  EV charging: ev-charger, ev-charging-station, level-2-charger, ev-outlet
+  Lighting: lighting-fixture, recessed-lighting, outdoor-lighting, ceiling-fan, light-switch, dimmer
+  Wiring/conduit: wiring, wire-run, conduit, romex, junction-box
+  Outlets: outlet-installation, gfci-outlet, usb-outlet, dedicated-circuit
+  Other electrical: electrical-safety, smoke-detector, whole-home, service-upgrade
+
+Also set "service_type" to ONE of: "panel", "ev-charger", "lighting", "wiring", "outlet", "other"
+
+Reply ONLY with JSON: {"score": <0-100>, "service_type": "<type>", "tags": ["tag1","tag2"], "reject_reason": "<blank if score>=65>"}`,
           },
           { type: 'image_url', image_url: { url: dataUrl, detail: 'low' } },
         ],
@@ -181,6 +191,7 @@ async function scan(inboxFolder) {
         source_path: filePath,
         filename,
         score: result.score,
+        service_type: result.service_type || 'other',
         tags: result.tags || [],
         scanned_at: new Date().toISOString(),
         used: false,
@@ -225,6 +236,45 @@ async function scan(inboxFolder) {
   console.log(`\n  Low-score photos remain in inbox for manual review: ${inboxFolder}`);
 }
 
+// ── Retag command ──────────────────────────────────────────────────────────
+
+async function retag() {
+  if (!OPENAI_API_KEY) {
+    console.error('OPENAI_API_KEY not set in .env');
+    process.exit(1);
+  }
+
+  const index = loadIndex();
+  const toRetag = index.filter(e => e.path && fs.existsSync(e.path) && !e.service_type);
+
+  console.log(`\nRetag: ${toRetag.length} existing Raw photos missing service_type`);
+  console.log(`(${index.length - toRetag.length} already have service_type — skipping)\n`);
+
+  if (!toRetag.length) {
+    console.log('Nothing to retag. All index entries already have service_type.');
+    return;
+  }
+
+  let updated = 0;
+  for (const entry of toRetag) {
+    process.stdout.write(`  Retagging ${entry.filename}... `);
+    try {
+      const result = await scorePhoto(entry.path);
+      entry.service_type = result.service_type || 'other';
+      entry.tags = result.tags || entry.tags || [];
+      // Don't touch score — photo already passed its original scan threshold
+      console.log(`✓ service_type=${entry.service_type} | tags: ${entry.tags.join(', ')}`);
+      updated++;
+      saveIndex(index);
+      await new Promise(r => setTimeout(r, 200));
+    } catch (e) {
+      console.log(`ERROR: ${e.message}`);
+    }
+  }
+
+  console.log(`\n✓ Retag complete: ${updated}/${toRetag.length} entries updated`);
+}
+
 // ── Main ───────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -233,18 +283,21 @@ async function main() {
   const folderFlag = args.indexOf('--folder');
   const inboxFolder = folderFlag >= 0 ? args[folderFlag + 1] : INBOX_FOLDER;
 
-  if (command !== 'scan') {
+  if (command === 'scan') {
+    await scan(inboxFolder);
+  } else if (command === 'retag') {
+    await retag();
+  } else {
     console.log('Usage:');
     console.log('  node photo-scanner.mjs scan                  Score photos in default inbox');
     console.log('  node photo-scanner.mjs scan --folder <path>  Score photos in a specific folder');
+    console.log('  node photo-scanner.mjs retag                 Add service_type to existing Raw photos');
     console.log('');
     console.log(`Default inbox: ${INBOX_FOLDER}`);
     console.log(`Raw pool:      ${RAW_FOLDER}`);
     console.log(`Min score:     ${MIN_SCORE}`);
     process.exit(0);
   }
-
-  await scan(inboxFolder);
 }
 
 main().catch(e => { console.error(e.message || e); process.exit(1); });
