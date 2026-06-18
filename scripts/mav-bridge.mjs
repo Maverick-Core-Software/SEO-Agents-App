@@ -103,11 +103,26 @@ function excelDateToIso(value) {
   return String(value || '').slice(0, 10);
 }
 
-// Called after every driver.mjs run.
-// exit 0 (verified)   → mark Posted=TRUE in Excel + move photo to archive
-// exit 3 (unverified) → mark Posted=TRUE in Excel only, leave photo in place
+function parseDriverJson(stdout) {
+  try {
+    const lastLine = (stdout || '').trim().split('\n').filter(l => l.trim().startsWith('{')).pop();
+    return lastLine ? JSON.parse(lastLine) : {};
+  } catch {
+    return {};
+  }
+}
+
+function gbpNeedsVerificationMessage(parsed = {}) {
+  const attempts = parsed.verificationAttempts || 5;
+  const snapshot = parsed.verificationSnapshot?.textFile || parsed.verificationSnapshot?.screenshot || '';
+  const suffix = snapshot ? ` Snapshot: ${snapshot}` : '';
+  return `GBP post was submitted but not verified after ${attempts} 60-second snapshot checks. Check manually before retrying.${suffix}`;
+}
+
+// Called only after driver.mjs verifies the post is visible.
+// exit 0 (verified) → mark Posted=TRUE in Excel + move photo to archive
 async function markGbpPostedAndArchive(postDate, exitCode, runId) {
-  if (exitCode !== 0 && exitCode !== 3) return;
+  if (exitCode !== 0) return;
   if (!GBP_WORKBOOK_PATH) {
     console.log('[mav-bridge][gbp] GBP_WORKBOOK_PATH not set — skipping Excel update');
     return;
@@ -157,14 +172,12 @@ async function markGbpPostedAndArchive(postDate, exitCode, runId) {
       await log(runId, 'gbp', 'info', `Excel Posted=TRUE set for ${postDate}`);
     }
 
-    if (exitCode === 0 && photoPath && fs.existsSync(photoPath)) {
+    if (photoPath && fs.existsSync(photoPath)) {
       const monthDir = path.join(GBP_ARCHIVE_FOLDER, postDate.slice(0, 7));
       fs.mkdirSync(monthDir, { recursive: true });
       const dest = path.join(monthDir, path.basename(photoPath));
       fs.renameSync(photoPath, dest);
       await log(runId, 'gbp', 'info', `Photo archived: ${path.basename(photoPath)} → ${monthDir}`);
-    } else if (exitCode === 3) {
-      await log(runId, 'gbp', 'info', `Photo kept in place (unverified post) — verify manually then re-run or archive manually: ${postDate}`);
     }
   } catch (e) {
     await log(runId, 'gbp', 'warn', `markGbpPostedAndArchive error: ${e.message}`);
@@ -289,6 +302,7 @@ async function executeApprovedRun(run) {
 
     const result = await runPhase(runId, 'facebook', 'node', [
       path.join(PROJECT_ROOT, 'scripts', 'facebook-post-week.mjs'),
+      '--schedule-all', '--time', '09:00',
     ], PROJECT_ROOT);
 
     if (result.ok) {
@@ -373,12 +387,13 @@ async function executeApprovedRun(run) {
       if (day1Post) {
         await log(runId, 'gbp', 'info', `Posting Day 1 GBP immediately...`);
         const result = await runPhase(runId, 'gbp', 'node', [GBP_POSTER_PATH, '--date', day1Post.post_date], PROJECT_ROOT);
-        // exit 0 = posted+verified, exit 3 = posted but unverified — both count as success
-        const gbpOk = result.exitCode === 0 || result.exitCode === 3;
+        // Only exit 0 counts as posted: the driver polls verification before
+        // returning success. Exit 3 is submitted but unverified and must not
+        // update posted state.
+        const gbpOk = result.exitCode === 0;
         if (gbpOk) {
           try {
-            const lastLine = (result.stdout || '').trim().split('\n').filter(l => l.startsWith('{')).pop();
-            const parsed = lastLine ? JSON.parse(lastLine) : {};
+            const parsed = parseDriverJson(result.stdout);
             await supabase.from('weekly_posts')
               .update({ status: 'posted', error: null, posted_at: new Date().toISOString(), platform_post_id: parsed.postUrl || null })
               .eq('id', day1Post.id);
@@ -389,6 +404,14 @@ async function executeApprovedRun(run) {
               .eq('id', day1Post.id);
           }
           await markGbpPostedAndArchive(day1Post.post_date, result.exitCode, runId);
+        } else if (result.exitCode === 3) {
+          const parsed = parseDriverJson(result.stdout);
+          const message = gbpNeedsVerificationMessage(parsed);
+          await supabase.from('weekly_posts')
+            .update({ status: 'needs_verification', error: message })
+            .eq('id', day1Post.id);
+          await log(runId, 'gbp', 'warn', `Day 1 GBP submitted but unverified after ${parsed.verificationAttempts || 5} snapshot checks. Not marking posted.`);
+          allOk = false;
         } else {
           await supabase.from('weekly_posts')
             .update({ status: 'error', error: result.error })
@@ -480,11 +503,13 @@ async function poll() {
     }
 
     // ── Daily GBP poster ─────────────────────────
-    // Run once per calendar day after 9 AM CST (UTC-5/UTC-6).
-    // Posts any weekly_posts rows with platform=gbp, status=scheduled, post_date=today.
+    // Run once per calendar day after 9 AM CST/CDT.
+    // CDT = UTC-5 (summer), CST = UTC-6 (winter). Using -5 for CDT.
+    // todayDate uses the same offset so it never rolls to the next UTC day early.
     const nowUtc = new Date();
-    const cstHour = (nowUtc.getUTCHours() - 6 + 24) % 24; // CDT offset; switch to -5 for CST winter
-    const todayDate = nowUtc.toISOString().slice(0, 10);
+    const CDT_OFFSET = 5; // hours behind UTC (CDT); change to 6 in winter (CST)
+    const cstHour = (nowUtc.getUTCHours() - CDT_OFFSET + 24) % 24;
+    const todayDate = new Date(nowUtc.getTime() - CDT_OFFSET * 60 * 60 * 1000).toISOString().slice(0, 10);
     if (cstHour >= 9 && lastDailyGbpDate !== todayDate) {
       lastDailyGbpDate = todayDate;
       const { data: todayGbp } = await supabase
@@ -492,25 +517,26 @@ async function poll() {
         .select('id, run_id, post_date, photo_file')
         .eq('platform', 'gbp')
         .eq('status', 'scheduled')
-        .eq('post_date', todayDate);
+        .eq('post_date', todayDate)
+        .order('post_date', { ascending: true });
 
       for (const post of todayGbp || []) {
         console.log(`[mav-bridge][gbp-daily] Posting scheduled GBP for ${post.post_date}`);
         const result = await runPhase(post.run_id, 'gbp', 'node', [GBP_POSTER_PATH, '--date', post.post_date], PROJECT_ROOT);
-        let parsed = null;
-        try { parsed = JSON.parse((result.stdout || '').split('\n').filter(l => l.trim().startsWith('{')).pop() || '{}'); } catch {}
-        const gbpDailyOk = result.exitCode === 0 || result.exitCode === 3;
+        const parsed = parseDriverJson(result.stdout);
+        const gbpDailyOk = result.exitCode === 0;
         if (gbpDailyOk) {
-          let parsedUrl = null;
-          try {
-            const lastLine = (result.stdout || '').trim().split('\n').filter(l => l.startsWith('{')).pop();
-            parsedUrl = lastLine ? JSON.parse(lastLine).postUrl : null;
-          } catch {}
           await supabase.from('weekly_posts')
-            .update({ status: 'posted', posted_at: new Date().toISOString(), platform_post_id: parsedUrl })
+            .update({ status: 'posted', posted_at: new Date().toISOString(), platform_post_id: parsed.postUrl || null })
             .eq('id', post.id);
           console.log(`[mav-bridge][gbp-daily] Posted ${post.post_date} (exit ${result.exitCode})`);
           await markGbpPostedAndArchive(post.post_date, result.exitCode, post.run_id);
+        } else if (result.exitCode === 3) {
+          const message = gbpNeedsVerificationMessage(parsed);
+          await supabase.from('weekly_posts')
+            .update({ status: 'needs_verification', error: message })
+            .eq('id', post.id);
+          console.warn(`[mav-bridge][gbp-daily] Submitted but unverified after ${parsed.verificationAttempts || 5} snapshot checks: ${post.post_date}`);
         } else {
           await supabase.from('weekly_posts')
             .update({ status: 'error', error: (result.stderr || result.error || 'GBP poster failed').slice(0, 300) })
@@ -560,41 +586,76 @@ async function handleHttpRequest(req, res) {
   if (method === 'GET' && url.pathname === '/seo/status') {
     const [runsRes, postsRes] = await Promise.all([
       supabase.from('seo_runs').select('*').order('created_at', { ascending: false }).limit(20),
-      supabase.from('weekly_posts').select('platform,status').order('created_at', { ascending: false }).limit(100),
+      supabase.from('weekly_posts').select('run_id,platform,status,post_date,error').order('created_at', { ascending: false }).limit(200),
     ]);
     const runs = runsRes.data || [];
     const posts = postsRes.data || [];
+
+    // Group posts by run so we can compute live status from actual post states,
+    // not the frozen execution-time status on seo_runs.
+    const postsByRun = {};
+    for (const p of posts) {
+      if (!p.run_id) continue;
+      (postsByRun[p.run_id] = postsByRun[p.run_id] || []).push(p);
+    }
+
+    // Derive the current real status of a run from its posts.
+    // seo_runs.status is only used for states that have no associated posts yet
+    // (pending_approval, executing, awaiting_prompt).
+    function liveRunStatus(run) {
+      const runPosts = postsByRun[run.id] || [];
+      // These statuses are in-flight — trust the run record.
+      if (['pending_approval', 'executing', 'awaiting_prompt'].includes(run.status)) return run.status;
+      // If there are no posts, the run record is the best we have.
+      if (!runPosts.length) return run.status;
+      const hasCurrentError = runPosts.some(p => ['error', 'needs_verification'].includes(p.status));
+      const allDone = runPosts.every(p => ['posted', 'done', 'scheduled'].includes(p.status));
+      if (hasCurrentError) return 'error';
+      if (allDone) return 'done';
+      return 'executing';
+    }
+
     const latest = runs[0] || null;
+    const latestLive = latest ? liveRunStatus(latest) : 'idle';
 
     const statusCounts = { complete: 0, partial: 0, blocked: 0, incomplete: 0 };
     for (const r of runs) {
-      if (r.status === 'done') statusCounts.complete++;
-      else if (['posting', 'posted', 'executing'].includes(r.status)) statusCounts.partial++;
-      else if (r.status === 'error') statusCounts.blocked++;
+      const ls = liveRunStatus(r);
+      if (ls === 'done') statusCounts.complete++;
+      else if (['posting', 'executing'].includes(ls)) statusCounts.partial++;
+      else if (ls === 'error') statusCounts.blocked++;
       else statusCounts.incomplete++;
     }
+
+    // Faults: only current post-level errors, not the frozen run-level error field.
+    const errorPosts = posts.filter(p => ['error', 'needs_verification'].includes(p.status));
+    const faults = errorPosts.slice(0, 3).map(p =>
+      `${p.platform} post ${p.post_date} failed: ${(p.error || 'unknown error').slice(0, 120)}`
+    );
 
     const pendingPosts = posts.filter(p => p.status === 'pending_approval');
     const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
     const reports = runs
       .filter(r => ['done', 'posted', 'pending_approval', 'approved', 'error'].includes(r.status))
-      .map(r => ({
-        id: r.id,
-        date: r.created_at,
-        updatedAt: r.done_at || r.created_at,
-        status: r.status === 'pending_approval' ? 'needs_approval' : r.status === 'error' ? 'blocked' : 'complete',
-        source: 'mav-bridge',
-        label: `Run ${r.week_of || r.id?.slice(0, 8) || '?'}`,
-      }));
+      .map(r => {
+        const ls = liveRunStatus(r);
+        return {
+          id: r.id,
+          date: r.created_at,
+          updatedAt: r.done_at || r.created_at,
+          status: ls === 'pending_approval' ? 'needs_approval' : ls === 'error' ? 'blocked' : 'complete',
+          source: 'mav-bridge',
+          label: `Run ${r.week_of || r.id?.slice(0, 8) || '?'}`,
+        };
+      });
 
     sendJsonHttp(res, 200, {
-      state: latest?.status || 'idle',
+      state: latestLive,
       reports,
-      faults: runs.filter(r => r.status === 'error').slice(0, 3)
-        .map(r => r.error || `Run ${r.id?.slice(0, 8)} failed`),
+      faults,
       activeWorkflow: {
         name: 'SEO Automation',
-        phase: latest?.status || 'idle',
+        phase: latestLive,
         reportsGenerated: reports.filter(r => new Date(r.date).getTime() > sevenDaysAgo).length,
       },
       statusCounts,
@@ -603,7 +664,7 @@ async function handleHttpRequest(req, res) {
           actions: [],
           summary: {
             needs_approval: pendingPosts.length,
-            blocked_access: posts.filter(p => p.status === 'error').length,
+            blocked_access: errorPosts.length,
           },
         },
       },
@@ -617,7 +678,7 @@ async function handleHttpRequest(req, res) {
   if (method === 'GET' && url.pathname === '/seo/actions') {
     const [runsRes, postsRes, tasksRes] = await Promise.all([
       supabase.from('seo_runs').select('*').eq('status', 'pending_approval').order('created_at').limit(10),
-      supabase.from('weekly_posts').select('*').in('status', ['pending_approval', 'error']).order('day').limit(50),
+      supabase.from('weekly_posts').select('*').in('status', ['pending_approval', 'error', 'needs_verification']).order('day').limit(50),
       supabase.from('website_tasks').select('*').eq('status', 'pending_approval').order('priority').limit(20),
     ]);
     const runs = runsRes.data || [];
@@ -650,7 +711,7 @@ async function handleHttpRequest(req, res) {
       actions,
       summary: {
         needs_approval: runs.length + tasks.length,
-        blocked_access: posts.filter(p => p.status === 'error').length,
+        blocked_access: posts.filter(p => ['error', 'needs_verification'].includes(p.status)).length,
       },
     });
     return;

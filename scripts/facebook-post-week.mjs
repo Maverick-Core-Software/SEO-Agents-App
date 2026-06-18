@@ -342,36 +342,35 @@ async function typeCaption(page, caption) {
 
 async function attachMedia(page, post, videoPath) {
   const dialog = page.locator('div[role="dialog"]:not([aria-label="Notifications"])').first();
-  const type = post.type;
 
-  if (type === 'photo' && post.photo_file) {
-    const fullPhotoPath = path.isAbsolute(post.photo_file)
-      ? post.photo_file
-      : (fs.existsSync(path.join(GBP_PHOTO_PATH, post.photo_file))
-          ? path.join(GBP_PHOTO_PATH, post.photo_file)
-          : path.join(PROJECT_ROOT, 'outputs', post.photo_file));
-    if (fs.existsSync(fullPhotoPath)) {
-      const photoBtn = dialog.locator('[aria-label="Photo/video"], [aria-label="Add photos or videos"]').first();
-      const [fileChooser] = await Promise.all([
-        page.waitForEvent('filechooser', { timeout: 8000 }),
-        photoBtn.click({ timeout: 5000 }),
-      ]);
-      await fileChooser.setFiles(fullPhotoPath);
-      await page.waitForTimeout(3000);
-    } else {
-      console.error(`  Warning: photo not found: ${fullPhotoPath} — posting as text`);
-    }
-
-  } else if (type === 'video' && videoPath && fs.existsSync(videoPath)) {
-    const videoBtn = dialog.locator('[aria-label="Photo/video"], [aria-label="Add photos or videos"]').first();
-    // Intercept the file chooser BEFORE clicking so the native dialog never opens
+  const attachFile = async (filePath) => {
+    const btn = dialog.locator('[aria-label="Photo/video"], [aria-label="Add photos or videos"]').first();
     const [fileChooser] = await Promise.all([
       page.waitForEvent('filechooser', { timeout: 8000 }),
-      videoBtn.click({ timeout: 5000 }),
+      btn.click({ timeout: 5000 }),
     ]);
-    await fileChooser.setFiles(videoPath);
+    await fileChooser.setFiles(filePath);
+  };
+
+  if (post.type === 'video' && videoPath && fs.existsSync(videoPath)) {
+    await attachFile(videoPath);
     console.error('  Waiting for video to upload...');
     await page.waitForTimeout(30000);
+  } else {
+    // Photo post, or video post where generation failed — use photo_file
+    const fullPhotoPath = resolvePhotoPath(post);
+    if (post.type === 'video' && !fullPhotoPath) {
+      console.error(`  Video unavailable and no GBP photo found — posting as text only`);
+    } else if (post.type === 'video' && fullPhotoPath) {
+      console.error(`  Video unavailable — falling back to GBP photo: ${path.basename(fullPhotoPath)}`);
+      await attachFile(fullPhotoPath);
+      await page.waitForTimeout(3000);
+    } else if (fullPhotoPath) {
+      await attachFile(fullPhotoPath);
+      await page.waitForTimeout(3000);
+    } else if (post.photo_file) {
+      console.error(`  Warning: photo not found: ${post.photo_file} — posting as text`);
+    }
   }
 }
 
@@ -645,23 +644,29 @@ async function graphPostVideo(videoPath, caption, scheduleUnix) {
   return finishJson.id || upload_session_id;
 }
 
+function resolvePhotoPath(post) {
+  const photoFile = post.photo_file || '';
+  if (!photoFile) return null;
+  if (path.isAbsolute(photoFile)) return fs.existsSync(photoFile) ? photoFile : null;
+  const fromGbp = path.join(GBP_PHOTO_PATH, photoFile);
+  if (fs.existsSync(fromGbp)) return fromGbp;
+  const fromOutputs = path.join(PROJECT_ROOT, 'outputs', photoFile);
+  return fs.existsSync(fromOutputs) ? fromOutputs : null;
+}
+
 async function graphDispatch(post, caption, videoPath, scheduleUnix) {
   if (post.type === 'video' && videoPath && fs.existsSync(videoPath)) {
     console.error(`  Uploading video via Graph API (${(fs.statSync(videoPath).size / 1e6).toFixed(1)} MB)...`);
     return graphPostVideo(videoPath, caption, scheduleUnix);
   }
-  if (post.type === 'photo' && post.photo_file) {
-    const fullPhotoPath = path.isAbsolute(post.photo_file)
-      ? post.photo_file
-      : (fs.existsSync(path.join(GBP_PHOTO_PATH, post.photo_file))
-          ? path.join(GBP_PHOTO_PATH, post.photo_file)
-          : path.join(PROJECT_ROOT, 'outputs', post.photo_file));
-    if (fs.existsSync(fullPhotoPath)) {
-      console.error(`  Uploading photo via Graph API: ${path.basename(fullPhotoPath)}`);
-      return graphPostPhoto(fullPhotoPath, caption, scheduleUnix);
-    }
-    console.error(`  Warning: photo not found: ${fullPhotoPath} — posting as text`);
+  // Video missing (generation failed) or photo post — use photo_file
+  const fullPhotoPath = resolvePhotoPath(post);
+  if (fullPhotoPath) {
+    if (post.type === 'video') console.error(`  Video unavailable — falling back to GBP photo: ${path.basename(fullPhotoPath)}`);
+    else console.error(`  Uploading photo via Graph API: ${path.basename(fullPhotoPath)}`);
+    return graphPostPhoto(fullPhotoPath, caption, scheduleUnix);
   }
+  if (post.photo_file) console.error(`  Warning: photo not found: ${post.photo_file} — posting as text`);
   console.error(`  Posting text via Graph API...`);
   return graphPostText(caption, scheduleUnix);
 }
@@ -715,14 +720,21 @@ async function main() {
     // Graph API path — no browser needed
     // -----------------------------------------------------------------------
     console.error('\nUsing Graph API (no browser)');
+    const nowUnix = Math.floor(Date.now() / 1000);
     for (const post of filtered) {
       const caption = buildCaption(post);
-      const isDay1Live = post.day === 1 && !args.scheduleAll;
-      console.error(`\nProcessing Day ${post.day} (${post.date}) — ${isDay1Live ? 'POST NOW' : `SCHEDULE ${args.postTime}`}`);
+      const rawScheduleUnix = dateTimeToUnix(post.date, args.postTime);
+      // If scheduled time is in the past or within 10 min, post live instead
+      const scheduleInPast = rawScheduleUnix < nowUnix + 600;
+      const isLive = (post.day === 1 && !args.scheduleAll) || scheduleInPast;
+      const scheduleUnix = isLive ? null : rawScheduleUnix;
+      const action = isLive
+        ? (scheduleInPast && args.scheduleAll ? 'POST NOW (9 AM passed)' : 'POST NOW')
+        : `SCHEDULE ${args.postTime}`;
+      console.error(`\nProcessing Day ${post.day} (${post.date}) — ${action}`);
       try {
-        const scheduleUnix = isDay1Live ? null : dateTimeToUnix(post.date, args.postTime);
         const id = await graphDispatch(post, caption, post._videoPath || null, scheduleUnix);
-        if (isDay1Live) {
+        if (isLive) {
           results.push({ day: post.day, date: post.date, status: 'posted', type: post.type, id });
           console.error(`  ✓ Day ${post.day} posted live (id: ${id})`);
         } else {
@@ -746,16 +758,22 @@ async function main() {
     });
     const page = await context.newPage();
     try {
+      const nowUnixPw = Math.floor(Date.now() / 1000);
       for (const post of filtered) {
         const caption = buildCaption(post);
-        const isDay1Live = post.day === 1 && !args.scheduleAll;
-        console.error(`\nProcessing Day ${post.day} (${post.date}) — ${isDay1Live ? 'POST NOW' : `SCHEDULE ${args.postTime}`}`);
+        const rawScheduleUnix = dateTimeToUnix(post.date, args.postTime);
+        const scheduleInPast = rawScheduleUnix < nowUnixPw + 600;
+        const isLive = (post.day === 1 && !args.scheduleAll) || scheduleInPast;
+        const action = isLive
+          ? (scheduleInPast && args.scheduleAll ? 'POST NOW (9 AM passed)' : 'POST NOW')
+          : `SCHEDULE ${args.postTime}`;
+        console.error(`\nProcessing Day ${post.day} (${post.date}) — ${action}`);
         try {
           await openPostComposer(page);
           await saveDebug(page, `day${post.day}-composer`);
           await typeCaption(page, caption);
           await attachMedia(page, post, post._videoPath || null);
-          if (isDay1Live) {
+          if (isLive) {
             await submitPost(page, caption);
             results.push({ day: post.day, date: post.date, status: 'posted', type: post.type });
             console.error(`  ✓ Day ${post.day} posted live`);

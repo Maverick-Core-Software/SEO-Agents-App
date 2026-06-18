@@ -38,6 +38,8 @@ Distribute topics across:
 - Seasonal or trend-responsive posts (tie to this week's signals)
 
 Do not repeat the same service two days in a row. Space high-intent posts every 2–3 days.
+Do not include phone numbers anywhere in GBP post copy, including BODY, CAPTION, or CTA.
+Use generic CTAs such as "Use the Call button", "Request service", "Contact Grizzly", or "Book an appointment" instead of writing a phone number.
 
 ### Step 4 — Format Each Day's Entry
 Use this exact format for each day — the posting script reads this structure:
@@ -73,6 +75,7 @@ After the schedule, include:
 - Never fabricate search volume numbers, review data, or photo content
 - All posts are STATUS: Needs approval — nothing is marked ready to post until the owner reviews
 - Do not use fear-based language, fake urgency, or emergency availability claims unless confirmed
+- Do not use phone numbers in GBP post text. Google Business Profile posts can be rejected for phone numbers in the post description; rely on the verified profile call button instead.
 - Photo filenames must come from the actual directory scan — do not invent filenames
 - Keep post copy in Grizzly's brand tone: honest, direct, practical, not pushy
 - If the search tool is unavailable, use the GBP report's trend signals section and label it: "Trend source: GBP report baseline (search tool unavailable this run)"

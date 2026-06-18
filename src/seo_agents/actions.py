@@ -981,10 +981,17 @@ def _find_workbook_row(sheet: Any, columns: dict[str, int], date_value: str) -> 
 
 
 def _caption_for_post(post: dict[str, str]) -> str:
+    def clean_gbp_text(value: str) -> str:
+        # Google Business Profile rejects post descriptions that include phone numbers.
+        value = re.sub(r"\+?1?[\s.-]*\(?\d{3}\)?[\s.-]*\d{3}[\s.-]*\d{4}", "", value)
+        value = re.sub(r"\s{2,}", " ", value)
+        value = re.sub(r"\s+([.!?,])", r"\1", value)
+        return value.strip()
+
     parts = [
-        post.get("headline", "").strip(),
-        post.get("body", "").strip(),
-        post.get("cta", "").strip(),
+        clean_gbp_text(post.get("headline", "")),
+        clean_gbp_text(post.get("body", "")),
+        clean_gbp_text(post.get("cta", "")),
     ]
     return "\n\n".join(part for part in parts if part)
 
