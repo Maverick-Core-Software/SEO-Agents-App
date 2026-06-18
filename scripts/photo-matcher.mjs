@@ -209,7 +209,7 @@ function validateAndFixMatches(posts, matches, available) {
     if (!isCompatible(postType, photoType)) {
       // Find best replacement: same service_type, not already used, highest score
       const replacement = available
-        .filter(p => !usedFilenames.has(p.filename) || p.filename === photo.filename)
+        .filter(p => !usedFilenames.has(p.filename))
         .filter(p => isCompatible(postType, p.service_type || 'other'))
         .sort((a, b) => b.score - a.score)[0];
 

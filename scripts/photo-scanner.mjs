@@ -262,8 +262,7 @@ async function retag() {
       const result = await scorePhoto(entry.path);
       entry.service_type = result.service_type || 'other';
       entry.tags = result.tags || entry.tags || [];
-      // Update score only if the new score is valid (don't downgrade a photo already in Raw)
-      if (result.score > 0) entry.score = result.score;
+      // Don't touch score — photo already passed its original scan threshold
       console.log(`✓ service_type=${entry.service_type} | tags: ${entry.tags.join(', ')}`);
       updated++;
       saveIndex(index);
