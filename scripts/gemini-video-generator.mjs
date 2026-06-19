@@ -25,7 +25,7 @@ if (fs.existsSync(envPath)) {
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 const VEO_MODEL = process.env.GEMINI_VEO_MODEL || 'veo-3.0-generate-001';
 const POLL_INTERVAL_MS = 8000;
-const MAX_POLL_ATTEMPTS = 30; // ~4 minutes max
+const MAX_POLL_ATTEMPTS = 60; // ~8 minutes max (Veo3 can take 5-7 min)
 
 function parseArgs(argv) {
   const args = { prompt: '', output: '', dryRun: false, aspectRatio: '9:16', durationSeconds: 8 };
