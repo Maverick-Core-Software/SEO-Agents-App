@@ -1048,6 +1048,36 @@ def sync_gbp_schedule_to_workbook(dry_run: bool = False) -> dict[str, Any]:
     }
 
 
+def mark_gbp_dates_approved(dates: list[str]) -> dict[str, Any]:
+    """Stamp the workbook Status to 'Approved' for the given post dates.
+
+    Weekly approval is a single decision: when the week is approved, every day in
+    that week should post on its scheduled date. The GBP poster gates on the
+    workbook Status column, so this propagates the one weekly approval to all
+    days' rows. Rows already 'Posted' are left untouched.
+    """
+    _, workbook_path, workbook, sheet, columns = _open_gbp_workbook()
+    approved: list[str] = []
+    skipped: list[str] = []
+    for date_value in dates:
+        if not date_value:
+            continue
+        row = _find_workbook_row(sheet, columns, date_value)
+        if not row:
+            skipped.append(date_value)
+            continue
+        existing = str(sheet.cell(row, columns["Status"]).value or "").strip()
+        if existing == "Posted":
+            skipped.append(date_value)
+            continue
+        sheet.cell(row, columns["Status"]).value = "Approved"
+        sheet.cell(row, columns["Notes"]).value = f"Approved (weekly) at {_now_iso()}"
+        approved.append(date_value)
+    if approved:
+        _save_gbp_workbook(workbook, workbook_path)
+    return {"workbook_path": str(workbook_path), "approved": approved, "skipped": skipped}
+
+
 def _mark_gbp_workbook_status(action: dict[str, Any], status: str) -> None:
     date_value = action.get("post", {}).get("date") or action.get("due_window")
     if not date_value:

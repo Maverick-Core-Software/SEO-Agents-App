@@ -17,6 +17,7 @@ from seo_agents.actions import (
     approve_action,
     format_action_queue_text,
     gbp_adapter_status,
+    mark_gbp_dates_approved,
     run_action,
     sync_gbp_schedule_to_workbook,
     wordpress_adapter_status,
@@ -559,6 +560,13 @@ def parse_args() -> argparse.Namespace:
     )
     sync_gbp.add_argument("--dry-run", action="store_true", help="Preview workbook rows without writing.")
 
+    mark_approved = subparsers.add_parser(
+        "mark-gbp-approved",
+        help="Stamp workbook Status='Approved' for one or more post dates (weekly approval fan-out).",
+    )
+    mark_approved.add_argument("--date", action="append", required=True, dest="dates",
+                               help="Post date YYYY-MM-DD; repeat for multiple days.")
+
     adapter_status = subparsers.add_parser(
         "adapter-status",
         help="Show live-action adapter readiness for MCC and SEO execution agents.",
@@ -866,6 +874,10 @@ def main() -> None:
 
     elif command == "sync-gbp-schedule":
         result = sync_gbp_schedule_to_workbook(dry_run=args.dry_run)
+        print(json.dumps(result, indent=2))
+
+    elif command == "mark-gbp-approved":
+        result = mark_gbp_dates_approved(args.dates)
         print(json.dumps(result, indent=2))
 
     elif command == "adapter-status":

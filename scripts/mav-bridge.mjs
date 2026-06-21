@@ -454,7 +454,19 @@ async function executeApprovedRun(run) {
         await supabase.from('weekly_posts')
           .update({ status: 'scheduled' })
           .eq('run_id', runId).eq('platform', 'gbp').gt('day', 1);
-        await log(runId, 'gbp', 'info', `Days 2-7 marked scheduled for daily poster`);
+        // Weekly approval is one decision: propagate it to every day's workbook row
+        // so the daily poster's Approved-gate passes and Days 2-7 post on schedule.
+        const dateArgs = laterPosts
+          .map(p => p.post_date)
+          .filter(Boolean)
+          .flatMap(d => ['--date', d]);
+        if (dateArgs.length) {
+          const approveResult = await runPhase(runId, 'gbp', SEO_AGENTS_EXE, ['mark-gbp-approved', ...dateArgs], PROJECT_ROOT);
+          if (!approveResult.ok) {
+            await log(runId, 'gbp', 'warn', `mark-gbp-approved failed (Days 2-7 may block on poster gate): ${approveResult.error}`);
+          }
+        }
+        await log(runId, 'gbp', 'info', `Days 2-7 marked scheduled + approved in workbook for daily poster`);
       }
     }
   }
@@ -564,6 +576,13 @@ async function poll() {
             .update({ status: 'needs_verification', error: message })
             .eq('id', post.id);
           console.warn(`[mav-bridge][gbp-daily] Submitted but unverified after ${parsed.verificationAttempts || 5} snapshot checks: ${post.post_date}`);
+        } else if (result.exitCode === 4) {
+          // Approval gate, not a failure: post is awaiting approval in the workbook.
+          // Park it as pending_approval so the workflow stays green and re-posts once approved.
+          await supabase.from('weekly_posts')
+            .update({ status: 'pending_approval', error: null })
+            .eq('id', post.id);
+          console.warn(`[mav-bridge][gbp-daily] ${post.post_date} not approved yet — parked as pending_approval`);
         } else {
           await supabase.from('weekly_posts')
             .update({ status: 'error', error: (result.stderr || result.error || 'GBP poster failed').slice(0, 300) })
