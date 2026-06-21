@@ -590,6 +590,28 @@ async function poll() {
           console.error(`[mav-bridge][gbp-daily] Failed ${post.post_date}: ${result.error?.slice(0, 200)}`);
         }
       }
+
+      // ── Facebook reconciliation ──────────────────
+      // FB Days 2–7 are scheduled on Facebook's own native scheduler at run time
+      // (each row already carries a real FB post id). Facebook publishes them on
+      // their dates; the bridge never posts FB daily. So once a scheduled FB row's
+      // date has passed, the post is live — advance it to 'posted' so the status is
+      // truthful everywhere (dashboard counter + OVERDUE logic both key off status).
+      // ponytail: optimistic — no post-hoc FB read-back to confirm publication.
+      // Ceiling: if FB ever drops a scheduled post we'd still show it posted. Upgrade
+      // path: re-fetch each platform_post_id via the Graph API before flipping.
+      const { data: pastFb } = await supabase
+        .from('weekly_posts')
+        .select('id, post_date')
+        .eq('platform', 'facebook')
+        .eq('status', 'scheduled')
+        .lt('post_date', todayDate);
+      for (const post of pastFb || []) {
+        await supabase.from('weekly_posts')
+          .update({ status: 'posted', posted_at: new Date().toISOString() })
+          .eq('id', post.id);
+        console.log(`[mav-bridge][fb-reconcile] ${post.post_date} scheduled date passed — marked posted`);
+      }
     }
   } catch (e) {
     console.error('[mav-bridge] Poll exception:', e.message);
