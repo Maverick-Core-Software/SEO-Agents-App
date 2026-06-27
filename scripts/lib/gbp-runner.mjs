@@ -62,3 +62,138 @@ export function centralDateHour(nowUtc) {
   if (cstHour === 24) cstHour = 0; // some ICU builds emit 24 at midnight
   return { todayDate, cstHour };
 }
+
+// Called only after the driver verifies the post (exit 0): set Posted=TRUE in the
+// Excel workbook and move the photo to the dated archive folder. deps: { env, log }.
+export async function markGbpPostedAndArchive({ postDate, exitCode, runId, env, log }) {
+  if (exitCode !== 0) return;
+  const GBP_WORKBOOK_PATH = env.GBP_WORKBOOK_PATH || '';
+  const GBP_ARCHIVE_FOLDER = env.GBP_ARCHIVE_FOLDER || 'M:\\backups\\gbp-archive';
+  if (!GBP_WORKBOOK_PATH) { await log(runId, 'gbp', 'info', 'GBP_WORKBOOK_PATH not set — skipping Excel update'); return; }
+  if (!fs.existsSync(GBP_WORKBOOK_PATH)) { await log(runId, 'gbp', 'warn', `GBP workbook not found: ${GBP_WORKBOOK_PATH}`); return; }
+
+  try {
+    const workbook = xlsx.readFile(GBP_WORKBOOK_PATH);
+    const sheetName = workbook.SheetNames.includes('Posts') ? 'Posts' : workbook.SheetNames[0];
+    const sheet = workbook.Sheets[sheetName];
+    const rows = xlsx.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+    if (!rows.length) return;
+
+    const header = rows[0].map(h => String(h).trim());
+    const dateCol = header.findIndex(h => h.toLowerCase() === 'date');
+    const postedCol = header.findIndex(h => h.toLowerCase() === 'posted');
+    const photoCol = header.findIndex(h =>
+      h === 'AssetIdOrDescription' || h === 'Related Picture' || h.toLowerCase().includes('asset'));
+
+    if (dateCol === -1) { await log(runId, 'gbp', 'warn', 'GBP workbook: Date column not found'); return; }
+
+    let targetRow = -1;
+    let photoPath = '';
+    for (let i = 1; i < rows.length; i++) {
+      if (excelDateToIso(rows[i][dateCol]) === postDate) {
+        targetRow = i;
+        if (photoCol >= 0) photoPath = String(rows[i][photoCol] || '').trim();
+        break;
+      }
+    }
+    if (targetRow === -1) { await log(runId, 'gbp', 'warn', `GBP workbook: no row found for ${postDate}`); return; }
+
+    if (postedCol >= 0) {
+      sheet[xlsx.utils.encode_cell({ r: targetRow, c: postedCol })] = { t: 'b', v: true };
+      xlsx.writeFile(workbook, GBP_WORKBOOK_PATH);
+      await log(runId, 'gbp', 'info', `Excel Posted=TRUE set for ${postDate}`);
+    }
+    if (photoPath && fs.existsSync(photoPath)) {
+      const monthDir = path.join(GBP_ARCHIVE_FOLDER, postDate.slice(0, 7));
+      fs.mkdirSync(monthDir, { recursive: true });
+      fs.renameSync(photoPath, path.join(monthDir, path.basename(photoPath)));
+      await log(runId, 'gbp', 'info', `Photo archived: ${path.basename(photoPath)} → ${monthDir}`);
+    }
+  } catch (e) {
+    await log(runId, 'gbp', 'warn', `markGbpPostedAndArchive error: ${e.message}`);
+  }
+}
+
+// Apply a driver result to one weekly_posts row (shared by run + daily paths).
+async function applyDriverResult({ supabase, post, result, env, log }) {
+  const parsed = parseDriverJson(result.stdout);
+  const map = gbpDailyStatusForExit(result.exitCode, parsed);
+  const update = { status: map.status, error: map.error };
+  if (map.status === 'posted') {
+    update.posted_at = new Date().toISOString();
+    update.platform_post_id = map.platform_post_id;
+  }
+  if (map.status === 'error') {
+    update.error = (result.stderr || result.error || 'GBP poster failed').slice(0, 300);
+  }
+  await supabase.from('weekly_posts').update(update).eq('id', post.id);
+  if (map.archive) {
+    await markGbpPostedAndArchive({ postDate: post.post_date, exitCode: result.exitCode, runId: post.run_id, env, log });
+  }
+  return map.status;
+}
+
+// Run-time GBP for a freshly-approved run: curate photos (H:->E:), sync the Excel
+// workbook, post Day 1 immediately, mark Days 2-7 scheduled + approved-in-workbook.
+// deps: { supabase, runPhase, log, env, projectRoot, paths }
+//   paths: { photoPick, gbpPoster, seoAgentsExe }
+export async function runGbpForApprovedRun({ runId, gbpPosts, deps }) {
+  const { supabase, runPhase, log, env, projectRoot, paths } = deps;
+
+  // 0. Curate (reads H:\, writes E:\, rewrites PHOTO_FILE in the schedule).
+  if (fs.existsSync(paths.photoPick)) {
+    const r = await runPhase(runId, 'gbp', 'node', [paths.photoPick], projectRoot);
+    if (!r.ok) await log(runId, 'gbp', 'warn', `gbp-photo-pick failed (continuing): ${r.error}`);
+    else await log(runId, 'gbp', 'info', 'Photo curation complete');
+  }
+
+  // 1. Sync schedule -> Excel workbook.
+  const sync = await runPhase(runId, 'gbp', paths.seoAgentsExe, ['sync-gbp-schedule'], projectRoot);
+  if (!sync.ok) {
+    await log(runId, 'gbp', 'error', `sync-gbp-schedule failed: ${sync.error}`);
+    await supabase.from('weekly_posts').update({ status: 'error', error: sync.error })
+      .eq('run_id', runId).eq('platform', 'gbp').eq('status', 'posting');
+    return;
+  }
+
+  // 2. Post Day 1 now.
+  const day1 = gbpPosts.find(p => p.day === 1);
+  if (day1) {
+    await log(runId, 'gbp', 'info', 'Posting Day 1 GBP immediately...');
+    const r = await runPhase(runId, 'gbp', 'node', [paths.gbpPoster, '--date', day1.post_date], projectRoot);
+    const status = await applyDriverResult({ supabase, post: day1, result: r, env, log });
+    await log(runId, 'gbp', status === 'posted' ? 'info' : 'warn', `Day 1 GBP → ${status} (exit ${r.exitCode})`);
+  }
+
+  // 3. Mark Days 2-7 scheduled + propagate the weekly approval into the workbook gate.
+  const later = gbpPosts.filter(p => p.day > 1);
+  if (later.length) {
+    await supabase.from('weekly_posts').update({ status: 'scheduled' })
+      .eq('run_id', runId).eq('platform', 'gbp').gt('day', 1);
+    const dateArgs = later.map(p => p.post_date).filter(Boolean).flatMap(d => ['--date', d]);
+    if (dateArgs.length) {
+      const appr = await runPhase(runId, 'gbp', paths.seoAgentsExe, ['mark-gbp-approved', ...dateArgs], projectRoot);
+      if (!appr.ok) await log(runId, 'gbp', 'warn', `mark-gbp-approved failed (Days 2-7 may block): ${appr.error}`);
+    }
+    await log(runId, 'gbp', 'info', 'Days 2-7 marked scheduled + approved in workbook');
+  }
+}
+
+// Daily poster: post today's scheduled GBP rows. Caller gates this to once/day >=9am
+// Central using centralDateHour(). deps inline: { supabase, runPhase, log, env, todayDate, gbpPosterPath, projectRoot }
+export async function runDailyGbp({ supabase, runPhase, log, env, todayDate, gbpPosterPath, projectRoot }) {
+  const { data: todayGbp } = await supabase
+    .from('weekly_posts')
+    .select('id, run_id, post_date, photo_file')
+    .eq('platform', 'gbp')
+    .eq('status', 'scheduled')
+    .eq('post_date', todayDate)
+    .order('post_date', { ascending: true });
+
+  for (const post of todayGbp || []) {
+    await log(post.run_id, 'gbp', 'info', `Posting scheduled GBP for ${post.post_date}`);
+    const result = await runPhase(post.run_id, 'gbp', 'node', [gbpPosterPath, '--date', post.post_date], projectRoot);
+    const status = await applyDriverResult({ supabase, post, result, env, log });
+    await log(post.run_id, 'gbp', status === 'error' ? 'error' : 'info', `Daily GBP ${post.post_date} → ${status} (exit ${result.exitCode})`);
+  }
+}

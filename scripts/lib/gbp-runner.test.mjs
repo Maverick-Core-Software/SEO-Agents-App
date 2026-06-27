@@ -6,6 +6,7 @@ import {
   gbpNeedsVerificationMessage,
   gbpDailyStatusForExit,
   centralDateHour,
+  runDailyGbp,
 } from './gbp-runner.mjs';
 
 // excelDateToIso: Date, Excel serial, and string forms
@@ -42,3 +43,38 @@ assert.equal(early.todayDate, '2026-06-27');
 assert.equal(early.cstHour, 0);
 
 console.log('ok gbp-runner pure helpers');
+
+// --- runDailyGbp wiring: a verified post (exit 0) marks the row 'posted' ---
+{
+  const updates = [];
+  // Minimal chainable Supabase stub. select-chain ends at .order() (awaitable);
+  // update-chain ends at .eq() (awaitable).
+  const makeQb = (rows) => {
+    const qb = {
+      from: () => qb,
+      select: () => qb,
+      eq: () => qb,
+      order: () => Promise.resolve({ data: rows }),
+      update: (vals) => { updates.push(vals); return { eq: () => Promise.resolve({ data: null, error: null }) }; },
+    };
+    return qb;
+  };
+  const supabase = makeQb([{ id: 'p1', run_id: 'r1', post_date: '2026-06-27', photo_file: '' }]);
+  const runPhase = async () => ({ ok: true, exitCode: 0, stdout: '{"result":"posted","postUrl":"https://x/post"}', stderr: '' });
+
+  await runDailyGbp({
+    supabase,
+    runPhase,
+    log: async () => {},
+    env: {}, // no GBP_WORKBOOK_PATH => markGbpPostedAndArchive short-circuits, no Excel touched
+    todayDate: '2026-06-27',
+    gbpPosterPath: 'C:/fake/driver.mjs',
+    projectRoot: process.cwd(),
+  });
+
+  const posted = updates.find(u => u.status === 'posted');
+  assert.ok(posted, 'runDailyGbp should mark the row posted on exit 0');
+  assert.equal(posted.platform_post_id, 'https://x/post');
+}
+
+console.log('ok gbp-runner orchestration');
