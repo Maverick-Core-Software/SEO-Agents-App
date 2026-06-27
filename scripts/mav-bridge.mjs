@@ -85,9 +85,12 @@ async function hopError(runId, phase, hop, message, err) {
   console.error(`[mav-bridge][${hop}][error] ${detail}`);
   console.error(`  ↳ ${JSON.stringify(rec)}`);
   if (runId) {
-    await supabase.from('run_logs')
-      .insert({ run_id: runId, phase, level: 'error', message: `[${hop}] ${detail}` })
-      .catch((e) => console.error(`[mav-bridge][mav-bridge→supabase][error] could not write hop error: ${e.message}`));
+    // Supabase's query builder is a thenable, not a real Promise — it has no
+    // `.catch`. Awaiting + destructuring the error keeps a logging failure from
+    // throwing out of poll() (which would kill fault detection mid-cycle).
+    const { error } = await supabase.from('run_logs')
+      .insert({ run_id: runId, phase, level: 'error', message: `[${hop}] ${detail}` });
+    if (error) console.error(`[mav-bridge][mav-bridge→supabase][error] could not write hop error: ${error.message}`);
   }
 }
 
