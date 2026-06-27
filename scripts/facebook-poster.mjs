@@ -793,7 +793,7 @@ async function runSinglePayload(args) {
     if (!FB_PAGE_ID || !FB_PAGE_ACCESS_TOKEN) {
       throw new Error('FB_PAGE_ID and FB_PAGE_ACCESS_TOKEN must be set in .env (or set FB_USE_PLAYWRIGHT=1)');
     }
-    postId = await graphDispatch(post, caption, videoPath, null);
+    ({ id: postId } = await graphDispatch(post, caption, videoPath, null));
   }
 
   return {
