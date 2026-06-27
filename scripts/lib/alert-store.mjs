@@ -4,6 +4,8 @@
 import fs from 'node:fs';
 
 export function makeAlertStore(filePath) {
+  // ponytail: load+save the whole Set on every call (sync disk IO). Fine at our
+  // scale (a handful of faults); if the set grows large, cache in memory + flush on write.
   const load = () => {
     try { return new Set(JSON.parse(fs.readFileSync(filePath, 'utf8'))); }
     catch { return new Set(); }

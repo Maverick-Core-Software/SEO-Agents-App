@@ -115,7 +115,7 @@ async function notifyAlert({ runId, actionId, faultType, title, detail }) {
   // iMessage via grizzly-hcp send-only helper. Failure must not break the poll loop.
   try {
     await execFileAsync('npx', ['tsx', 'scripts/notify-imessage.ts', msg], {
-      cwd: GRIZZLY_HCP_DIR, timeout: 60_000, windowsHide: true,
+      cwd: GRIZZLY_HCP_DIR, timeout: 20_000, windowsHide: true, shell: true,
     });
   } catch (e) {
     console.error(`[mav-bridge] iMessage alert failed: ${e.message}`);
@@ -699,14 +699,17 @@ async function poll() {
     // alert once (deduped). Recovered rows clear their dedup key so a future
     // recurrence re-alerts.
     try {
-      const { data: faultRuns } = await supabase.from('seo_runs')
+      const { data: faultRuns, error: faultRunsErr } = await supabase.from('seo_runs')
         .select('id,status,updated_at,error').in('status', ['error', 'executing']);
-      const { data: faultPosts } = await supabase.from('weekly_posts')
+      const { data: faultPosts, error: faultPostsErr } = await supabase.from('weekly_posts')
         .select('id,run_id,platform,status,updated_at,error,post_date').in('status', ['error', 'needs_verification', 'posting']);
-      const { data: faultTasks } = await supabase.from('website_tasks')
+      const { data: faultTasks, error: faultTasksErr } = await supabase.from('website_tasks')
         .select('id,run_id,status,updated_at,error,title').in('status', ['error', 'executing']);
+      if (faultRunsErr || faultPostsErr || faultTasksErr) {
+        console.warn(`[mav-bridge][fault-detect] query error: ${(faultRunsErr || faultPostsErr || faultTasksErr).message}`);
+      }
 
-      const checkRow = async (row, type, thresholdKey, label) => {
+      const checkRow = async (row, thresholdKey, label) => {
         const b = bucketStatus(row.status);
         if (b === 'failed') {
           await notifyAlert({ runId: row.run_id || row.id, actionId: row.id, faultType: 'failed',
@@ -721,11 +724,13 @@ async function poll() {
         }
       };
 
-      for (const r of faultRuns || []) await checkRow(r, 'seo_run', 'seo_run', `SEO Run ${(r.id || '').slice(0, 8)}`);
-      for (const p of faultPosts || []) await checkRow(p, 'weekly_post',
-        p.platform === 'facebook' ? 'weekly_post_facebook' : 'weekly_post_gbp',
-        `${p.platform} post ${p.post_date || ''}`.trim());
-      for (const t of faultTasks || []) await checkRow(t, 'website_task', 'website_task', t.title || `Task ${(t.id || '').slice(0, 8)}`);
+      await Promise.all([
+        ...(faultRuns || []).map(r => checkRow(r, 'seo_run', `SEO Run ${(r.id || '').slice(0, 8)}`)),
+        ...(faultPosts || []).map(p => checkRow(p,
+          p.platform === 'facebook' ? 'weekly_post_facebook' : 'weekly_post_gbp',
+          `${p.platform} post ${p.post_date || ''}`.trim())),
+        ...(faultTasks || []).map(t => checkRow(t, 'website_task', t.title || `Task ${(t.id || '').slice(0, 8)}`)),
+      ]);
     } catch (e) {
       console.error(`[mav-bridge][fault-detect] ${e.message}`);
     }
