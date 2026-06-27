@@ -807,7 +807,7 @@ async function handleHttpRequest(req, res) {
 
     const [runsRes, postsRes, tasksRes] = await Promise.all([
       supabase.from('seo_runs').select('*')
-        .or(`status.in.(pending_approval,approved,awaiting_prompt,research_running,execute_running,executing,error),and(status.eq.done,done_at.gte.${since48h})`)
+        .or(`status.in.(pending_approval,approved,awaiting_prompt,executing,error),and(status.eq.done,done_at.gte.${since48h})`)
         .order('created_at', { ascending: false }).limit(20),
       supabase.from('weekly_posts').select('*')
         .or(`status.in.(pending_approval,approved,scheduled,posting,error,needs_verification),and(status.eq.posted,posted_at.gte.${since48h})`)
@@ -840,6 +840,7 @@ async function handleHttpRequest(req, res) {
         status_detail,
         assigned_agent: agentFor(a),
         platform: row.platform || (type === 'website_task' ? 'website_cms' : type === 'seo_run' ? 'pipeline' : null),
+        // ponytail: weekly_posts.media_status column may not exist pre-migration; undefined falls through to fallback
         media_status: type === 'weekly_post' ? (row.media_status || (row.status === 'posted' ? 'none' : 'n/a')) : 'n/a',
         error: row.error || null,
         executing_since: bucket === 'in_process' ? (row.updated_at || null) : null,
@@ -876,7 +877,6 @@ async function handleHttpRequest(req, res) {
         in_process: actions.filter(a => a.status === 'in_process').length,
         completed: actions.filter(a => a.status === 'completed').length,
         failed: actions.filter(a => a.status === 'failed').length,
-        blocked_access: actions.filter(a => a.status === 'failed').length,
       },
     });
     return;
