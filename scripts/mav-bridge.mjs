@@ -21,6 +21,7 @@ import { createClient } from '@supabase/supabase-js';
 import xlsx from 'xlsx';
 import { checkFacebookToken } from './facebook-poster.mjs';
 import { mediaStatusFor, bucketStatus, isStuck, describeAction, agentFor } from './lib/action-enrich.mjs';
+import { makeAlertStore } from './lib/alert-store.mjs';
 
 const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -49,6 +50,8 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
 const SMTP_FROM = process.env.SMTP_FROM || '';
 const SMTP_TO = process.env.SMTP_TO || '';
 const SMTP_APP_PASSWORD = process.env.SMTP_APP_PASSWORD || '';
+const GRIZZLY_HCP_DIR = process.env.GRIZZLY_HCP_DIR || 'C:\\Workspace\\Active\\grizzly-hcp';
+const ALERTED_PATH = path.join(PROJECT_ROOT, 'state', 'alerted.json');
 
 if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
   console.error('[mav-bridge] SUPABASE_URL or SUPABASE_SERVICE_KEY not set — exiting');
@@ -56,6 +59,8 @@ if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
 }
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
+fs.mkdirSync(path.join(PROJECT_ROOT, 'state'), { recursive: true });
+const alertStore = makeAlertStore(ALERTED_PATH);
 
 // ─────────────────────────────────────────────
 // Logging
@@ -100,6 +105,22 @@ async function sendBridgeAlert(subject, body) {
   } catch (e) {
     console.error(`[mav-bridge] Alert email failed: ${e.message}`);
   }
+}
+
+// Fire a non-silent alert exactly once per (run, action, fault). Banner data is
+// served separately by /seo/actions; this handles the push channels (iMessage + email).
+async function notifyAlert({ runId, actionId, faultType, title, detail }) {
+  if (!alertStore.shouldFire(runId, actionId, faultType)) return;
+  const msg = `⚠️ Grizzly SEO: ${title}\n${detail || ''}`.trim();
+  // iMessage via grizzly-hcp send-only helper. Failure must not break the poll loop.
+  try {
+    await execFileAsync('npx', ['tsx', 'scripts/notify-imessage.ts', msg], {
+      cwd: GRIZZLY_HCP_DIR, timeout: 60_000, windowsHide: true,
+    });
+  } catch (e) {
+    console.error(`[mav-bridge] iMessage alert failed: ${e.message}`);
+  }
+  await sendBridgeAlert(`Grizzly SEO: ${title}`, detail || title);
 }
 
 // ─────────────────────────────────────────────
@@ -671,6 +692,42 @@ async function poll() {
           .eq('id', post.id);
         console.log(`[mav-bridge][fb-reconcile] ${post.post_date} scheduled date passed — marked posted`);
       }
+    }
+
+    // ── Non-silent fault detection ───────────────
+    // Failed rows and rows stuck in-process past their per-type threshold both
+    // alert once (deduped). Recovered rows clear their dedup key so a future
+    // recurrence re-alerts.
+    try {
+      const { data: faultRuns } = await supabase.from('seo_runs')
+        .select('id,status,updated_at,error').in('status', ['error', 'executing']);
+      const { data: faultPosts } = await supabase.from('weekly_posts')
+        .select('id,run_id,platform,status,updated_at,error,post_date').in('status', ['error', 'needs_verification', 'posting']);
+      const { data: faultTasks } = await supabase.from('website_tasks')
+        .select('id,run_id,status,updated_at,error,title').in('status', ['error', 'executing']);
+
+      const checkRow = async (row, type, thresholdKey, label) => {
+        const b = bucketStatus(row.status);
+        if (b === 'failed') {
+          await notifyAlert({ runId: row.run_id || row.id, actionId: row.id, faultType: 'failed',
+            title: `Failed: ${label}`, detail: row.error || 'Action failed — check run logs.' });
+        } else if (b === 'in_process' && isStuck(thresholdKey, row.updated_at)) {
+          await notifyAlert({ runId: row.run_id || row.id, actionId: row.id, faultType: 'stuck',
+            title: `Stuck: ${label}`, detail: `In process longer than the ${thresholdKey} limit (since ${row.updated_at}).` });
+        } else {
+          // healthy now — clear both dedup keys so a recurrence re-alerts
+          alertStore.clearFault(row.run_id || row.id, row.id, 'failed');
+          alertStore.clearFault(row.run_id || row.id, row.id, 'stuck');
+        }
+      };
+
+      for (const r of faultRuns || []) await checkRow(r, 'seo_run', 'seo_run', `SEO Run ${(r.id || '').slice(0, 8)}`);
+      for (const p of faultPosts || []) await checkRow(p, 'weekly_post',
+        p.platform === 'facebook' ? 'weekly_post_facebook' : 'weekly_post_gbp',
+        `${p.platform} post ${p.post_date || ''}`.trim());
+      for (const t of faultTasks || []) await checkRow(t, 'website_task', 'website_task', t.title || `Task ${(t.id || '').slice(0, 8)}`);
+    } catch (e) {
+      console.error(`[mav-bridge][fault-detect] ${e.message}`);
     }
   } catch (e) {
     console.error(`[mav-bridge][mav-bridge→poll][error] poll exception: ${e.message}`);
