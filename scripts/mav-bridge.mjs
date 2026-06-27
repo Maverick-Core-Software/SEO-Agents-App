@@ -20,6 +20,8 @@ import { fileURLToPath } from 'node:url';
 import { createClient } from '@supabase/supabase-js';
 import xlsx from 'xlsx';
 import { checkFacebookToken } from './facebook-poster.mjs';
+import { mediaStatusFor, bucketStatus, isStuck, describeAction, agentFor } from './lib/action-enrich.mjs';
+import { makeAlertStore } from './lib/alert-store.mjs';
 
 const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -48,6 +50,8 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
 const SMTP_FROM = process.env.SMTP_FROM || '';
 const SMTP_TO = process.env.SMTP_TO || '';
 const SMTP_APP_PASSWORD = process.env.SMTP_APP_PASSWORD || '';
+const GRIZZLY_HCP_DIR = process.env.GRIZZLY_HCP_DIR || 'C:\\Workspace\\Active\\grizzly-hcp';
+const ALERTED_PATH = path.join(PROJECT_ROOT, 'state', 'alerted.json');
 
 if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
   console.error('[mav-bridge] SUPABASE_URL or SUPABASE_SERVICE_KEY not set — exiting');
@@ -55,6 +59,16 @@ if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
 }
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
+fs.mkdirSync(path.join(PROJECT_ROOT, 'state'), { recursive: true });
+const alertStore = makeAlertStore(ALERTED_PATH);
+// Cold-start guard: if the dedup store is empty on boot, the first fault-detection
+// pass adopts whatever is already failed/stuck as a silent baseline instead of
+// firing an alert for every pre-existing fault at once. Only NEW faults after boot
+// alert. (Without this, a fresh deploy with N standing failures sends N texts.)
+const faultStoreWasEmpty = alertStore.isEmpty();
+let faultBaselineSeeded = false;
+// Never alert on faults older than this — stale historical failures are noise.
+const FAULT_RECENCY_MS = 24 * 60 * 60 * 1000;
 
 // ─────────────────────────────────────────────
 // Logging
@@ -79,9 +93,12 @@ async function hopError(runId, phase, hop, message, err) {
   console.error(`[mav-bridge][${hop}][error] ${detail}`);
   console.error(`  ↳ ${JSON.stringify(rec)}`);
   if (runId) {
-    await supabase.from('run_logs')
-      .insert({ run_id: runId, phase, level: 'error', message: `[${hop}] ${detail}` })
-      .catch((e) => console.error(`[mav-bridge][mav-bridge→supabase][error] could not write hop error: ${e.message}`));
+    // Supabase's query builder is a thenable, not a real Promise — it has no
+    // `.catch`. Awaiting + destructuring the error keeps a logging failure from
+    // throwing out of poll() (which would kill fault detection mid-cycle).
+    const { error } = await supabase.from('run_logs')
+      .insert({ run_id: runId, phase, level: 'error', message: `[${hop}] ${detail}` });
+    if (error) console.error(`[mav-bridge][mav-bridge→supabase][error] could not write hop error: ${error.message}`);
   }
 }
 
@@ -99,6 +116,22 @@ async function sendBridgeAlert(subject, body) {
   } catch (e) {
     console.error(`[mav-bridge] Alert email failed: ${e.message}`);
   }
+}
+
+// Fire a non-silent alert exactly once per (run, action, fault). Banner data is
+// served separately by /seo/actions; this handles the push channels (iMessage + email).
+async function notifyAlert({ runId, actionId, faultType, title, detail }) {
+  if (!alertStore.shouldFire(runId, actionId, faultType)) return;
+  const msg = `⚠️ Grizzly SEO: ${title}\n${detail || ''}`.trim();
+  // iMessage via grizzly-hcp send-only helper. Failure must not break the poll loop.
+  try {
+    await execFileAsync('npx', ['tsx', 'scripts/notify-imessage.ts', msg], {
+      cwd: GRIZZLY_HCP_DIR, timeout: 20_000, windowsHide: true, shell: true,
+    });
+  } catch (e) {
+    console.error(`[mav-bridge] iMessage alert failed: ${e.message}`);
+  }
+  await sendBridgeAlert(`Grizzly SEO: ${title}`, detail || title);
 }
 
 // ─────────────────────────────────────────────
@@ -350,6 +383,22 @@ async function executeApprovedRun(run) {
 
   let allOk = true;
 
+  // ── 0. GBP photo curation (must run BEFORE Facebook) ───────────
+  // gbp-photo-pick discovers photos from the Drive-synced GBP Photos folder,
+  // scores + matches them to the schedule, copies winners to GBP_CURATED_FOLDER,
+  // and rewrites PHOTO_FILE. It must precede the Facebook phase: when a FB video
+  // day's Veo render fails, facebook-poster falls back to the same-date curated
+  // photo (curatedPhotoForDate), which only exists once this has run for the week.
+  const PHOTO_PICK_PATH = path.join(PROJECT_ROOT, 'scripts', 'gbp-photo-pick.mjs');
+  if (fs.existsSync(PHOTO_PICK_PATH)) {
+    const matchResult = await runPhase(runId, 'gbp', 'node', [PHOTO_PICK_PATH], PROJECT_ROOT);
+    if (!matchResult.ok) {
+      await log(runId, 'gbp', 'warn', `gbp-photo-pick failed (continuing): ${matchResult.error}`);
+    } else {
+      await log(runId, 'gbp', 'info', 'Photo curation complete (curated folder populated for GBP + FB fallback)');
+    }
+  }
+
   // ── 1. Facebook posts ──────────────────────────────────────────
   const { data: fbPosts } = await supabase
     .from('weekly_posts')
@@ -394,6 +443,7 @@ async function executeApprovedRun(run) {
             await supabase.from('weekly_posts')
               .update({
                 status: postStatus,
+                media_status: mediaStatusFor(fbPost.type, r.media),
                 error: r.status === 'error' ? (r.message || 'Unknown error') : null,
                 posted_at: new Date().toISOString(),
                 platform_post_id: r.id || null,
@@ -434,19 +484,7 @@ async function executeApprovedRun(run) {
       .update({ status: 'posting' })
       .eq('run_id', runId).eq('platform', 'gbp').eq('status', 'approved');
 
-    // Pick the best photo per GBP post and rewrite PHOTO_FILE before syncing to Excel.
-    // gbp-photo-pick.mjs is the single source of truth for GBP photos: it discovers
-    // from the Drive-synced GBP Photos folder, scores + matches, and copies winners
-    // to Curated. (Replaces the old photo-scanner → photo-matcher two-step.)
-    const PHOTO_PICK_PATH = path.join(PROJECT_ROOT, 'scripts', 'gbp-photo-pick.mjs');
-    if (fs.existsSync(PHOTO_PICK_PATH)) {
-      const matchResult = await runPhase(runId, 'gbp', 'node', [PHOTO_PICK_PATH], PROJECT_ROOT);
-      if (!matchResult.ok) {
-        await log(runId, 'gbp', 'warn', `gbp-photo-pick failed (continuing): ${matchResult.error}`);
-      } else {
-        await log(runId, 'gbp', 'info', 'Photo matching complete');
-      }
-    }
+    // (Photo curation already ran before the Facebook phase — see section 0.)
 
     // Sync posts to Excel workbook (reads updated PHOTO_FILE paths from schedule)
     const syncResult = await runPhase(runId, 'gbp', SEO_AGENTS_EXE, ['sync-gbp-schedule'], PROJECT_ROOT);
@@ -670,6 +708,71 @@ async function poll() {
         console.log(`[mav-bridge][fb-reconcile] ${post.post_date} scheduled date passed — marked posted`);
       }
     }
+
+    // ── Non-silent fault detection ───────────────
+    // Failed rows and rows stuck in-process past their per-type threshold both
+    // alert once (deduped). Recovered rows clear their dedup key so a future
+    // recurrence re-alerts.
+    try {
+      // Only consider recently-updated rows — never alert on stale historical faults.
+      const faultCutoff = new Date(Date.now() - FAULT_RECENCY_MS).toISOString();
+      const { data: faultRuns, error: faultRunsErr } = await supabase.from('seo_runs')
+        .select('id,status,updated_at,error').in('status', ['error', 'executing']).gte('updated_at', faultCutoff);
+      const { data: faultPosts, error: faultPostsErr } = await supabase.from('weekly_posts')
+        .select('id,run_id,platform,status,updated_at,error,post_date').in('status', ['error', 'needs_verification', 'posting']).gte('updated_at', faultCutoff);
+      const { data: faultTasks, error: faultTasksErr } = await supabase.from('website_tasks')
+        .select('id,run_id,status,updated_at,error,title').in('status', ['error', 'executing']).gte('updated_at', faultCutoff);
+      if (faultRunsErr || faultPostsErr || faultTasksErr) {
+        console.warn(`[mav-bridge][fault-detect] query error: ${(faultRunsErr || faultPostsErr || faultTasksErr).message}`);
+      }
+
+      // On a cold start (empty store) the first pass only records the baseline.
+      const seeding = faultStoreWasEmpty && !faultBaselineSeeded;
+
+      const checkRow = async (row, thresholdKey, label) => {
+        const b = bucketStatus(row.status);
+        const isFailed = b === 'failed';
+        const isStuckRow = b === 'in_process' && isStuck(thresholdKey, row.updated_at);
+        if (!isFailed && !isStuckRow) {
+          // healthy now — clear both dedup keys so a recurrence re-alerts
+          alertStore.clearFault(row.run_id || row.id, row.id, 'failed');
+          alertStore.clearFault(row.run_id || row.id, row.id, 'stuck');
+          return;
+        }
+        const faultType = isFailed ? 'failed' : 'stuck';
+        if (seeding) {
+          // Adopt as baseline without alerting (avoids a cold-start alert blast).
+          alertStore.record(row.run_id || row.id, row.id, faultType);
+          return;
+        }
+        if (isFailed) {
+          await notifyAlert({ runId: row.run_id || row.id, actionId: row.id, faultType: 'failed',
+            title: `Failed: ${label}`, detail: row.error || 'Action failed — check run logs.' });
+        } else {
+          await notifyAlert({ runId: row.run_id || row.id, actionId: row.id, faultType: 'stuck',
+            title: `Stuck: ${label}`, detail: `In process longer than the ${thresholdKey} limit (since ${row.updated_at}).` });
+        }
+      };
+
+      await Promise.all([
+        ...(faultRuns || []).map(r => checkRow(r, 'seo_run', `SEO Run ${(r.id || '').slice(0, 8)}`)),
+        ...(faultPosts || []).map(p => checkRow(p,
+          p.platform === 'facebook' ? 'weekly_post_facebook' : 'weekly_post_gbp',
+          `${p.platform} post ${p.post_date || ''}`.trim())),
+        ...(faultTasks || []).map(t => checkRow(t, 'website_task', t.title || `Task ${(t.id || '').slice(0, 8)}`)),
+      ]);
+
+      // Seal the baseline only if all three fault queries succeeded this pass. If
+      // any errored, the adopted set is incomplete — leave faultBaselineSeeded false
+      // so the next poll re-seeds rather than alerting on the rows we missed.
+      if (seeding && !faultRunsErr && !faultPostsErr && !faultTasksErr) {
+        faultBaselineSeeded = true;
+        const n = (faultRuns?.length || 0) + (faultPosts?.length || 0) + (faultTasks?.length || 0);
+        console.log(`[mav-bridge][fault-detect] cold start: adopted ${n} existing fault(s) as baseline — no alerts sent. Only new faults will alert.`);
+      }
+    } catch (e) {
+      console.error(`[mav-bridge][fault-detect] ${e.message}`);
+    }
   } catch (e) {
     console.error(`[mav-bridge][mav-bridge→poll][error] poll exception: ${e.message}`);
   } finally {
@@ -801,42 +904,82 @@ async function handleHttpRequest(req, res) {
 
   // ── GET /seo/actions ────────────────────────
   if (method === 'GET' && url.pathname === '/seo/actions') {
+    const since48h = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+
     const [runsRes, postsRes, tasksRes] = await Promise.all([
-      supabase.from('seo_runs').select('*').eq('status', 'pending_approval').order('created_at').limit(10),
-      supabase.from('weekly_posts').select('*').in('status', ['pending_approval', 'error', 'needs_verification']).order('day').limit(50),
-      supabase.from('website_tasks').select('*').eq('status', 'pending_approval').order('priority').limit(20),
+      supabase.from('seo_runs').select('*')
+        .or(`status.in.(pending_approval,approved,awaiting_prompt,executing,error),and(status.eq.done,done_at.gte.${since48h})`)
+        .order('created_at', { ascending: false }).limit(20),
+      supabase.from('weekly_posts').select('*')
+        .or(`status.in.(pending_approval,approved,scheduled,posting,error,needs_verification),and(status.eq.posted,posted_at.gte.${since48h})`)
+        .order('post_date', { ascending: true }).limit(60),
+      supabase.from('website_tasks').select('*')
+        .in('status', ['pending_approval', 'approved', 'executing', 'error'])
+        .order('priority').limit(20),
     ]);
+
     const runs = runsRes.data || [];
     const posts = postsRes.data || [];
     const tasks = tasksRes.data || [];
 
+    const enrich = (row, type) => {
+      const a = { ...row, type };
+      const bucket = bucketStatus(row.status);
+      const thresholdKey = type === 'seo_run' ? 'seo_run'
+        : type === 'website_task' ? 'website_task'
+        : (row.platform === 'facebook' ? 'weekly_post_facebook' : 'weekly_post_gbp');
+      const stuck = bucket === 'in_process' && isStuck(thresholdKey, row.updated_at);
+      const status = stuck ? 'failed' : bucket;
+      const status_detail = stuck ? 'stuck' : row.status;
+      const needsApproval = row.status === 'pending_approval' || row.status === 'awaiting_prompt';
+      const isApproved = row.status === 'approved';
+      return {
+        id: row.id,
+        type,
+        title: row.title || row.service || (type === 'seo_run' ? `SEO Run ${row.week_of || (row.id || '').slice(0, 8)}` : `${type} ${(row.id || '').slice(0, 8)}`),
+        description: describeAction(a, row.description),
+        priority: (row.priority || (type === 'seo_run' ? 'high' : 'medium')),
+        status,
+        status_detail,
+        assigned_agent: agentFor(a),
+        platform: row.platform || (type === 'website_task' ? 'website_cms' : type === 'seo_run' ? 'pipeline' : null),
+        // ponytail: weekly_posts.media_status column may not exist pre-migration; undefined falls through to fallback
+        media_status: type === 'weekly_post' ? (row.media_status || (row.status === 'posted' ? 'none' : 'n/a')) : 'n/a',
+        error: row.error || null,
+        executing_since: bucket === 'in_process' ? (row.updated_at || null) : null,
+        updated_at: row.updated_at || row.created_at || null,
+        approval_required: needsApproval,
+        approval: isApproved ? { approved: true, status: row.status } : null,
+        live_adapter: 'mav-bridge',
+        posts_count: type === 'seo_run' ? posts.filter(p => p.run_id === row.id).length : undefined,
+      };
+    };
+
     const actions = [
-      ...runs.map(r => ({
-        id: r.id,
-        type: 'seo_run',
-        status: 'needs_approval',
-        label: `SEO Run ${r.week_of || r.id?.slice(0, 8)}`,
-        approval_required: true,
-        approval: null,
-        live_adapter: 'mav-bridge',
-        posts_count: posts.filter(p => p.run_id === r.id).length,
-      })),
-      ...tasks.map(t => ({
-        id: t.id,
-        type: 'website_task',
-        status: 'needs_approval',
-        label: t.title || `Task ${t.id?.slice(0, 8)}`,
-        approval_required: true,
-        approval: null,
-        live_adapter: 'mav-bridge',
-      })),
+      ...runs.map(r => enrich(r, 'seo_run')),
+      ...posts.map(p => enrich(p, 'weekly_post')),
+      ...tasks.map(t => enrich(t, 'website_task')),
     ];
+
+    const alerts = actions
+      .filter(a => a.status === 'failed')
+      .map(a => ({
+        id: `${a.id}:${a.status_detail === 'stuck' ? 'stuck' : 'failed'}`,
+        severity: a.status_detail === 'stuck' ? 'warn' : 'error',
+        title: a.status_detail === 'stuck' ? `Stuck: ${a.title}` : `Failed: ${a.title}`,
+        detail: a.error || (a.status_detail === 'stuck' ? `In process longer than the ${a.type} limit.` : 'Action failed — check run logs.'),
+        action_id: a.id,
+        fault_type: a.status_detail === 'stuck' ? 'stuck' : 'failed',
+      }));
 
     sendJsonHttp(res, 200, {
       actions,
+      alerts,
       summary: {
-        needs_approval: runs.length + tasks.length,
-        blocked_access: posts.filter(p => ['error', 'needs_verification'].includes(p.status)).length,
+        needs_approval: actions.filter(a => a.approval_required).length,
+        in_process: actions.filter(a => a.status === 'in_process').length,
+        completed: actions.filter(a => a.status === 'completed').length,
+        failed: actions.filter(a => a.status === 'failed').length,
       },
     });
     return;

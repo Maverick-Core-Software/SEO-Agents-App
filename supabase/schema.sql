@@ -37,6 +37,7 @@ create table if not exists weekly_posts (
   hashtags       text,
   photo_file     text,
   video_prompt   text,
+  media_status   text,           -- 'video' | 'photo' | 'downgraded' | 'none'
   video_path     text,           -- local path once generated
   status         text not null default 'pending_approval',
   -- pending_approval | approved | posting | posted | scheduled | error

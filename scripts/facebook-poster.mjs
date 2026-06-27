@@ -45,6 +45,7 @@ import os from 'node:os';
 import process from 'node:process';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { normalizePhotoFile } from './lib/schedule-text.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -143,21 +144,42 @@ export function parseScheduleText(text) {
       body: get('BODY'),
       cta: get('CTA'),
       hashtags: get('HASHTAGS'),
-      photo_file: get('PHOTO_FILE'),
+      photo_file: normalizePhotoFile(get('PHOTO_FILE')),
       video_prompt: get('VIDEO_PROMPT'),
       status: get('STATUS'),
     };
   }).filter(p => p.day > 0).sort((a, b) => a.day - b.day);
 }
 
+const GBP_CURATED_FOLDER = process.env.GBP_CURATED_FOLDER || 'E:\\Media\\Grizzly\\Curated';
+
+function curatedPhotoForDate(date) {
+  // gbp-photo-pick copies winners as `${date}-${slug}.<ext>`. For a FB video day
+  // whose video failed, reuse that same-day curated photo so we post an image,
+  // not text. ponytail: first match by date prefix wins; ceiling = if multiple
+  // services share a date the choice is arbitrary. Upgrade: match on service slug.
+  if (!date) return null;
+  try {
+    const hit = fs.readdirSync(GBP_CURATED_FOLDER)
+      .filter(f => f.startsWith(`${date}-`) && /\.(jpe?g|png|webp)$/i.test(f))
+      .sort()[0];
+    return hit ? path.join(GBP_CURATED_FOLDER, hit) : null;
+  } catch { return null; }
+}
+
 function resolvePhotoPath(post) {
   const photoFile = post.photo_file || '';
-  if (!photoFile) return null;
-  if (path.isAbsolute(photoFile)) return fs.existsSync(photoFile) ? photoFile : null;
-  const fromGbp = path.join(GBP_PHOTO_PATH, photoFile);
-  if (fs.existsSync(fromGbp)) return fromGbp;
-  const fromOutputs = path.join(PROJECT_ROOT, 'outputs', photoFile);
-  return fs.existsSync(fromOutputs) ? fromOutputs : null;
+  if (photoFile) {
+    if (path.isAbsolute(photoFile)) { if (fs.existsSync(photoFile)) return photoFile; }
+    else {
+      const fromGbp = path.join(GBP_PHOTO_PATH, photoFile);
+      if (fs.existsSync(fromGbp)) return fromGbp;
+      const fromOutputs = path.join(PROJECT_ROOT, 'outputs', photoFile);
+      if (fs.existsSync(fromOutputs)) return fromOutputs;
+    }
+  }
+  // No usable explicit photo — try the same-date curated winner (video-day fallback).
+  return curatedPhotoForDate(post.date);
 }
 
 function resolveVideoPath(post) {
@@ -335,20 +357,21 @@ async function graphPostVideo(videoPath, caption, scheduleUnix) {
 }
 
 // Dispatch one post over the Graph API, with token-expiry retry around the whole op.
+// Returns { id, media } where media is 'video' | 'photo' | 'text' — what actually went out.
 async function graphDispatch(post, caption, videoPath, scheduleUnix) {
   return withTokenRetry(`day ${post.day ?? '?'} (${post.type})`, async () => {
     if (post.type === 'video' && videoPath && fs.existsSync(videoPath)) {
       hopLog('facebook-poster→graph', 'info', `Uploading video (${(fs.statSync(videoPath).size / 1e6).toFixed(1)} MB)`);
-      return graphPostVideo(videoPath, caption, scheduleUnix);
+      return { id: await graphPostVideo(videoPath, caption, scheduleUnix), media: 'video' };
     }
     const fullPhotoPath = resolvePhotoPath(post);
     if (fullPhotoPath) {
       if (post.type === 'video') hopLog('facebook-poster→graph', 'info', `Video unavailable — falling back to photo: ${path.basename(fullPhotoPath)}`);
       else hopLog('facebook-poster→graph', 'info', `Uploading photo: ${path.basename(fullPhotoPath)}`);
-      return graphPostPhoto(fullPhotoPath, caption, scheduleUnix);
+      return { id: await graphPostPhoto(fullPhotoPath, caption, scheduleUnix), media: 'photo' };
     }
     if (post.photo_file) hopLog('facebook-poster→graph', 'warn', `Photo not found: ${post.photo_file} — posting as text`);
-    return graphPostText(caption, scheduleUnix);
+    return { id: await graphPostText(caption, scheduleUnix), media: 'text' };
   });
 }
 
@@ -770,7 +793,7 @@ async function runSinglePayload(args) {
     if (!FB_PAGE_ID || !FB_PAGE_ACCESS_TOKEN) {
       throw new Error('FB_PAGE_ID and FB_PAGE_ACCESS_TOKEN must be set in .env (or set FB_USE_PLAYWRIGHT=1)');
     }
-    postId = await graphDispatch(post, caption, videoPath, null);
+    ({ id: postId } = await graphDispatch(post, caption, videoPath, null));
   }
 
   return {
@@ -848,13 +871,13 @@ async function runWeek(args) {
       const isLive = (post.day === 1 && !args.scheduleAll) || rawScheduleUnix < nowUnix + 600;
       const scheduleUnix = isLive ? null : rawScheduleUnix;
       try {
-        const id = await graphDispatch(post, caption, post._videoPath || null, scheduleUnix);
+        const { id, media } = await graphDispatch(post, caption, post._videoPath || null, scheduleUnix);
         if (isLive) {
-          results.push({ day: post.day, date: post.date, status: 'posted', type: post.type, id });
-          hopLog('facebook-poster→graph', 'info', `Day ${post.day} posted live (id: ${id})`);
+          results.push({ day: post.day, date: post.date, status: 'posted', type: post.type, media, id });
+          hopLog('facebook-poster→graph', 'info', `Day ${post.day} posted live (id: ${id}, media: ${media})`);
         } else {
-          results.push({ day: post.day, date: post.date, status: 'scheduled', scheduled_time: `${post.date} ${args.postTime}`, type: post.type, id });
-          hopLog('facebook-poster→graph', 'info', `Day ${post.day} scheduled for ${post.date} ${args.postTime} (id: ${id})`);
+          results.push({ day: post.day, date: post.date, status: 'scheduled', scheduled_time: `${post.date} ${args.postTime}`, type: post.type, media, id });
+          hopLog('facebook-poster→graph', 'info', `Day ${post.day} scheduled for ${post.date} ${args.postTime} (id: ${id}, media: ${media})`);
         }
       } catch (e) {
         results.push({ day: post.day, date: post.date, status: 'error', message: e.message });
