@@ -151,14 +151,35 @@ export function parseScheduleText(text) {
   }).filter(p => p.day > 0).sort((a, b) => a.day - b.day);
 }
 
+const GBP_CURATED_FOLDER = process.env.GBP_CURATED_FOLDER || 'E:\\Media\\Grizzly\\Curated';
+
+function curatedPhotoForDate(date) {
+  // gbp-photo-pick copies winners as `${date}-${slug}.<ext>`. For a FB video day
+  // whose video failed, reuse that same-day curated photo so we post an image,
+  // not text. ponytail: first match by date prefix wins; ceiling = if multiple
+  // services share a date the choice is arbitrary. Upgrade: match on service slug.
+  if (!date) return null;
+  try {
+    const hit = fs.readdirSync(GBP_CURATED_FOLDER)
+      .filter(f => f.startsWith(`${date}-`) && /\.(jpe?g|png|webp)$/i.test(f))
+      .sort()[0];
+    return hit ? path.join(GBP_CURATED_FOLDER, hit) : null;
+  } catch { return null; }
+}
+
 function resolvePhotoPath(post) {
   const photoFile = post.photo_file || '';
-  if (!photoFile) return null;
-  if (path.isAbsolute(photoFile)) return fs.existsSync(photoFile) ? photoFile : null;
-  const fromGbp = path.join(GBP_PHOTO_PATH, photoFile);
-  if (fs.existsSync(fromGbp)) return fromGbp;
-  const fromOutputs = path.join(PROJECT_ROOT, 'outputs', photoFile);
-  return fs.existsSync(fromOutputs) ? fromOutputs : null;
+  if (photoFile) {
+    if (path.isAbsolute(photoFile)) { if (fs.existsSync(photoFile)) return photoFile; }
+    else {
+      const fromGbp = path.join(GBP_PHOTO_PATH, photoFile);
+      if (fs.existsSync(fromGbp)) return fromGbp;
+      const fromOutputs = path.join(PROJECT_ROOT, 'outputs', photoFile);
+      if (fs.existsSync(fromOutputs)) return fromOutputs;
+    }
+  }
+  // No usable explicit photo — try the same-date curated winner (video-day fallback).
+  return curatedPhotoForDate(post.date);
 }
 
 function resolveVideoPath(post) {
