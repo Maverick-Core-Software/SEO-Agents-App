@@ -45,6 +45,7 @@ import os from 'node:os';
 import process from 'node:process';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { normalizePhotoFile } from './lib/schedule-text.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -143,7 +144,7 @@ export function parseScheduleText(text) {
       body: get('BODY'),
       cta: get('CTA'),
       hashtags: get('HASHTAGS'),
-      photo_file: get('PHOTO_FILE'),
+      photo_file: normalizePhotoFile(get('PHOTO_FILE')),
       video_prompt: get('VIDEO_PROMPT'),
       status: get('STATUS'),
     };
