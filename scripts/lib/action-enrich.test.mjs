@@ -23,7 +23,9 @@ const old = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(); // 2h ago
 const fresh = new Date(Date.now() - 60 * 1000).toISOString();        // 1m ago
 assert.equal(isStuck('website_task', old), true);   // 2h > 15m
 assert.equal(isStuck('website_task', fresh), false);
-assert.equal(isStuck('seo_run', old), false);       // 2h < 90m
+assert.equal(isStuck('seo_run', old), true);        // 2h > 90m threshold => stuck
+const recent = new Date(Date.now() - 30 * 60 * 1000).toISOString(); // 30m ago
+assert.equal(isStuck('seo_run', recent), false);    // 30m < 90m => not stuck
 assert.equal(isStuck('weekly_post_facebook', old), true); // 2h > 60m
 assert.equal(isStuck('weekly_post_gbp', fresh), false);
 assert.equal(isStuck('website_task', null), false); // no timestamp => not stuck

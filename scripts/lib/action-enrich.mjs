@@ -17,7 +17,7 @@ export const STUCK_THRESHOLDS = {
   website_task:          15 * 60 * 1000,
   weekly_post_gbp:       20 * 60 * 1000,
   weekly_post_facebook:  60 * 60 * 1000,
-  seo_run:              240 * 60 * 1000, // 4h — full weekly run can legitimately run long
+  seo_run:               90 * 60 * 1000,
 };
 
 // `since` is the ISO time the row entered an in_process state (we use updated_at,
