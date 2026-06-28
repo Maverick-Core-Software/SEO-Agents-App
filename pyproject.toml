@@ -4,8 +4,11 @@ version = "0.1.0"
 description = "CrewAI-powered SEO research and planning agents."
 requires-python = ">=3.12"
 dependencies = [
-  "crewai==1.14.5",
-  "crewai-tools==1.14.5",
+  # crewai 1.15.0+ requires opentelemetry-*~=1.42.0; earlier 1.14.x pinned
+  # ~=1.34.0, whose 1.34.x series raises an _ON_EMIT_RECURSION_COUNT_KEY
+  # ImportError. Staying on 1.15.x keeps the working opentelemetry resolver-native.
+  "crewai==1.15.1",
+  "crewai-tools==1.15.1",
   "python-dotenv==1.2.2",
   "serpapi>=1.0.2",
 ]
