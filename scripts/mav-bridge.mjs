@@ -657,6 +657,7 @@ async function handleHttpRequest(req, res) {
   // ── GET /seo/actions ────────────────────────
   if (method === 'GET' && url.pathname === '/seo/actions') {
     const since48h = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+    const since7d = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
 
     const [runsRes, postsRes, tasksRes] = await Promise.all([
       supabase.from('seo_runs').select('*')
@@ -667,6 +668,7 @@ async function handleHttpRequest(req, res) {
         .order('post_date', { ascending: true }).limit(60),
       supabase.from('website_tasks').select('*')
         .in('status', ['pending_approval', 'approved', 'executing', 'error'])
+        .gte('created_at', since7d)
         .order('priority').limit(20),
     ]);
 
@@ -769,6 +771,31 @@ async function handleHttpRequest(req, res) {
     if (task) { sendJsonHttp(res, 200, { ok: true, type: 'website_task', id: task.id }); return; }
 
     sendJsonHttp(res, 404, { error: 'Action not found or already approved' });
+    return;
+  }
+
+  // ── POST /seo/actions/dismiss ────────────────
+  if (method === 'POST' && url.pathname === '/seo/actions/dismiss') {
+    const { actionId } = await readBody(req);
+    if (!actionId) { sendJsonHttp(res, 400, { error: 'actionId required' }); return; }
+
+    const { data: task, error: taskErr } = await supabase.from('website_tasks')
+      .update({ status: 'skipped' })
+      .eq('id', actionId)
+      .in('status', ['pending_approval', 'error'])
+      .select().maybeSingle();
+    if (taskErr) { sendJsonHttp(res, 500, { error: taskErr.message }); return; }
+    if (task) { sendJsonHttp(res, 200, { ok: true, type: 'website_task', id: task.id, message: 'Task skipped.' }); return; }
+
+    const { data: post, error: postErr } = await supabase.from('weekly_posts')
+      .update({ status: 'skipped' })
+      .eq('id', actionId)
+      .in('status', ['pending_approval', 'error'])
+      .select().maybeSingle();
+    if (postErr) { sendJsonHttp(res, 500, { error: postErr.message }); return; }
+    if (post) { sendJsonHttp(res, 200, { ok: true, type: 'weekly_post', id: post.id, message: 'Post skipped.' }); return; }
+
+    sendJsonHttp(res, 404, { error: 'Action not found or cannot be dismissed' });
     return;
   }
 

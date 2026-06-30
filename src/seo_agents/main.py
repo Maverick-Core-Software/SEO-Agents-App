@@ -34,6 +34,7 @@ from seo_agents.crew import (
     build_facebook_crew,
     build_poster_crew,
     build_seo_crew,
+    build_wordpress_crew,
 )
 from seo_agents.status import (
     build_workflow_status,
@@ -594,6 +595,17 @@ def parse_args() -> argparse.Namespace:
     fb_schedule.add_argument("--days", type=int, default=7, help="Number of days to schedule. Default: 7")
     fb_schedule.add_argument("--start-date", default="", help="Start date YYYY-MM-DD. Default: next business day.")
 
+    # --- wordpress subcommand ---
+    wordpress = subparsers.add_parser(
+        "wordpress",
+        help="Write or update WordPress content (blog post or service page) and push to WP via REST API.",
+    )
+    wordpress.add_argument("task", help="What to write or update. E.g. 'blog post about panel upgrades' or 'update the EV charger page headline'.")
+    wordpress.add_argument("--publish", action="store_true", help="Publish immediately instead of saving as draft.")
+    wordpress.add_argument("--update", action="store_true", help="Update an existing page (requires --slug).")
+    wordpress.add_argument("--slug", default="", help="Target page slug for updates (e.g. 'electrical-panel-upgrade').")
+    wordpress.add_argument("--dry-run", action="store_true", help="Generate content but do not push to WordPress.")
+
     # Legacy: allow `seo-agents <topic>` as shorthand for `seo-agents research <topic>`
     parser.add_argument("topic", nargs="?", help=argparse.SUPPRESS)
     parser.add_argument("--site-url", default="", help=argparse.SUPPRESS)
@@ -957,12 +969,79 @@ def main() -> None:
             print(f"\n❌ Facebook Schedule crew failed: {e}")
             sys.exit(1)
 
+    elif command == "wordpress":
+        mode = "publish" if args.publish else "draft"
+        slug = getattr(args, "slug", "") or ""
+        dry_run = getattr(args, "dry_run", False)
+        crew = build_wordpress_crew(task=args.task, mode=mode, slug=slug)
+
+        if dry_run:
+            print(f"Ready: {crew.name}")
+            print(f"Agent: {crew.agents[0].role}")
+            print(f"Mode: {mode}, Slug: {slug or '(new post)'}")
+            print("  --dry-run: crew config shown, no LLM call made")
+            return
+
+        print(f"\n📝 Running WordPress Content crew...")
+        print(f"   Task   : {args.task}")
+        print(f"   Mode   : {mode}")
+        print(f"   Target : {slug or 'new blog post'}")
+        try:
+            result = crew.kickoff()
+            print(result)
+            completion_path = OUTPUT_DIR / "wordpress_completion.md"
+            print(f"\n✅ Content written to: {completion_path}")
+
+            # Auto-push to WordPress if adapter is configured
+            wp_adapter = os.getenv("WORDPRESS_ACTION_ADAPTER", "")
+            wp_config = os.getenv(
+                "WORDPRESS_SITE_CONFIG",
+                str(Path(__file__).parent.parent.parent / "config" / "wordpress-sites" / "grizzly.json"),
+            )
+            if not wp_adapter or not Path(wp_adapter).exists():
+                print("  ℹ  WORDPRESS_ACTION_ADAPTER not set — content saved locally only.")
+                print("     Run `seo-agents run-action <id>` after adding to the action queue, or push manually.")
+            else:
+                import subprocess
+                content = completion_path.read_text(encoding="utf-8") if completion_path.exists() else ""
+                action: dict = {
+                    "id": f"WP-{datetime.now().strftime('%Y%m%d%H%M%S')}",
+                    "action_type": "website_blog_post" if not slug else "website_content_publish",
+                    "title": args.task,
+                    "completion": {"deliverable": content},
+                }
+                if slug:
+                    action["slug"] = slug
+                    action["content_type"] = "page"
+                payload = json.dumps({"live": True, "approved": True, "action": action})
+                cmd = ["node", wp_adapter, "--config", wp_config, "--payload", payload]
+                try:
+                    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120,
+                                          cwd=str(Path(wp_adapter).parent))
+                    out_lines = proc.stdout.strip().splitlines()
+                    wp_out = json.loads(out_lines[-1]) if out_lines else {}
+                    post_result = next((r for r in wp_out.get("results", []) if r.get("post_id")), {})
+                    if post_result.get("post_id"):
+                        print(f"\n✅ WordPress push complete:")
+                        print(f"   Post ID : {post_result['post_id']}")
+                        print(f"   Status  : {post_result.get('post_status')}")
+                        print(f"   Preview : {post_result.get('link')}")
+                    else:
+                        print(f"\n⚠  WordPress push returned no post_id:")
+                        print(json.dumps(wp_out, indent=2))
+                except Exception as e:
+                    print(f"\n⚠  WordPress push failed: {e}")
+        except Exception as e:
+            print(f"\n❌ WordPress Content crew failed: {e}")
+            sys.exit(1)
+
     else:
         print("Usage:")
         print("  seo-agents research <topic>      — run research phase")
         print("  seo-agents execute               — run execution phase (after owner review)")
         print("  seo-agents post-schedule         — generate 7-day GBP posting schedule")
         print("  seo-agents facebook-schedule     — generate 7-day Facebook posting schedule (hooks + videos)")
+        print("  seo-agents wordpress <task>      — write/update WordPress content and push as draft")
         print("  seo-agents status                — show workflow status")
         print("  seo-agents validate              — validate generated outputs")
         print("  seo-agents actions               — show executable action queue")

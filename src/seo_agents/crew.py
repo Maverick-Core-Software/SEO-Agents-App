@@ -534,16 +534,26 @@ def build_executor_crew() -> Crew:
             markdown=True,
         )
 
+    wordpress_executor = Agent(
+        role="WordPress Content Executor",
+        goal="Execute WordPress content tasks from the execution queue and produce ready-to-publish blog posts and page updates with a completion report.",
+        backstory=agent_backstory("wordpress-content-agent.txt"),
+        tools=tools,
+        llm=exec_llm,
+        verbose=is_verbose(),
+    )
+
     content_exec_task = exec_task(content_executor, "Local Content Production Executor", "content", "content_completion")
     assets_exec_task = exec_task(assets_executor, "Local Presence Assets Executor", "GBP/assets", "assets_completion")
     technical_exec_task = exec_task(technical_executor, "Technical SEO and CRO Executor", "technical SEO", "technical_completion")
+    wordpress_exec_task = exec_task(wordpress_executor, "WordPress Content Executor", "WordPress content", "wordpress_completion")
 
     # --- Verification tasks ---
     delegation_verify_task = Task(
         description=(
-            "Cross-check the original execution queue against all three completion reports.\n\n"
+            "Cross-check the original execution queue against all four completion reports.\n\n"
             f"ORIGINAL EXECUTION QUEUE:\n\n{execution_queue}\n\n"
-            "COMPLETION REPORTS: See context from the three executor tasks above.\n\n"
+            "COMPLETION REPORTS: See context from the four executor tasks above.\n\n"
             "For every task in the queue:\n"
             "1. Find its completion entry\n"
             "2. Confirm the definition of done was met\n"
@@ -556,7 +566,7 @@ def build_executor_crew() -> Crew:
             "and a table listing each task ID, title, assigned executor, and verification result."
         ),
         agent=scheduling_verifier,
-        context=[content_exec_task, assets_exec_task, technical_exec_task],
+        context=[content_exec_task, assets_exec_task, technical_exec_task, wordpress_exec_task],
         output_file=out("delegation_verification.md"),
         markdown=True,
     )
@@ -578,15 +588,15 @@ def build_executor_crew() -> Crew:
             "and owner sign-off items. File saved to outputs/final_report.md."
         ),
         agent=manager_verifier,
-        context=[content_exec_task, assets_exec_task, technical_exec_task, delegation_verify_task],
+        context=[content_exec_task, assets_exec_task, technical_exec_task, wordpress_exec_task, delegation_verify_task],
         output_file=out("final_report.md"),
         markdown=True,
     )
 
     return Crew(
         name="Grizzly Executor Crew",
-        agents=[content_executor, assets_executor, technical_executor, scheduling_verifier, manager_verifier],
-        tasks=[content_exec_task, assets_exec_task, technical_exec_task, delegation_verify_task, manager_final_task],
+        agents=[content_executor, assets_executor, technical_executor, wordpress_executor, scheduling_verifier, manager_verifier],
+        tasks=[content_exec_task, assets_exec_task, technical_exec_task, wordpress_exec_task, delegation_verify_task, manager_final_task],
         process=Process.sequential,
         verbose=is_verbose(),
     )
@@ -938,6 +948,72 @@ def build_facebook_crew(
         name="Grizzly Facebook Schedule Crew",
         agents=[fb_agent],
         tasks=[fb_task],
+        process=Process.sequential,
+        verbose=is_verbose(),
+    )
+
+
+# ---------------------------------------------------------------------------
+# WordPress Content Crew  (seo-agents wordpress <task>)
+# ---------------------------------------------------------------------------
+
+def build_wordpress_crew(
+    task: str,
+    mode: str = "draft",
+    slug: str = "",
+) -> Crew:
+    """
+    On-demand WordPress content crew. One agent, one task.
+    mode: 'draft' (default) | 'publish'
+    slug: target page slug for update tasks (empty = new blog post)
+    """
+    exec_llm = build_exec_llm()
+    tools = build_tools()
+
+    site_url = DEFAULT_SITE_URL
+    publish_status = "publish" if mode == "publish" else "draft"
+
+    task_description = (
+        f"Site: {site_url}\n"
+        f"Target slug: {slug or '(new blog post)'}\n"
+        f"Publish status: {publish_status}\n\n"
+        f"Task: {task}\n\n"
+    )
+    if slug:
+        task_description += (
+            f"This is a page UPDATE. Use ScrapeWebsiteTool to load {site_url}{slug.lstrip('/')}/ "
+            "and record the current content before rewriting.\n"
+        )
+    else:
+        task_description += (
+            "This is a NEW BLOG POST. Use ScrapeWebsiteTool to check 1-2 existing Grizzly posts "
+            "for tone reference before writing.\n"
+        )
+
+    agent = Agent(
+        role="WordPress Content Agent",
+        goal="Write and update Grizzly Electrical Solutions web content that ranks and converts.",
+        backstory=agent_backstory("wordpress-content-agent.txt"),
+        tools=tools,
+        llm=exec_llm,
+        verbose=is_verbose(),
+    )
+
+    wp_task = Task(
+        description=task_description,
+        expected_output=(
+            "A complete content deliverable in the exact TITLE:/EXCERPT:/TAGS: format (for posts) "
+            "or ACTION_PAYLOAD block (for page updates), followed by a COMPLETION REPORT block."
+        ),
+        agent=agent,
+        output_file=out("wordpress_completion.md"),
+        markdown=True,
+    )
+
+    return Crew(
+        name="Grizzly WordPress Content Crew",
+        agents=[agent],
+        tasks=[wp_task],
         process=Process.sequential,
         verbose=is_verbose(),
     )

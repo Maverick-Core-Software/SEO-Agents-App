@@ -37,10 +37,10 @@ const DESCRIPTIONS = {
   publish_facebook_post: (a) => `Publish a Facebook post for ${a.post_date || 'this week'} (${a.media_status || 'media TBD'}).`,
   weekly_post_gbp: (a) => `Publish a scheduled Google Business post for ${a.post_date || 'this week'}.`,
   weekly_post_facebook: (a) => `Publish a Facebook post for ${a.post_date || 'this week'} (${a.media_status || 'media TBD'}).`,
-  website_technical_change: () => 'Technical SEO change on grizzlyheating.com.',
+  website_technical_change: () => 'Technical SEO change on grizzlyelectricaltx.com.',
   website_content_publish: () => 'Publish website content / blog post.',
   website_blog_post: () => 'Publish website content / blog post.',
-  website_task: () => 'Website SEO task on grizzlyheating.com.',
+  website_task: () => 'Website SEO task on grizzlyelectricaltx.com.',
   review_management: () => 'Request or respond to customer reviews.',
 };
 

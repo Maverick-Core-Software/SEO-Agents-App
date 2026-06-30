@@ -40,7 +40,7 @@ create table if not exists weekly_posts (
   media_status   text,           -- 'video' | 'photo' | 'downgraded' | 'none'
   video_path     text,           -- local path once generated
   status         text not null default 'pending_approval',
-  -- pending_approval | approved | posting | posted | scheduled | error
+  -- pending_approval | approved | posting | posted | scheduled | skipped | error
   platform_post_id text,        -- Facebook post ID or GBP post ID
   scheduled_time timestamptz,
   approved_at    timestamptz,
