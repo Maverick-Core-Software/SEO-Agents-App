@@ -44,7 +44,7 @@ const BRIDGE_PORT = parseInt(process.env.MAV_BRIDGE_PORT || '8790');
 const SEO_AGENTS_EXE = process.env.SEO_AGENTS_EXE
   || 'C:\\Users\\carte\\AppData\\Local\\Programs\\Python\\Python312\\Scripts\\seo-agents.exe';
 const PENDING_PROMPT_FILE = path.join(PROJECT_ROOT, 'outputs', 'pending_prompt.json');
-const GBP_POSTER_PATH = 'C:\\Users\\carte\\.claude\\skills\\gbp-poster\\driver.mjs';
+const GBP_POSTER_PATH = path.join(PROJECT_ROOT, 'scripts', 'gbp-poster', 'driver.mjs');
 // GBP is owned by the user-session gbp-worker (Scheduled Task). The service does NO
 // GBP by default. Flip MAV_BRIDGE_GBP to 'on' ONLY as a rollback, and stop gbp-worker
 // first to avoid double-posting. See docs/runbooks/gbp-worker.md.
