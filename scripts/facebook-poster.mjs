@@ -864,6 +864,13 @@ async function runWeek(args) {
   if (!posts.length) throw new Error('No posts found in schedule file.');
 
   hopLog('facebook-poster', 'info', `Loaded ${posts.length} posts from schedule (starting day ${args.startDay})`);
+  if (posts.length < 7) {
+    hopLog('facebook-poster', 'warn', `Schedule has only ${posts.length} days (expected 7) — some days may be missing`);
+  }
+  if (posts.length === 0) {
+    hopLog('facebook-poster', 'error', 'No posts found in schedule — aborting');
+    process.exit(1);
+  }
 
   if (args.dryRun) {
     return {

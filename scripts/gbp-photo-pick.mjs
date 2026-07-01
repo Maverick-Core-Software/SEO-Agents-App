@@ -421,6 +421,9 @@ async function main() {
     console.error('No posts found in schedule. Check gbp_posting_schedule.md format.');
     process.exit(1);
   }
+  if (posts.length < 7) {
+    console.warn(`Warning: schedule has only ${posts.length} days (expected 7) — some days may be missing`);
+  }
 
   console.log(`Schedule: ${posts.length} posts`);
 
