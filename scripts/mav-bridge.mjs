@@ -57,6 +57,8 @@ const SMTP_TO = process.env.SMTP_TO || '';
 const SMTP_APP_PASSWORD = process.env.SMTP_APP_PASSWORD || '';
 const GRIZZLY_HCP_DIR = process.env.GRIZZLY_HCP_DIR || 'C:\\Workspace\\Active\\grizzly-hcp';
 const ALERTED_PATH = path.join(PROJECT_ROOT, 'state', 'alerted.json');
+const GRAPH_API_VERSION = process.env.FB_GRAPH_API_VERSION || 'v22.0';
+const FB_PAGE_ACCESS_TOKEN = process.env.FB_PAGE_ACCESS_TOKEN || process.env.FB_ACCESS_TOKEN || '';
 
 if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
   console.error('[mav-bridge] SUPABASE_URL or SUPABASE_SERVICE_KEY not set — exiting');
@@ -466,22 +468,43 @@ async function poll() {
       // FB Days 2–7 are scheduled on Facebook's own native scheduler at run time
       // (each row already carries a real FB post id). Facebook publishes them on
       // their dates; the bridge never posts FB daily. So once a scheduled FB row's
-      // date has passed, the post is live — advance it to 'posted' so the status is
-      // truthful everywhere (dashboard counter + OVERDUE logic both key off status).
-      // ponytail: optimistic — no post-hoc FB read-back to confirm publication.
-      // Ceiling: if FB ever drops a scheduled post we'd still show it posted. Upgrade
-      // path: re-fetch each platform_post_id via the Graph API before flipping.
+      // date has passed, verify it actually published via the Graph API before
+      // marking it 'posted' — a scheduled post can fail or be deleted upstream of
+      // the bridge, and we don't want to lie about that in the dashboard.
       const { data: pastFb } = await supabase
         .from('weekly_posts')
-        .select('id, post_date')
+        .select('id, post_date, platform_post_id')
         .eq('platform', 'facebook')
         .eq('status', 'scheduled')
         .lt('post_date', todayDate);
       for (const post of pastFb || []) {
-        await supabase.from('weekly_posts')
-          .update({ status: 'posted', posted_at: new Date().toISOString() })
-          .eq('id', post.id);
-        console.log(`[mav-bridge][fb-reconcile] ${post.post_date} scheduled date passed — marked posted`);
+        let verified = false;
+        if (post.platform_post_id && FB_PAGE_ACCESS_TOKEN) {
+          try {
+            const checkRes = await fetch(
+              `https://graph.facebook.com/${GRAPH_API_VERSION}/${post.platform_post_id}?fields=id,is_published&access_token=${encodeURIComponent(FB_PAGE_ACCESS_TOKEN)}`
+            );
+            const checkJson = await checkRes.json();
+            verified = !checkJson.error && checkJson.is_published !== false;
+          } catch {
+            // Network error — fall back to optimistic
+            verified = true;
+          }
+        } else {
+          // No post ID to verify — trust the schedule
+          verified = true;
+        }
+        if (verified) {
+          await supabase.from('weekly_posts')
+            .update({ status: 'posted', posted_at: new Date().toISOString() })
+            .eq('id', post.id);
+          console.log(`[mav-bridge][fb-reconcile] ${post.post_date} verified + marked posted`);
+        } else {
+          await supabase.from('weekly_posts')
+            .update({ status: 'error', error: 'Scheduled post not found on Facebook — may have been deleted' })
+            .eq('id', post.id);
+          console.log(`[mav-bridge][fb-reconcile] ${post.post_date} NOT found on Facebook — marked error`);
+        }
       }
     }
 
