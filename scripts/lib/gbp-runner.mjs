@@ -63,6 +63,22 @@ export function centralDateHour(nowUtc) {
   return { todayDate, cstHour };
 }
 
+// Retry wrapper for Excel file operations. Excel workbooks can be transiently
+// locked (open in Excel, or held by another process); retry with a delay instead
+// of failing the whole run outright.
+async function withExcelRetry(filePath, fn, { maxRetries = 6, delayMs = 5000, log, runId } = {}) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (e) {
+      const isLock = /EBUSY|EPERM|locked|sharing violation/i.test(e.message);
+      if (!isLock || attempt === maxRetries) throw e;
+      if (log) await log(runId, 'gbp', 'warn', `Excel file locked (attempt ${attempt}/${maxRetries}), retrying in ${delayMs / 1000}s...`);
+      await new Promise(r => setTimeout(r, delayMs));
+    }
+  }
+}
+
 // Called only after the driver verifies the post (exit 0): set Posted=TRUE in the
 // Excel workbook and move the photo to the dated archive folder. deps: { env, log }.
 export async function markGbpPostedAndArchive({ postDate, exitCode, runId, env, log }) {
@@ -73,36 +89,39 @@ export async function markGbpPostedAndArchive({ postDate, exitCode, runId, env, 
   if (!fs.existsSync(GBP_WORKBOOK_PATH)) { await log(runId, 'gbp', 'warn', `GBP workbook not found: ${GBP_WORKBOOK_PATH}`); return; }
 
   try {
-    const workbook = xlsx.readFile(GBP_WORKBOOK_PATH);
-    const sheetName = workbook.SheetNames.includes('Posts') ? 'Posts' : workbook.SheetNames[0];
-    const sheet = workbook.Sheets[sheetName];
-    const rows = xlsx.utils.sheet_to_json(sheet, { header: 1, defval: '' });
-    if (!rows.length) return;
-
-    const header = rows[0].map(h => String(h).trim());
-    const dateCol = header.findIndex(h => h.toLowerCase() === 'date');
-    const postedCol = header.findIndex(h => h.toLowerCase() === 'posted');
-    const photoCol = header.findIndex(h =>
-      h === 'AssetIdOrDescription' || h === 'Related Picture' || h.toLowerCase().includes('asset'));
-
-    if (dateCol === -1) { await log(runId, 'gbp', 'warn', 'GBP workbook: Date column not found'); return; }
-
-    let targetRow = -1;
     let photoPath = '';
-    for (let i = 1; i < rows.length; i++) {
-      if (excelDateToIso(rows[i][dateCol]) === postDate) {
-        targetRow = i;
-        if (photoCol >= 0) photoPath = String(rows[i][photoCol] || '').trim();
-        break;
-      }
-    }
-    if (targetRow === -1) { await log(runId, 'gbp', 'warn', `GBP workbook: no row found for ${postDate}`); return; }
+    await withExcelRetry(GBP_WORKBOOK_PATH, async () => {
+      const workbook = xlsx.readFile(GBP_WORKBOOK_PATH);
+      const sheetName = workbook.SheetNames.includes('Posts') ? 'Posts' : workbook.SheetNames[0];
+      const sheet = workbook.Sheets[sheetName];
+      const rows = xlsx.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+      if (!rows.length) return;
 
-    if (postedCol >= 0) {
-      sheet[xlsx.utils.encode_cell({ r: targetRow, c: postedCol })] = { t: 'b', v: true };
-      xlsx.writeFile(workbook, GBP_WORKBOOK_PATH);
-      await log(runId, 'gbp', 'info', `Excel Posted=TRUE set for ${postDate}`);
-    }
+      const header = rows[0].map(h => String(h).trim());
+      const dateCol = header.findIndex(h => h.toLowerCase() === 'date');
+      const postedCol = header.findIndex(h => h.toLowerCase() === 'posted');
+      const photoCol = header.findIndex(h =>
+        h === 'AssetIdOrDescription' || h === 'Related Picture' || h.toLowerCase().includes('asset'));
+
+      if (dateCol === -1) { await log(runId, 'gbp', 'warn', 'GBP workbook: Date column not found'); return; }
+
+      let targetRow = -1;
+      for (let i = 1; i < rows.length; i++) {
+        if (excelDateToIso(rows[i][dateCol]) === postDate) {
+          targetRow = i;
+          if (photoCol >= 0) photoPath = String(rows[i][photoCol] || '').trim();
+          break;
+        }
+      }
+      if (targetRow === -1) { await log(runId, 'gbp', 'warn', `GBP workbook: no row found for ${postDate}`); return; }
+
+      if (postedCol >= 0) {
+        sheet[xlsx.utils.encode_cell({ r: targetRow, c: postedCol })] = { t: 'b', v: true };
+        xlsx.writeFile(workbook, GBP_WORKBOOK_PATH);
+        await log(runId, 'gbp', 'info', `Excel Posted=TRUE set for ${postDate}`);
+      }
+    }, { log, runId });
+
     if (photoPath && fs.existsSync(photoPath)) {
       const monthDir = path.join(GBP_ARCHIVE_FOLDER, postDate.slice(0, 7));
       fs.mkdirSync(monthDir, { recursive: true });
