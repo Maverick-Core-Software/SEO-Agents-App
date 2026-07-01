@@ -285,6 +285,32 @@ async function wpRest(baseUrl, method, endpoint, body) {
   return data;
 }
 
+// Resolve tag names to WordPress tag IDs, creating any tags that don't exist yet.
+// draft.tags may already be numeric IDs (from an upstream caller) — those pass through untouched.
+async function resolveOrCreateTags(baseUrl, tagNames) {
+  if (!tagNames?.length) return [];
+  const ids = [];
+  for (const name of tagNames) {
+    if (typeof name === "number" || /^\d+$/.test(String(name).trim())) {
+      ids.push(Number(name));
+      continue;
+    }
+    try {
+      const existing = await wpRest(baseUrl, "GET", `tags?search=${encodeURIComponent(name)}&_fields=id,name`);
+      const match = existing.find((t) => t.name.toLowerCase() === String(name).toLowerCase());
+      if (match) {
+        ids.push(match.id);
+      } else {
+        const created = await wpRest(baseUrl, "POST", "tags", { name });
+        ids.push(created.id);
+      }
+    } catch (e) {
+      console.error(`[wordpress-adapter] Could not resolve/create tag "${name}": ${e.message}`);
+    }
+  }
+  return ids;
+}
+
 async function resolveContentId(baseUrl, action, contentType) {
   if (action.page_id) return Number(action.page_id);
   if (action.slug) {
@@ -400,6 +426,10 @@ async function restContentAction(config, action, live) {
 
   // Live execution
   await ensureWpSession(config);
+
+  if (isPost && draft.tags?.length) {
+    body.tags = await resolveOrCreateTags(config.site_url, draft.tags);
+  }
 
   if (isPost && !action.page_id && !action.slug) {
     const result = await wpRest(config.site_url, "POST", "posts", body);
