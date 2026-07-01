@@ -153,17 +153,23 @@ export function parseScheduleText(text) {
 
 const GBP_CURATED_FOLDER = process.env.GBP_CURATED_FOLDER || 'E:\\Media\\Grizzly\\Curated';
 
-function curatedPhotoForDate(date) {
+function curatedPhotoForDate(date, service) {
   // gbp-photo-pick copies winners as `${date}-${slug}.<ext>`. For a FB video day
   // whose video failed, reuse that same-day curated photo so we post an image,
-  // not text. ponytail: first match by date prefix wins; ceiling = if multiple
-  // services share a date the choice is arbitrary. Upgrade: match on service slug.
+  // not text. Prefer a file whose slug matches the post's service type; if
+  // multiple services share a date, fall back to the first match.
   if (!date) return null;
   try {
-    const hit = fs.readdirSync(GBP_CURATED_FOLDER)
+    const files = fs.readdirSync(GBP_CURATED_FOLDER)
       .filter(f => f.startsWith(`${date}-`) && /\.(jpe?g|png|webp)$/i.test(f))
-      .sort()[0];
-    return hit ? path.join(GBP_CURATED_FOLDER, hit) : null;
+      .sort();
+    if (!files.length) return null;
+    if (service) {
+      const slug = service.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+      const match = files.find(f => f.toLowerCase().includes(slug));
+      if (match) return path.join(GBP_CURATED_FOLDER, match);
+    }
+    return path.join(GBP_CURATED_FOLDER, files[0]);
   } catch { return null; }
 }
 
@@ -179,7 +185,7 @@ function resolvePhotoPath(post) {
     }
   }
   // No usable explicit photo — try the same-date curated winner (video-day fallback).
-  return curatedPhotoForDate(post.date);
+  return curatedPhotoForDate(post.date, post.service);
 }
 
 function resolveVideoPath(post) {
