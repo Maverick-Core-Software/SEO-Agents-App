@@ -439,11 +439,26 @@ async function main() {
     matches = await matchPhotosToSchedule(postsToMatch, usable);
   } catch (e) {
     console.error(`GPT matching failed: ${e.message}`);
-    // Fallback: assign by service_type order
+    // Fallback when the vision matcher is unavailable (OpenAI key invalid,
+    // rate-limited, or down). The OLD fallback did usable.find(...) with no
+    // memory of what it had already handed out, so every post of a given type
+    // got the SAME first photo — producing the byte-identical mislabels where,
+    // e.g., a recessed-lighting post shipped with an EV-charger image.
+    //
+    // This fallback rotates through the pool: for each post, prefer the next
+    // UNUSED photo of the right service_type; if none, take the next unused
+    // photo of any type. A photo is handed out at most once per run.
+    const used = new Set();
     matches = postsToMatch.map(post => {
       const postType = derivePostServiceType(post);
-      return usable.find(p => p.service_type === postType) || usable[0] || null;
+      const pick =
+        usable.find(p => !used.has(p.filename) && p.service_type === postType) ||
+        usable.find(p => !used.has(p.filename)) ||
+        null;
+      if (pick) used.add(pick.filename);
+      return pick;
     });
+    console.warn(`Fallback assigned ${matches.filter(Boolean).length}/${postsToMatch.length} unique photos (no GPT vision). Quality may be lower — set a valid OPENAI_API_KEY for service-aware matching.`);
   }
 
   // ── Step 6: Copy winners to Curated ──────────────────────────────────────
