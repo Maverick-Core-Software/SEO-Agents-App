@@ -26,6 +26,7 @@ $ProjectRoot = 'C:\Workspace\Active\SEO-Agents-App'
 $RunAsUser   = "$env:USERDOMAIN\$env:USERNAME"
 $RunDay      = 'Friday'
 $RunTime     = '08:30'          # weekly research kickoff (local time)
+$SyncTime    = '08:25'          # pre-run photo sync (5 min before research)
 $MonitorHours = 14              # how long the monitor watches before exiting
 
 # Python that has the crew installed (venv preferred). The wrapper itself now
@@ -61,7 +62,15 @@ function Register-RebootProofTask {
     Write-Host "Registered '$Name' -> $Exe $TaskArgs  ($RunDay $($At.ToString('HH:mm')))"
 }
 
-$at = [datetime]::ParseExact($RunTime, 'HH:mm', $null)
+$at    = [datetime]::ParseExact($RunTime, 'HH:mm', $null)
+$atSync = [datetime]::ParseExact($SyncTime, 'HH:mm', $null)
+
+# 0) Pre-run photo sync (mirrors Google Drive → local cache before the research
+#    run, so the photo library is current regardless of Drive mount state).
+Register-RebootProofTask -Name 'Grizzly SEO Photo Sync' `
+    -Exe $NodeExe `
+    -TaskArgs ("`"{0}\scripts\sync-photos-from-drive.mjs`"" -f $ProjectRoot) `
+    -At $atSync
 
 # 1) Weekly research kickoff
 Register-RebootProofTask -Name 'Grizzly SEO Weekly Run' `
@@ -77,6 +86,7 @@ Register-RebootProofTask -Name 'Grizzly SEO Monitor' `
 
 Write-Host ""
 Write-Host "Done. Verify:"
+Write-Host "  Get-ScheduledTaskInfo -TaskName 'Grizzly SEO Photo Sync'"
 Write-Host "  Get-ScheduledTaskInfo -TaskName 'Grizzly SEO Weekly Run'"
 Write-Host "  Get-ScheduledTaskInfo -TaskName 'Grizzly SEO Monitor'"
 Write-Host "Dry-test the wrapper now (writes outputs\weekly-runner-health.json):"
