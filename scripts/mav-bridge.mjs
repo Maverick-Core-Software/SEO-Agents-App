@@ -278,63 +278,72 @@ async function executeApprovedRun(run) {
     .order('day');
 
   if (fbPosts?.length) {
-    await log(runId, 'facebook', 'info', `Posting ${fbPosts.length} Facebook posts`);
-    await supabase.from('weekly_posts')
-      .update({ status: 'posting' })
-      .eq('run_id', runId).eq('platform', 'facebook').eq('status', 'approved');
-
-    const result = await runPhase(runId, 'facebook', 'node', [
-      path.join(PROJECT_ROOT, 'scripts', 'facebook-poster.mjs'),
-      '--schedule-all', '--time', '09:00',
-    ], PROJECT_ROOT, { timeoutMs: 45 * 60 * 1000 }); // up to 3 Veo 3 renders + uploads
-
-    if (result.ok) {
-      // Parse per-post results from JSON output so Day 1 → 'posted', Days 2-7 → 'scheduled'
-      try {
-        const parsed = JSON.parse((result.stdout || '').trim());
-        const postResults = parsed?.results || [];
-        const dayMap = new Map(postResults.map(r => [r.day, r]));
-
-        if (parsed?.gemini_credits_depleted) {
-          await log(runId, 'facebook', 'warn', 'GEMINI_CREDITS_DEPLETED: Video days posted as photos. Top up at https://aistudio.google.com/');
-          await sendBridgeAlert(
-            '⚠️ Grizzly SEO: Gemini Credits Depleted — Videos Not Generated',
-            `The weekly Facebook video posts (Days 1, 4, 7) could not be generated because your Gemini API prepayment credits are depleted.\n\nPosts were published as photo-only posts.\n\nTo restore video generation:\n1. Go to https://aistudio.google.com/\n2. Add prepayment credits to your Google AI account\n3. Next week's run will automatically generate videos again.\n\nRun ID: ${runId}`,
-          );
-        }
-
-        for (const fbPost of fbPosts) {
-          const r = dayMap.get(fbPost.day);
-          if (r) {
-            const postStatus = r.status === 'posted' ? 'posted'
-              : r.status === 'scheduled' ? 'scheduled'
-              : 'error';
-            await supabase.from('weekly_posts')
-              .update({
-                status: postStatus,
-                media_status: mediaStatusFor(fbPost.type, r.media),
-                error: r.status === 'error' ? (r.message || 'Unknown error') : null,
-                posted_at: new Date().toISOString(),
-                platform_post_id: r.id || null,
-              })
-              .eq('id', fbPost.id);
-          }
-        }
-        // Fallback: catch any still-in-posting rows (unmapped days)
-        await supabase.from('weekly_posts')
-          .update({ status: 'posted', posted_at: new Date().toISOString() })
-          .eq('run_id', runId).eq('platform', 'facebook').eq('status', 'posting');
-      } catch (parseErr) {
-        await log(runId, 'facebook', 'warn', `Could not parse per-post results: ${parseErr.message} — marking all as posted`);
-        await supabase.from('weekly_posts')
-          .update({ status: 'posted', posted_at: new Date().toISOString() })
-          .eq('run_id', runId).eq('platform', 'facebook').eq('status', 'posting');
-      }
+    // Idempotency guard: rows that already carry a platform_post_id have already
+    // been posted (or scheduled) — never re-post them. Only spawn facebook-poster
+    // when there's at least one genuinely unposted row.
+    const unposted = fbPosts.filter(p => !p.platform_post_id);
+    if (!unposted.length) {
+      await log(runId, 'facebook', 'info', 'All Facebook posts already have platform_post_id — skipping re-post');
     } else {
+      await log(runId, 'facebook', 'info', `Posting ${unposted.length} Facebook posts (${fbPosts.length - unposted.length} already posted)`);
       await supabase.from('weekly_posts')
-        .update({ status: 'error', error: result.error })
-        .eq('run_id', runId).eq('platform', 'facebook').eq('status', 'posting');
-      allOk = false;
+        .update({ status: 'posting' })
+        .eq('run_id', runId).eq('platform', 'facebook').eq('status', 'approved')
+        .is('platform_post_id', null);
+
+      const result = await runPhase(runId, 'facebook', 'node', [
+        path.join(PROJECT_ROOT, 'scripts', 'facebook-poster.mjs'),
+        '--schedule-all', '--time', '09:00',
+      ], PROJECT_ROOT, { timeoutMs: 45 * 60 * 1000 }); // up to 3 Veo 3 renders + uploads
+
+      if (result.ok) {
+        // Parse per-post results from JSON output so Day 1 → 'posted', Days 2-7 → 'scheduled'
+        try {
+          const parsed = JSON.parse((result.stdout || '').trim());
+          const postResults = parsed?.results || [];
+          const dayMap = new Map(postResults.map(r => [r.day, r]));
+
+          if (parsed?.gemini_credits_depleted) {
+            await log(runId, 'facebook', 'warn', 'GEMINI_CREDITS_DEPLETED: Video days posted as photos. Top up at https://aistudio.google.com/');
+            await sendBridgeAlert(
+              '⚠️ Grizzly SEO: Gemini Credits Depleted — Videos Not Generated',
+              `The weekly Facebook video posts (Days 1, 4, 7) could not be generated because your Gemini API prepayment credits are depleted.\n\nPosts were published as photo-only posts.\n\nTo restore video generation:\n1. Go to https://aistudio.google.com/\n2. Add prepayment credits to your Google AI account\n3. Next week's run will automatically generate videos again.\n\nRun ID: ${runId}`,
+            );
+          }
+
+          for (const fbPost of unposted) {
+            const r = dayMap.get(fbPost.day);
+            if (r) {
+              const postStatus = r.status === 'posted' ? 'posted'
+                : r.status === 'scheduled' ? 'scheduled'
+                : 'error';
+              await supabase.from('weekly_posts')
+                .update({
+                  status: postStatus,
+                  media_status: mediaStatusFor(fbPost.type, r.media),
+                  error: r.status === 'error' ? (r.message || 'Unknown error') : null,
+                  posted_at: new Date().toISOString(),
+                  platform_post_id: r.id || null,
+                })
+                .eq('id', fbPost.id);
+            }
+          }
+          // Fallback: catch any still-in-posting rows (unmapped days)
+          await supabase.from('weekly_posts')
+            .update({ status: 'posted', posted_at: new Date().toISOString() })
+            .eq('run_id', runId).eq('platform', 'facebook').eq('status', 'posting');
+        } catch (parseErr) {
+          await log(runId, 'facebook', 'warn', `Could not parse per-post results: ${parseErr.message} — marking all as posted`);
+          await supabase.from('weekly_posts')
+            .update({ status: 'posted', posted_at: new Date().toISOString() })
+            .eq('run_id', runId).eq('platform', 'facebook').eq('status', 'posting');
+        }
+      } else {
+        await supabase.from('weekly_posts')
+          .update({ status: 'error', error: result.error })
+          .eq('run_id', runId).eq('platform', 'facebook').eq('status', 'posting');
+        allOk = false;
+      }
     }
   }
 
@@ -459,6 +468,27 @@ async function poll() {
           .eq('id', post.id);
         console.log(`[mav-bridge][fb-reconcile] ${post.post_date} scheduled date passed — marked posted`);
       }
+    }
+
+    // ── Stuck-posting TTL recovery ────────────────
+    // A worker crash mid-post can leave a row parked in 'posting' forever, which
+    // both blocks re-runs (nothing else picks it up) and hides the failure from
+    // the dashboard. Anything still 'posting' after 30 minutes gets force-reset to
+    // 'error' so it surfaces and can be retried/approved again.
+    try {
+      const POSTING_TTL_MS = 30 * 60 * 1000;
+      const { data: stuckPosting } = await supabase.from('weekly_posts')
+        .select('id, run_id, platform, updated_at')
+        .eq('status', 'posting')
+        .lt('updated_at', new Date(Date.now() - POSTING_TTL_MS).toISOString());
+      for (const row of stuckPosting || []) {
+        await supabase.from('weekly_posts')
+          .update({ status: 'error', error: 'Stuck in posting state >30min — auto-reset' })
+          .eq('id', row.id);
+        console.log(`[mav-bridge][stuck-recovery] Reset ${row.platform} post ${row.id} from posting → error`);
+      }
+    } catch (e) {
+      console.error(`[mav-bridge][stuck-recovery] ${e.message}`);
     }
 
     // ── Non-silent fault detection ───────────────
