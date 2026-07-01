@@ -6,7 +6,7 @@
 
   WHY THIS EXISTS: the usual reason "Friday morning, nothing happened" is that the
   task was set to "Run only when user is logged on", or "run a missed task" /
-  "wake to run" were unchecked — so after a reboot to the login screen the task
+  "wake to run" were unchecked -- so after a reboot to the login screen the task
   simply never fired and nothing alerted. This script sets all of those correctly:
     - Run whether the user is logged on or not (S4U, no stored password)
     - Start the task as soon as possible after a missed scheduled start
@@ -40,8 +40,8 @@ if (-not $PythonExe) { throw "No Python found. Expected $ProjectRoot\.venv\Scrip
 
 $resolved = Get-Command node -ErrorAction SilentlyContinue
 $NodeExe = if ($resolved) { $resolved.Source } else { $null }
-if (-not $NodeExe) { throw "node not found on PATH — required for the SEO monitor." }
-# ------------------------------------------------------------------------------
+if (-not $NodeExe) { throw "node not found on PATH -- required for the SEO monitor." }
+# -----------------------------------------------------------------------------
 
 function Register-RebootProofTask {
     param([string]$Name, [string]$Exe, [string]$TaskArgs, [datetime]$At)
@@ -62,26 +62,26 @@ function Register-RebootProofTask {
     Write-Host "Registered '$Name' -> $Exe $TaskArgs  ($RunDay $($At.ToString('HH:mm')))"
 }
 
-$at    = [datetime]::ParseExact($RunTime, 'HH:mm', $null)
+$at     = [datetime]::ParseExact($RunTime, 'HH:mm', $null)
 $atSync = [datetime]::ParseExact($SyncTime, 'HH:mm', $null)
 
-# 0) Pre-run photo sync (mirrors Google Drive → local cache before the research
+# 0) Pre-run photo sync (mirrors Google Drive -> local cache before the research
 #    run, so the photo library is current regardless of Drive mount state).
 Register-RebootProofTask -Name 'Grizzly SEO Photo Sync' `
     -Exe $NodeExe `
-    -TaskArgs ("`"{0}\scripts\sync-photos-from-drive.mjs`"" -f $ProjectRoot) `
+    -TaskArgs ('"{0}\scripts\sync-photos-from-drive.mjs"' -f $ProjectRoot) `
     -At $atSync
 
 # 1) Weekly research kickoff
 Register-RebootProofTask -Name 'Grizzly SEO Weekly Run' `
     -Exe $PythonExe `
-    -TaskArgs ("`"{0}\scripts\run-weekly-seo.py`"" -f $ProjectRoot) `
+    -TaskArgs ('"{0}\scripts\run-weekly-seo.py"' -f $ProjectRoot) `
     -At $at
 
 # 2) Monitor (starts alongside; watches for MonitorHours, then exits)
 Register-RebootProofTask -Name 'Grizzly SEO Monitor' `
     -Exe $NodeExe `
-    -TaskArgs ("`"{0}\scripts\seo-monitor.mjs`" --run-hours {1}" -f $ProjectRoot, $MonitorHours) `
+    -TaskArgs ('"{0}\scripts\seo-monitor.mjs" --run-hours {1}' -f $ProjectRoot, $MonitorHours) `
     -At $at
 
 Write-Host ""
