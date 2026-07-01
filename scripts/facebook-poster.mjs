@@ -107,6 +107,16 @@ function hopLog(hop, level, message, extra) {
   if (level === 'error') console.error(`  ↳ ${JSON.stringify(rec)}`);
 }
 
+// One-time FFmpeg availability check — avoids crashing per-video with unhelpful
+// errors when FFmpeg isn't installed; branded end cards are simply skipped.
+let HAS_FFMPEG = false;
+try {
+  execFileSync('ffmpeg', ['-version'], { timeout: 5000, encoding: 'utf8', stdio: 'pipe' });
+  HAS_FFMPEG = true;
+} catch {
+  hopLog('facebook-poster', 'warn', 'FFmpeg not found — branded end cards will be skipped for all videos this run');
+}
+
 // ---------------------------------------------------------------------------
 // Shared helpers
 // ---------------------------------------------------------------------------
@@ -390,6 +400,10 @@ async function graphDispatch(post, caption, videoPath, scheduleUnix) {
 // ---------------------------------------------------------------------------
 
 function addBrandedEndCard(rawPath, finalPath) {
+  if (!HAS_FFMPEG) {
+    fs.renameSync(rawPath, finalPath);
+    return;
+  }
   const cardSrc = fs.existsSync(ENDCARD_PATH) ? ENDCARD_PATH : LOGO_PATH;
   if (!fs.existsSync(cardSrc)) {
     fs.renameSync(rawPath, finalPath);
