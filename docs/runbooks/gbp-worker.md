@@ -57,3 +57,42 @@ Only if the worker is broken and you need GBP posting restored on `mav-bridge`:
 Note: the service still runs under LocalSystem, so GBP will only actually work there if
 the service itself has been moved to a user session — otherwise this rollback restores
 the *old broken* behavior. Prefer fixing the worker.
+
+## Photo Ingestion
+
+Job-site photos must land in the pipeline's source folder before the picker can score
+and match them to weekly GBP posts. The full ingestion chain is:
+
+    iPhone → (iOS Shortcut) → Google Drive "GBP Photos" (cloud)
+                                         ↓  08:25 Fri sync-photos-from-drive.mjs
+    C:\Workspace\Shared\Assets\Media\Grizzly\GBP Post Photos (local cache)
+                                         ↓  gbp-photo-pick.mjs
+    E:\Media\Grizzly\Curated (picked winners, ready for posting)
+
+### How to upload from your phone
+
+Use the **"Log Job Photos"** iOS Shortcut. Build it following the guide at
+`docs/ingestion/ios-photo-shortcut.md`. After each job, tap the shortcut, select your
+photos, and they upload to Drive with unique timestamp-prefixed filenames. The Friday
+08:25 scheduled sync pulls them into the local cache automatically.
+
+### Prerequisite: Drive for Desktop
+
+The `sync-photos-from-drive.mjs` step reads from `H:\My Drive\GBP Photos`, which is the
+Drive-for-Desktop mount. If Drive for Desktop is not running at 08:25, the sync sees an
+empty `H:` and uses whatever was in the cache from the last successful sync. This is
+non-fatal (the cache is persistent and additive), but new photos uploaded since the
+last sync won't appear until you manually run:
+
+    node scripts/sync-photos-from-drive.mjs
+
+**Check Drive status:** open File Explorer and confirm `H:\My Drive` is accessible.
+If it shows as disconnected, open the Drive for Desktop app and wait for it to remount.
+
+### Quick health check
+
+    node scripts/verify-photo-ingestion.mjs
+
+This read-only script reports photo counts in Drive vs cache, lists the 5 most recent
+cache files, and checks HEIC scoring readiness. No writes, no network — safe to run
+anytime.
