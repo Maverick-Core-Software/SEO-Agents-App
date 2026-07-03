@@ -977,7 +977,7 @@ async function handleHttpRequest(req, res) {
 
     const { data: posts, error } = await supabase
       .from('weekly_posts')
-      .select('id,run_id,platform,day,post_date,type,service,hook,body,cta,photo_file,status,posted_at,platform_post_id,error')
+      .select('id,run_id,platform,day,post_date,type,service,hook,body,cta,photo_file,status,posted_at,platform_post_id,media_status,error')
       .eq('run_id', latestRun.id)
       .order('post_date')
       .order('platform');
