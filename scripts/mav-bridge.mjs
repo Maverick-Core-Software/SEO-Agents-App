@@ -270,6 +270,20 @@ async function executeApprovedRun(run) {
 
   let allOk = true;
 
+  // ── 0.5 Photo curation (MUST run before FB posting) ───────────────
+  // The facebook-poster's video→photo fallback resolves a curated photo per date
+  // via resolvePhotoPath → curatedPhotoForDate(date). Those photos only exist if
+  // gbp-photo-pick.mjs has run for THIS week's schedule, copying winners into
+  // GBP_CURATED_FOLDER with the date prefix. Previously the picker only ran inside
+  // the GBP phase (line ~374) — AFTER Facebook had already posted — so video days
+  // had no curated fallback and posted as text-only. Run it here, before FB, so
+  // the fallback resolves. Harmless to re-run when GBP phase runs it again.
+  if (fs.existsSync(PHOTO_PICK_PATH)) {
+    const pp = await runPhase(runId, 'photo-pick', 'node', [PHOTO_PICK_PATH], PROJECT_ROOT, { timeoutMs: 8 * 60 * 1000 });
+    if (!pp.ok) await log(runId, 'facebook', 'warn', `photo-pick failed (FB fallback may degrade): ${pp.error}`);
+    else await log(runId, 'facebook', 'info', 'Photo curation complete (curated photos ready for FB fallbacks)');
+  }
+
   // ── 1. Facebook posts ──────────────────────────────────────────
   const { data: fbPosts } = await supabase
     .from('weekly_posts')

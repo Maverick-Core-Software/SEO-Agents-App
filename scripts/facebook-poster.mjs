@@ -55,11 +55,15 @@ const PROJECT_ROOT = path.resolve(__dirname, '..');
 // .env loader
 // ---------------------------------------------------------------------------
 
+// FORCE-OVERRIDE: this script is spawned by mav-bridge, which inherits its env
+// from PM2. PM2's ecosystem.config.cjs loads MCC's .env first (line 1), whose
+// keys can differ from this repo's .env (notably GEMINI_API_KEY — a stale value
+// there caused 401 auth failures on every Veo generation). .env here wins.
 const envPath = path.join(PROJECT_ROOT, '.env');
 if (fs.existsSync(envPath)) {
   for (const line of fs.readFileSync(envPath, 'utf8').split(/\r?\n/)) {
     const m = line.match(/^([A-Z_][A-Z0-9_]*)=(.*)$/);
-    if (m && !process.env[m[1]]) process.env[m[1]] = m[2].trim();
+    if (m) process.env[m[1]] = m[2].trim();
   }
 }
 

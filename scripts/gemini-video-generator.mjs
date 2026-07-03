@@ -13,12 +13,18 @@ import path from 'node:path';
 import https from 'node:https';
 import process from 'node:process';
 
-// Load .env from project root
+// Load .env from project root. FORCE-OVERRIDE: this script is spawned by
+// facebook-poster, which is spawned by mav-bridge, which inherits its env from
+// PM2 — and PM2's ecosystem.config.cjs loads MCC's .env first (line 1), whose
+// GEMINI_API_KEY can be a different/stale value than this repo's .env. The old
+// "don't clobber existing env" guard let that stale key win, causing 401 auth
+// failures on Veo generation. .env here is the source of truth for THIS repo's
+// keys; force-override mirrors gbp-photo-pick.mjs and run-weekly-seo.py.
 const envPath = path.join(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Z]:)/, '$1')), '..', '.env');
 if (fs.existsSync(envPath)) {
   for (const line of fs.readFileSync(envPath, 'utf8').split(/\r?\n/)) {
     const match = line.match(/^([A-Z_][A-Z0-9_]*)=(.*)$/);
-    if (match && !process.env[match[1]]) process.env[match[1]] = match[2].trim();
+    if (match) process.env[match[1]] = match[2].trim();
   }
 }
 
