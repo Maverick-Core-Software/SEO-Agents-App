@@ -91,7 +91,15 @@ const paths = { photoPick: PHOTO_PICK_PATH, gbpPoster: GBP_POSTER_PATH, seoAgent
 
 let busy = false;
 let lastDailyGbpDate = '';
-let lastVerifyDate = '';
+
+// Post-posting verification state. After a GBP post runs (or an unverified row is
+// detected), schedule verification checks: wait 10min, then check every 15min
+// up to 4 attempts. If none succeed, mark the post as error.
+let verifyQueue = [];  // { postId, date, runId, attempt, nextAt }
+let lastVerifyCheckAt = 0;
+const VERIFY_INITIAL_DELAY_MS = 10 * 60 * 1000;   // 10 min after post
+const VERIFY_RETRY_INTERVAL_MS = 15 * 60 * 1000;  // 15 min between retries
+const VERIFY_MAX_ATTEMPTS = 4;
 
 async function poll() {
   if (busy) return;
@@ -144,29 +152,84 @@ async function poll() {
       lastDailyGbpDate = todayDate;
     }
 
-    // 3. Daily verification: reconcile GBP posts missing platform_post_id.
-    //    Runs once/day >=10am Central (1hr after posting gate so posts have time
-    //    to index). Checks last 7 days of posted rows with no post_id.
-    if (cstHour >= 10 && lastVerifyDate !== todayDate) {
+    // 3. Post-posting verification: after a GBP post runs, we want to confirm it
+    //    actually landed. The driver.mjs does its own inline verification, but if
+    //    the process gets interrupted (exit code mismatch, timeout, bash kill),
+    //    the row may sit at 'posted' with no platform_post_id.
+    //
+    //    Flow: wait 10min → check every 15min up to 4 attempts → mark error if
+    //    still unverified. This is driven by verifyQueue, populated when a post
+    //    is freshly claimed/posted and the result is missing a platform_post_id.
+    const now = Date.now();
+
+    // Seed the queue: find posted rows from the last 24h with no platform_post_id
+    // that aren't already in the queue.
+    if (now - lastVerifyCheckAt > 60_000) {  // scan Supabase at most once per minute
+      lastVerifyCheckAt = now;
+      const cutoff = new Date(now - 24 * 3600000).toISOString();
+      const { data: unverified } = await supabase
+        .from('weekly_posts')
+        .select('id, run_id, post_date')
+        .eq('platform', 'gbp')
+        .in('status', ['posted', 'needs_verification'])
+        .is('platform_post_id', null)
+        .gte('updated_at', cutoff);
+      for (const row of unverified || []) {
+        if (!verifyQueue.some(q => q.postId === row.id)) {
+          verifyQueue.push({
+            postId: row.id,
+            date: row.post_date,
+            runId: row.run_id,
+            attempt: 0,
+            nextAt: now + VERIFY_INITIAL_DELAY_MS,
+          });
+          await log(row.run_id, 'gbp', 'info',
+            `Queued verification for ${row.post_date} (check in ${VERIFY_INITIAL_DELAY_MS / 60000}min)`);
+        }
+      }
+    }
+
+    // Process the queue: run checks that are due.
+    const due = verifyQueue.filter(q => q.attempt < VERIFY_MAX_ATTEMPTS && now >= q.nextAt);
+    for (const item of due) {
+      item.attempt++;
+      const isLast = item.attempt >= VERIFY_MAX_ATTEMPTS;
+
       if (fs.existsSync(GBP_VERIFY_PATH)) {
-        await log(null, 'gbp', 'info', 'Running daily GBP verification...');
-        const r = await runPhase(null, 'gbp', 'node', [GBP_VERIFY_PATH, '--headless', '--once'], PROJECT_ROOT);
+        await log(item.runId, 'gbp', 'info',
+          `Verify attempt ${item.attempt}/${VERIFY_MAX_ATTEMPTS} for ${item.date}`);
+        const r = await runPhase(item.runId, 'gbp', 'node',
+          [GBP_VERIFY_PATH, '--date', String(item.date).slice(0, 10), '--headless', '--once'],
+          PROJECT_ROOT);
+
         if (r.ok) {
-          lastVerifyDate = todayDate;
-          // Parse verification result from stdout
           try {
             const lastLine = (r.stdout || '').trim().split('\n').filter(l => l.startsWith('{')).pop();
             if (lastLine) {
               const parsed = JSON.parse(lastLine);
-              await log(null, 'gbp', 'info',
-                `Verification: ${parsed.verified || 0} confirmed, ${parsed.failed || 0} not found`);
+              if (parsed.verified > 0) {
+                // Verification succeeded — remove from queue
+                verifyQueue = verifyQueue.filter(q => q.postId !== item.postId);
+                await log(item.runId, 'gbp', 'info', `Verification confirmed for ${item.date}`);
+                continue;
+              }
             }
-          } catch { /* parse failure is non-fatal */ }
-        } else {
-          await log(null, 'gbp', 'warn', `GBP verification failed: ${r.error}`);
+          } catch { /* parse failure — treat as unverified */ }
         }
-      } else {
-        await log(null, 'gbp', 'warn', `verify-gbp-posts.mjs not found at ${GBP_VERIFY_PATH} — skipping verification`);
+
+        // Not verified yet
+        if (isLast) {
+          await log(item.runId, 'gbp', 'warn',
+            `Verification failed after ${VERIFY_MAX_ATTEMPTS} attempts for ${item.date} — marking error`);
+          await supabase.from('weekly_posts')
+            .update({ status: 'error', error: 'GBP verification failed after 4 attempts over 1hr — post may not be live' })
+            .eq('id', item.postId);
+          verifyQueue = verifyQueue.filter(q => q.postId !== item.postId);
+        } else {
+          item.nextAt = now + VERIFY_RETRY_INTERVAL_MS;
+          await log(item.runId, 'gbp', 'info',
+            `Not found yet, retry in ${VERIFY_RETRY_INTERVAL_MS / 60000}min`);
+        }
       }
     }
   } catch (e) {
