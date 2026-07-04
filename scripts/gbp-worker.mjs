@@ -44,6 +44,7 @@ const SEO_AGENTS_EXE = process.env.SEO_AGENTS_EXE
   || 'C:\\Users\\carte\\AppData\\Local\\Programs\\Python\\Python312\\Scripts\\seo-agents.exe';
 const GBP_POSTER_PATH = path.join(PROJECT_ROOT, 'scripts', 'gbp-poster', 'driver.mjs');
 const PHOTO_PICK_PATH = path.join(PROJECT_ROOT, 'scripts', 'gbp-photo-pick.mjs');
+const GBP_VERIFY_PATH = path.join(PROJECT_ROOT, 'scripts', 'verify-gbp-posts.mjs');
 
 if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
   console.error('[gbp-worker] SUPABASE_URL or SUPABASE_SERVICE_KEY not set — exiting');
@@ -90,6 +91,7 @@ const paths = { photoPick: PHOTO_PICK_PATH, gbpPoster: GBP_POSTER_PATH, seoAgent
 
 let busy = false;
 let lastDailyGbpDate = '';
+let lastVerifyDate = '';
 
 async function poll() {
   if (busy) return;
@@ -140,6 +142,32 @@ async function poll() {
       // Mark the day done only after a successful run — a throw here lets the next
       // poll retry today instead of silently skipping the day's posts.
       lastDailyGbpDate = todayDate;
+    }
+
+    // 3. Daily verification: reconcile GBP posts missing platform_post_id.
+    //    Runs once/day >=10am Central (1hr after posting gate so posts have time
+    //    to index). Checks last 7 days of posted rows with no post_id.
+    if (cstHour >= 10 && lastVerifyDate !== todayDate) {
+      if (fs.existsSync(GBP_VERIFY_PATH)) {
+        await log(null, 'gbp', 'info', 'Running daily GBP verification...');
+        const r = await runPhase(null, 'gbp', 'node', [GBP_VERIFY_PATH, '--headless', '--once'], PROJECT_ROOT);
+        if (r.ok) {
+          lastVerifyDate = todayDate;
+          // Parse verification result from stdout
+          try {
+            const lastLine = (r.stdout || '').trim().split('\n').filter(l => l.startsWith('{')).pop();
+            if (lastLine) {
+              const parsed = JSON.parse(lastLine);
+              await log(null, 'gbp', 'info',
+                `Verification: ${parsed.verified || 0} confirmed, ${parsed.failed || 0} not found`);
+            }
+          } catch { /* parse failure is non-fatal */ }
+        } else {
+          await log(null, 'gbp', 'warn', `GBP verification failed: ${r.error}`);
+        }
+      } else {
+        await log(null, 'gbp', 'warn', `verify-gbp-posts.mjs not found at ${GBP_VERIFY_PATH} — skipping verification`);
+      }
     }
   } catch (e) {
     console.error(`[gbp-worker][gbp-worker→poll][error] poll exception: ${e.message}`);
