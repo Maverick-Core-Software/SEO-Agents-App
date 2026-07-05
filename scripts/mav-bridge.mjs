@@ -284,6 +284,20 @@ async function executeApprovedRun(run) {
     else await log(runId, 'facebook', 'info', 'Photo curation complete (curated photos ready for FB fallbacks)');
   }
 
+  // ── 0.6 Rewrite FB schedule PHOTO_FILEs from the curated folder ───────────────
+  // The FB crew's LLM picks photo filenames by keyword with no service constraint,
+  // so an EV-charger post can ship with "financing-available.JPG". GBP doesn't have
+  // this problem (gbp-photo-pick service-matches with vision). fb-photo-rewrite
+  // applies the same deterministic matching to the FB schedule: for each photo day,
+  // overwrite PHOTO_FILE with the same-date curated photo whose slug matches the
+  // post's SERVICE; if none, switch the day to text-only so no off-topic image ships.
+  const FB_REWRITE_PATH = path.join(PROJECT_ROOT, 'scripts', 'fb-photo-rewrite.mjs');
+  if (fs.existsSync(FB_REWRITE_PATH) && fs.existsSync(scheduleFile)) {
+    const rw = await runPhase(runId, 'fb-photo-rewrite', 'node', [FB_REWRITE_PATH], PROJECT_ROOT, { timeoutMs: 30 * 1000 });
+    if (!rw.ok) await log(runId, 'facebook', 'warn', `fb-photo-rewrite failed: ${rw.error}`);
+    else await log(runId, 'facebook', 'info', 'FB schedule photos rewritten from curated folder');
+  }
+
   // ── 1. Facebook posts ──────────────────────────────────────────
   const { data: fbPosts } = await supabase
     .from('weekly_posts')
@@ -487,11 +501,18 @@ async function poll() {
       //
       // Three outcomes per row, distinguished so the dashboard never lies and we
       // never clobber a post that simply hasn't hit its publish minute yet:
-      //   - is_published === true   → mark 'posted'
-      //   - valid object, is_published === false → still pending; LEAVE as 'scheduled'
-      //                                 (re-checked on the next tick / next day)
+      //   - Graph fetch returns the object (no error) → mark 'posted'
       //   - Graph error / not found → mark 'error' (deleted or rejected upstream)
-      //   - network throw           → leave unchanged (can't confirm either way)
+      //   - network throw          → leave unchanged (can't confirm either way)
+      //
+      // We request `fields=id` only. We previously asked for `is_published` too,
+      // but that field only exists on the Page-Post node — Video/Photo objects
+      // (which is what the Gemini-rendered fb-video rows carry as platform_post_id)
+      // reject the whole request with `(#100) Tried accessing nonexisting field
+      // (is_published)`, incorrectly flipping every video row to 'error' even
+      // though the post is live and fine on Facebook. The post-existence check
+      // is enough: scheduled rows only get a platform_post_id after a successful
+      // Graph create call, so if the object fetches cleanly the post is real.
       const { data: pastFb } = await supabase
         .from('weekly_posts')
         .select('id, post_date, platform_post_id')
@@ -502,7 +523,7 @@ async function poll() {
         if (post.platform_post_id && FB_PAGE_ACCESS_TOKEN) {
           try {
             const checkRes = await fetch(
-              `https://graph.facebook.com/${GRAPH_API_VERSION}/${post.platform_post_id}?fields=id,is_published&access_token=${encodeURIComponent(FB_PAGE_ACCESS_TOKEN)}`
+              `https://graph.facebook.com/${GRAPH_API_VERSION}/${post.platform_post_id}?fields=id&access_token=${encodeURIComponent(FB_PAGE_ACCESS_TOKEN)}`
             );
             const checkJson = await checkRes.json();
             if (checkJson.error) {
@@ -511,10 +532,6 @@ async function poll() {
                 .update({ status: 'error', error: `Facebook reports: ${checkJson.error.message || JSON.stringify(checkJson.error)}` })
                 .eq('id', post.id);
               console.log(`[mav-bridge][fb-reconcile] ${post.post_date} NOT found on Facebook — marked error`);
-            } else if (checkJson.is_published === false) {
-              // Scheduled but Facebook hasn't published it yet this second.
-              // Leave as 'scheduled' and let the next tick re-verify.
-              console.log(`[mav-bridge][fb-reconcile] ${post.post_date} not yet published — leaving scheduled`);
             } else {
               await supabase.from('weekly_posts')
                 .update({ status: 'posted', posted_at: new Date().toISOString() })
