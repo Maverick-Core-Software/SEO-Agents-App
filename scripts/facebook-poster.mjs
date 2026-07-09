@@ -80,13 +80,32 @@ const FB_PAGE_URL = process.env.FB_PAGE_URL
   || (FB_PAGE_ID ? `https://www.facebook.com/${FB_PAGE_ID}` : '');
 const VIDEO_OUTPUT_DIR = process.env.FB_VIDEO_OUTPUT_DIR
   || path.join(PROJECT_ROOT, 'outputs', 'fb-videos');
+// Backend for video generation: 'xai' (Grok Imagine, default) or 'gemini' (Veo 3).
+// Veo 3 was renderering brand text and phone numbers directly into the frame
+// with garbled spelling ("Eleecrtral Sollutions", "(169) 865-9804") because
+// video models can't reliably draw text on curved surfaces. Grok Imagine is
+// the current default; we composite the real brand + phone via ffmpeg after.
+const VIDEO_BACKEND = (process.env.FB_VIDEO_BACKEND || 'xai').toLowerCase();
 const GEMINI_VIDEO_GEN = process.env.GEMINI_VIDEO_GENERATOR
   || path.join(__dirname, 'gemini-video-generator.mjs');
+const XAI_VIDEO_GEN = process.env.XAI_VIDEO_GENERATOR
+  || path.join(__dirname, 'xai-video-generator.mjs');
+const VIDEO_GEN_SCRIPT = VIDEO_BACKEND === 'gemini' ? GEMINI_VIDEO_GEN : XAI_VIDEO_GEN;
 const GBP_PHOTO_PATH = process.env.GBP_PHOTO_PATH
   || String.raw`C:\Workspace\Shared\Assets\Media\Grizzly\GBP Post Photos`;
 const SCHEDULE_FILE = path.join(PROJECT_ROOT, 'outputs', 'facebook_posting_schedule.md');
 const LOGO_PATH = process.env.GRIZZLY_LOGO_PATH || path.join(PROJECT_ROOT, 'assets', 'grizzly-logo.png');
 const ENDCARD_PATH = process.env.GRIZZLY_ENDCARD_PATH || path.join(PROJECT_ROOT, 'assets', 'grizzly-endcard.jpg');
+// Brand info stamped onto every video's end card so viewers always see the
+// correct name + phone, regardless of what the video model hallucinates on
+// shirts or signs inside the clip.
+const BRAND_NAME = process.env.GRIZZLY_BRAND_NAME || 'Grizzly Electrical Solutions';
+const BRAND_PHONE = process.env.GRIZZLY_BRAND_PHONE || '(469) 863-9804';
+const BRAND_LOCATION = process.env.GRIZZLY_BRAND_LOCATION || 'Rowlett, TX';
+const ENDCARD_FONT = process.env.GRIZZLY_ENDCARD_FONT
+  || (process.platform === 'win32'
+    ? String.raw`C\:/Windows/Fonts/arialbd.ttf`
+    : '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf');
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
 
 // Must exceed gemini-video-generator's poll ceiling (90 polls × 8s = 720s) so a
@@ -398,6 +417,15 @@ async function graphDispatch(post, caption, videoPath, scheduleUnix) {
 // Gemini video generation
 // ---------------------------------------------------------------------------
 
+// ffmpeg drawtext values must have :, \, ', % escaped.
+function ffmpegEscape(text) {
+  return String(text)
+    .replace(/\\/g, '\\\\')
+    .replace(/:/g, '\\:')
+    .replace(/'/g, "\\'")
+    .replace(/%/g, '\\%');
+}
+
 function addBrandedEndCard(rawPath, finalPath) {
   if (!HAS_FFMPEG) {
     fs.renameSync(rawPath, finalPath);
@@ -418,15 +446,59 @@ function addBrandedEndCard(rawPath, finalPath) {
     const H = stream.height || 1280;
     const [fpsN, fpsD] = (stream.r_frame_rate || '24/1').split('/').map(Number);
     const fps = Math.round(fpsN / fpsD) || 24;
-    execFileSync('ffmpeg', [
-      '-y', '-i', rawPath, '-loop', '1', '-t', '3', '-i', cardSrc,
-      '-filter_complex', [
-        `[1:v]scale=${W}:-1,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps=${fps}[card]`,
-        `[0:v]setsar=1[main]`,
-        `[main][card]concat=n=2:v=1:a=0[out]`,
-      ].join(';'),
-      '-map', '[out]', '-c:v', 'libx264', '-preset', 'fast', '-crf', '22', '-an', finalPath,
-    ], { timeout: 120000 });
+
+    // Overlay brand + phone on the end card via drawtext so every reel ends
+    // with the correct name and number, even if the video model garbled a
+    // shirt logo mid-clip. Font path is configurable (GRIZZLY_ENDCARD_FONT).
+    const fontExists = fs.existsSync(ENDCARD_FONT.replace(/\\:/g, ':'));
+    const phoneFontSize = Math.max(28, Math.round(H / 22));
+    const nameFontSize = Math.max(22, Math.round(H / 30));
+    const shadow = 'shadowcolor=black@0.9:shadowx=3:shadowy=3';
+    const textFilter = fontExists
+      ? `,drawtext=fontfile='${ENDCARD_FONT}':text='${ffmpegEscape(BRAND_NAME)}':fontcolor=white:fontsize=${nameFontSize}:x=(w-text_w)/2:y=h*0.72:${shadow}`
+        + `,drawtext=fontfile='${ENDCARD_FONT}':text='${ffmpegEscape(BRAND_PHONE)}':fontcolor=white:fontsize=${phoneFontSize}:x=(w-text_w)/2:y=h*0.80:${shadow}`
+      : '';
+
+    // Detect whether the raw video has an audio track. Grok Imagine and Veo 3
+    // can both produce synced audio; if present we keep it on the main clip
+    // and pad silence over the still end card so the concat aligns.
+    let hasAudio = false;
+    try {
+      const audioProbe = execFileSync('ffprobe', [
+        '-v', 'error', '-select_streams', 'a:0',
+        '-show_entries', 'stream=codec_type', '-of', 'json', rawPath,
+      ], { encoding: 'utf8', timeout: 15000 });
+      hasAudio = !!JSON.parse(audioProbe).streams?.[0];
+    } catch { /* no audio stream */ }
+
+    const cardChain = `[1:v]scale=${W}:-1,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps=${fps}${textFilter}[card]`;
+    if (hasAudio) {
+      execFileSync('ffmpeg', [
+        '-y',
+        '-i', rawPath,
+        '-loop', '1', '-t', '3', '-i', cardSrc,
+        '-f', 'lavfi', '-t', '3', '-i', 'anullsrc=channel_layout=stereo:sample_rate=48000',
+        '-filter_complex', [
+          cardChain,
+          `[0:v]setsar=1[main]`,
+          `[main][0:a][card][2:a]concat=n=2:v=1:a=1[out][outa]`,
+        ].join(';'),
+        '-map', '[out]', '-map', '[outa]',
+        '-c:v', 'libx264', '-preset', 'fast', '-crf', '22',
+        '-c:a', 'aac', '-b:a', '128k',
+        finalPath,
+      ], { timeout: 120000 });
+    } else {
+      execFileSync('ffmpeg', [
+        '-y', '-i', rawPath, '-loop', '1', '-t', '3', '-i', cardSrc,
+        '-filter_complex', [
+          cardChain,
+          `[0:v]setsar=1[main]`,
+          `[main][card]concat=n=2:v=1:a=0[out]`,
+        ].join(';'),
+        '-map', '[out]', '-c:v', 'libx264', '-preset', 'fast', '-crf', '22', '-an', finalPath,
+      ], { timeout: 120000 });
+    }
     fs.unlinkSync(rawPath);
   } catch (e) {
     hopLog('facebook-poster→ffmpeg', 'warn', `end card failed (${e.message.slice(0, 120)}) — using raw video`);
@@ -434,23 +506,45 @@ function addBrandedEndCard(rawPath, finalPath) {
   }
 }
 
-function generateGeminiVideo(prompt, outputPath, { brand = true } = {}) {
+// Strip brand tokens and phone-shaped numbers before handing the prompt to
+// the video model. Even with strict "no on-screen text" instructions, video
+// models will happily hallucinate a shirt logo or fake CTA card if the
+// prompt names the business or contains anything that looks like a number to
+// stamp on a sign. Defense in depth on top of the system prompt.
+function sanitizeVideoPrompt(prompt) {
+  if (!prompt) return prompt;
+  return prompt
+    .replace(/\bGrizzly\s+Electrical(?:\s+Solutions)?\b/gi, 'a residential electrician')
+    .replace(/\bGrizzly\b/gi, 'the electrician')
+    .replace(/\(?\b\d{3}\)?[-.\s]\d{3}[-.\s]\d{4}\b/g, '')
+    .replace(/\b1?-?\d{3}[-.\s]\d{3}[-.\s]\d{4}\b/g, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
+function generateVideoViaBackend(prompt, outputPath, { brand = true } = {}) {
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
   const rawPath = brand ? outputPath.replace(/\.mp4$/, '-raw.mp4') : outputPath;
-  const out = execFileSync('node', [GEMINI_VIDEO_GEN, '--prompt', prompt, '--output', rawPath], {
+  const cleanPrompt = sanitizeVideoPrompt(prompt);
+  hopLog('facebook-poster→' + VIDEO_BACKEND, 'info', `Video prompt (sanitized, ${cleanPrompt.length} chars): ${cleanPrompt.slice(0, 100)}...`);
+  const out = execFileSync('node', [VIDEO_GEN_SCRIPT, '--prompt', cleanPrompt, '--output', rawPath], {
     timeout: VIDEO_GEN_TIMEOUT_MS,
     encoding: 'utf8',
   });
   const lastLine = out.trim().split('\n').filter(l => l.startsWith('{')).pop();
-  if (!lastLine) throw new Error('No JSON output from gemini-video-generator');
+  if (!lastLine) throw new Error(`No JSON output from ${VIDEO_BACKEND}-video-generator`);
   const result = JSON.parse(lastLine);
-  if (result.status !== 'success') throw new Error(`Video gen failed: ${result.message}`);
+  if (result.status !== 'success') throw new Error(`Video gen failed (${VIDEO_BACKEND}): ${result.message}`);
   if (brand) {
-    hopLog('facebook-poster→ffmpeg', 'info', 'Adding branded end card...');
+    hopLog('facebook-poster→ffmpeg', 'info', 'Adding branded end card with phone overlay...');
     addBrandedEndCard(rawPath, outputPath);
   }
   return outputPath;
 }
+
+// Back-compat alias — existing call sites keep working while the backend
+// selection now lives inside generateVideoViaBackend.
+const generateGeminiVideo = generateVideoViaBackend;
 
 async function generateCinematicPrompt(post) {
   if (post.video_prompt) return post.video_prompt;
@@ -463,9 +557,9 @@ async function generateCinematicPrompt(post) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${OPENAI_API_KEY}` },
     body: JSON.stringify({
-      model: 'gpt-4o-mini', max_tokens: 300,
+      model: 'gpt-4o-mini', max_tokens: 320,
       messages: [
-        { role: 'system', content: `You are a video director writing Veo 3 generation prompts for Grizzly Electrical Solutions, a licensed residential and commercial electrician in DFW, Texas.\n\nWrite a single vivid, cinematic prompt (100-140 words) that:\n- Opens with an establishing shot that sets a relatable scene (home, family, business)\n- Builds tension around an electrical problem (flickering lights, sparking outlet, dead panel, etc.)\n- Includes a dramatic visual moment — arcing breakers, sparks, smoke, worried faces, a professional electrician arriving\n- Feels like a mini movie trailer — emotional, urgent, real\n- Matches the service and caption topic provided\n- Ends with: Photorealistic, cinematic, 4K, dramatic atmosphere, no text overlays.\n\nOutput the prompt only. No explanation, no quotes, no title.` },
+        { role: 'system', content: `You are a video director writing generation prompts for short vertical video ads (9:16) for a licensed residential and commercial electrician in DFW, Texas.\n\nWrite a single vivid, cinematic prompt (100-140 words) that:\n- Opens with an establishing shot that sets a relatable scene (home, family, business)\n- Builds tension around an electrical problem (flickering lights, sparking outlet, dead panel, etc.)\n- Includes a dramatic visual moment — arcing breakers, sparks, smoke, worried faces, a professional electrician arriving\n- Feels like a mini movie trailer — emotional, urgent, real\n- Matches the service and caption topic provided\n- Suggests natural diegetic AUDIO (buzzing, sparks, footsteps, ambient room tone) but no dialogue\n\nSTRICT — the finished video must contain NO readable text of any kind:\n- Do NOT name the business, its owner, its city, or its phone number in the prompt\n- Do NOT ask for logos on shirts, polos, vans, hats, patches, signs, storefronts, or paperwork\n- Do NOT ask for on-screen captions, subtitles, lower thirds, chyrons, or phone numbers\n- Wardrobe should be a plain solid-color work polo with no visible writing or emblem\n- Any incidental signs/labels in the scene must be unreadable or out of focus\n\nEnds with: Photorealistic, cinematic, 4K, dramatic atmosphere, plain unbranded wardrobe, absolutely no visible text or numbers anywhere in frame.\n\nOutput the prompt only. No explanation, no quotes, no title.` },
         { role: 'user', content: `Service: ${post.service}\nHook: ${post.hook}\nCaption:\n${caption}` },
       ],
     }),
@@ -487,8 +581,10 @@ async function generateAllVideos(posts) {
   // Pre-flight: test Gemini availability with a tiny request before committing to
   // the full generation loop. If credits are depleted, skip all videos upfront
   // instead of letting each one fail individually (13 min timeout each).
+  // Only relevant when the Gemini backend is actually selected — Grok Imagine
+  // has its own error surface and doesn't need this quota probe.
   const GEMINI_API_KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '';
-  if (GEMINI_API_KEY) {
+  if (VIDEO_BACKEND === 'gemini' && GEMINI_API_KEY) {
     try {
       const checkRes = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(GEMINI_API_KEY)}`
