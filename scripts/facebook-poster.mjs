@@ -426,7 +426,7 @@ function ffmpegEscape(text) {
     .replace(/%/g, '\\%');
 }
 
-function addBrandedEndCard(rawPath, finalPath) {
+export function addBrandedEndCard(rawPath, finalPath) {
   if (!HAS_FFMPEG) {
     fs.renameSync(rawPath, finalPath);
     return;
@@ -546,11 +546,14 @@ function generateVideoViaBackend(prompt, outputPath, { brand = true } = {}) {
 // selection now lives inside generateVideoViaBackend.
 const generateGeminiVideo = generateVideoViaBackend;
 
-async function generateCinematicPrompt(post) {
-  if (post.video_prompt) return post.video_prompt;
+export async function generateCinematicPrompt(post) {
+  // The schedule's VIDEO_PROMPT (written by the weekly crew) is used as a
+  // scene idea, never verbatim — those prompts are tame single-shot
+  // descriptions and often name the brand. The director rewrite below is what
+  // makes the clip Reels-worthy.
   if (!OPENAI_API_KEY) {
-    hopLog('facebook-poster→openai', 'warn', 'No OPENAI_API_KEY and no schedule prompt — skipping video.');
-    return null;
+    hopLog('facebook-poster→openai', 'warn', 'No OPENAI_API_KEY — falling back to schedule prompt as-is.');
+    return post.video_prompt || null;
   }
   const caption = buildCaption(post);
   const res = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -559,8 +562,8 @@ async function generateCinematicPrompt(post) {
     body: JSON.stringify({
       model: 'gpt-4o-mini', max_tokens: 320,
       messages: [
-        { role: 'system', content: `You are a video director writing generation prompts for short vertical video ads (9:16) for a licensed residential and commercial electrician in DFW, Texas.\n\nWrite a single vivid, cinematic prompt (100-140 words) that:\n- Opens with an establishing shot that sets a relatable scene (home, family, business)\n- Builds tension around an electrical problem (flickering lights, sparking outlet, dead panel, etc.)\n- Includes a dramatic visual moment — arcing breakers, sparks, smoke, worried faces, a professional electrician arriving\n- Feels like a mini movie trailer — emotional, urgent, real\n- Matches the service and caption topic provided\n- Suggests natural diegetic AUDIO (buzzing, sparks, footsteps, ambient room tone) but no dialogue\n\nSTRICT — the finished video must contain NO readable text of any kind:\n- Do NOT name the business, its owner, its city, or its phone number in the prompt\n- Do NOT ask for logos on shirts, polos, vans, hats, patches, signs, storefronts, or paperwork\n- Do NOT ask for on-screen captions, subtitles, lower thirds, chyrons, or phone numbers\n- Wardrobe should be a plain solid-color work polo with no visible writing or emblem\n- Any incidental signs/labels in the scene must be unreadable or out of focus\n\nEnds with: Photorealistic, cinematic, 4K, dramatic atmosphere, plain unbranded wardrobe, absolutely no visible text or numbers anywhere in frame.\n\nOutput the prompt only. No explanation, no quotes, no title.` },
-        { role: 'user', content: `Service: ${post.service}\nHook: ${post.hook}\nCaption:\n${caption}` },
+        { role: 'system', content: `You are a video director writing generation prompts for short vertical Facebook Reels (9:16, ~8 seconds) for a licensed residential and commercial electrician in DFW, Texas. These compete in a Reels feed — the viewer decides in the FIRST SECOND whether to keep watching. Slow establishing shots and a guy calmly looking at a panel are failures.\n\nWrite a single vivid, cinematic prompt (100-140 words) that:\n- OPENS ON THE DRAMA — the spark, the arc flash, the plunge into darkness, the lightning strike, the smoking outlet — in the very first moment, not after a build-up\n- Packs 3-4 fast cuts into 8 seconds: e.g. crash zoom on a sparking outlet → lights die across the whole house → worried faces lit by phone flashlight → electrician's boots striding in, tool bag swinging\n- Uses dynamic camera energy: whip pans, crash zooms, hard push-ins, handheld urgency — never a static tripod shot\n- Includes real spectacle scaled to the topic: arcing breakers, a breaker panel erupting in sparks, smoke curling from a scorched socket, a Texas storm hammering a dark neighborhood, an EV charger snapping to life with a glow\n- Shows human stakes (a family plunged into dark, a homeowner flinching from a popping outlet) and ends on the electrician arriving or the power surging triumphantly back on — lights blazing room by room\n- Matches the service and caption topic provided\n- Calls for punchy diegetic AUDIO (electrical crackle, thunder, breaker thunk, the hum of power returning) but no dialogue\n\nSTRICT — the finished video must contain NO readable text of any kind:\n- Do NOT name the business, its owner, its city, or its phone number in the prompt\n- Do NOT ask for logos on shirts, polos, vans, hats, patches, signs, storefronts, or paperwork\n- Do NOT ask for on-screen captions, subtitles, lower thirds, chyrons, or phone numbers\n- Wardrobe should be a plain solid-color work polo with no visible writing or emblem\n- Any incidental signs/labels in the scene must be unreadable or out of focus\n\nEnds with: Photorealistic, cinematic, 4K, high-energy fast-cut editing, dramatic atmosphere, plain unbranded wardrobe, absolutely no visible text or numbers anywhere in frame.\n\nOutput the prompt only. No explanation, no quotes, no title.` },
+        { role: 'user', content: `Service: ${post.service}\nHook: ${post.hook}\nCaption:\n${caption}${post.video_prompt ? `\n\nScene idea from the content planner (rewrite it to be far more exciting — do not copy it):\n${post.video_prompt}` : ''}` },
       ],
     }),
   });
@@ -569,7 +572,12 @@ async function generateCinematicPrompt(post) {
     hopLog('facebook-poster→openai', 'warn', `prompt gen error: ${json.error.message} — using schedule prompt`);
     return post.video_prompt || null;
   }
-  return json.choices?.[0]?.message?.content?.trim() || post.video_prompt || null;
+  let prompt = json.choices?.[0]?.message?.content?.trim() || post.video_prompt || null;
+  // GPT sometimes drops the required style/no-text tail — enforce it ourselves.
+  if (prompt && !/no visible text/i.test(prompt)) {
+    prompt += ' Photorealistic, cinematic, 4K, high-energy fast-cut editing, dramatic atmosphere, plain unbranded wardrobe, absolutely no visible text or numbers anywhere in frame.';
+  }
+  return prompt;
 }
 
 let geminiCreditsDepletedFlag = false;
@@ -906,12 +914,13 @@ async function runSinglePayload(args) {
   // Resolve / generate the video file for video posts.
   let videoPath = post.video_file || null;
   if (type === 'video' && !videoPath) {
-    if (!post.video_prompt) throw new Error('video_prompt or video_file required for video posts');
     videoPath = resolveVideoPath(post);
     if (!fs.existsSync(videoPath)) {
-      hopLog('facebook-poster', 'info', `Generating video via Gemini: ${post.video_prompt.slice(0, 80)}...`);
+      const prompt = await generateCinematicPrompt(post);
+      if (!prompt) throw new Error('video_prompt or video_file required for video posts (no OPENAI_API_KEY to generate one)');
+      hopLog('facebook-poster', 'info', `Generating video via ${VIDEO_BACKEND}: ${prompt.slice(0, 80)}...`);
       try {
-        generateGeminiVideo(post.video_prompt, videoPath);
+        generateGeminiVideo(prompt, videoPath);
       } catch (e) {
         hopLog('facebook-poster→gemini', 'warn', `video generation failed (${e.message.slice(0, 120)}) — will fall back to photo/text`);
         videoPath = null;
