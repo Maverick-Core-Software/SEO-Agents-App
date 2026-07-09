@@ -51,7 +51,7 @@ const GBP_POSTER_PATH = path.join(PROJECT_ROOT, 'scripts', 'gbp-poster', 'driver
 const GBP_ON = (process.env.MAV_BRIDGE_GBP || 'off').toLowerCase() === 'on';
 const PHOTO_PICK_PATH = path.join(PROJECT_ROOT, 'scripts', 'gbp-photo-pick.mjs');
 const GBP_PATHS = { photoPick: PHOTO_PICK_PATH, gbpPoster: GBP_POSTER_PATH, seoAgentsExe: SEO_AGENTS_EXE };
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
+const XAI_API_KEY = process.env.XAI_API_KEY || process.env.GROK_API_KEY || '';
 const SMTP_FROM = process.env.SMTP_FROM || '';
 const SMTP_TO = process.env.SMTP_TO || '';
 const SMTP_APP_PASSWORD = process.env.SMTP_APP_PASSWORD || '';
@@ -93,7 +93,7 @@ async function log(runId, phase, level, message) {
 // Vercel → Tailscale → server.mjs → mav-bridge → adapters. When something
 // breaks, this tags WHICH outbound boundary failed so a vague dashboard error
 // can be traced to the exact hop. `hop` is e.g. 'mav-bridge→supabase',
-// 'mav-bridge→openai', 'mav-bridge→subprocess:facebook'.
+// 'mav-bridge→xai', 'mav-bridge→subprocess:facebook'.
 async function hopError(runId, phase, hop, message, err) {
   const detail = err ? `${message}: ${err.message || err}` : message;
   const rec = { ts: new Date().toISOString(), source: 'mav-bridge', hop, phase, message: detail };
@@ -171,27 +171,27 @@ async function generateDay1VideoPrompt(scheduleFile) {
   const hashtags = get('HASHTAGS');
   const caption = [hook ? `${hook}\n\n` : '', body, hashtags ? `\n\n${hashtags}` : '', cta ? `\n\n${cta}` : ''].join('').trim();
 
-  if (!OPENAI_API_KEY) return get('VIDEO_PROMPT') || null;
+  if (!XAI_API_KEY) return get('VIDEO_PROMPT') || null;
 
   let res;
   try {
-    res = await fetch('https://api.openai.com/v1/chat/completions', {
+    res = await fetch('https://api.x.ai/v1/chat/completions', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${OPENAI_API_KEY}` },
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${XAI_API_KEY}` },
     body: JSON.stringify({
-      model: 'gpt-4o-mini', max_tokens: 300,
+      model: 'grok-4.20-0309-non-reasoning', max_tokens: 300,
       messages: [
-        { role: 'system', content: `You are a video director writing Veo 3 generation prompts for Grizzly Electrical Solutions, a licensed residential and commercial electrician in DFW, Texas.\n\nWrite a single vivid, cinematic prompt (100-140 words) that:\n- Opens with an establishing shot that sets a relatable scene (home, family, business)\n- Builds tension around an electrical problem (flickering lights, sparking outlet, dead panel, etc.)\n- Includes a dramatic visual moment — arcing breakers, sparks, smoke, worried faces, a professional electrician arriving\n- Feels like a mini movie trailer — emotional, urgent, real\n- Matches the service and caption topic provided\n- Ends with: Photorealistic, cinematic, 4K, dramatic atmosphere, no text overlays.\n\nOutput the prompt only. No explanation, no quotes, no title.` },
+        { role: 'system', content: `You are a video director writing text-to-video generation prompts for Grizzly Electrical Solutions, a licensed residential and commercial electrician in DFW, Texas.\n\nWrite a single vivid, cinematic prompt (100-140 words) that:\n- Opens with an establishing shot that sets a relatable scene (home, family, business)\n- Builds tension around an electrical problem (flickering lights, sparking outlet, dead panel, etc.)\n- Includes a dramatic visual moment — arcing breakers, sparks, smoke, worried faces, a professional electrician arriving\n- Feels like a mini movie trailer — emotional, urgent, real\n- Matches the service and caption topic provided\n- Ends with: Photorealistic, cinematic, 4K, dramatic atmosphere, no text overlays.\n\nOutput the prompt only. No explanation, no quotes, no title.` },
         { role: 'user', content: `Service: ${service}\nHook: ${hook}\nCaption:\n${caption}` },
       ],
     }),
     });
   } catch (e) {
-    // Tag the OpenAI hop so a network/DNS failure here is distinguishable from a bad response.
-    throw new Error(`[mav-bridge→openai] request failed: ${e.message}`);
+    // Tag the xAI hop so a network/DNS failure here is distinguishable from a bad response.
+    throw new Error(`[mav-bridge→xai] request failed: ${e.message}`);
   }
   const json = await res.json();
-  if (json.error) throw new Error(`[mav-bridge→openai] ${json.error.message || 'API error'}`);
+  if (json.error) throw new Error(`[mav-bridge→xai] ${json.error.message || 'API error'}`);
   return json.choices?.[0]?.message?.content?.trim() || get('VIDEO_PROMPT') || null;
 }
 
