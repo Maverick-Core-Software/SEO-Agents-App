@@ -106,7 +106,7 @@ const ENDCARD_FONT = process.env.GRIZZLY_ENDCARD_FONT
   || (process.platform === 'win32'
     ? String.raw`C\:/Windows/Fonts/arialbd.ttf`
     : '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf');
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
+const XAI_API_KEY = process.env.XAI_API_KEY || process.env.GROK_API_KEY || '';
 
 // Must exceed gemini-video-generator's poll ceiling (90 polls × 8s = 720s) so a
 // slow Veo 3 render isn't killed by the parent before it can finish. See Fix 1.
@@ -551,16 +551,16 @@ export async function generateCinematicPrompt(post) {
   // scene idea, never verbatim — those prompts are tame single-shot
   // descriptions and often name the brand. The director rewrite below is what
   // makes the clip Reels-worthy.
-  if (!OPENAI_API_KEY) {
-    hopLog('facebook-poster→openai', 'warn', 'No OPENAI_API_KEY — falling back to schedule prompt as-is.');
+  if (!XAI_API_KEY) {
+    hopLog('facebook-poster→xai', 'warn', 'No XAI_API_KEY — falling back to schedule prompt as-is.');
     return post.video_prompt || null;
   }
   const caption = buildCaption(post);
-  const res = await fetch('https://api.openai.com/v1/chat/completions', {
+  const res = await fetch('https://api.x.ai/v1/chat/completions', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${OPENAI_API_KEY}` },
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${XAI_API_KEY}` },
     body: JSON.stringify({
-      model: 'gpt-4o-mini', max_tokens: 320,
+      model: 'grok-4.20-0309-non-reasoning', max_tokens: 320,
       messages: [
         { role: 'system', content: `You are a video director writing generation prompts for short vertical Facebook Reels (9:16, ~8 seconds) for a licensed residential and commercial electrician in DFW, Texas. These compete in a Reels feed — the viewer decides in the FIRST SECOND whether to keep watching. Slow establishing shots and a guy calmly looking at a panel are failures.\n\nWrite a single vivid, cinematic prompt (100-140 words) that:\n- OPENS ON THE DRAMA — the spark, the arc flash, the plunge into darkness, the lightning strike, the smoking outlet — in the very first moment, not after a build-up\n- Packs 3-4 fast cuts into 8 seconds: e.g. crash zoom on a sparking outlet → lights die across the whole house → worried faces lit by phone flashlight → electrician's boots striding in, tool bag swinging\n- Uses dynamic camera energy: whip pans, crash zooms, hard push-ins, handheld urgency — never a static tripod shot\n- Includes real spectacle scaled to the topic: arcing breakers, a breaker panel erupting in sparks, smoke curling from a scorched socket, a Texas storm hammering a dark neighborhood, an EV charger snapping to life with a glow\n- Shows human stakes (a family plunged into dark, a homeowner flinching from a popping outlet) and ends on the electrician arriving or the power surging triumphantly back on — lights blazing room by room\n- Matches the service and caption topic provided\n- Calls for punchy diegetic AUDIO (electrical crackle, thunder, breaker thunk, the hum of power returning) but no dialogue\n\nSTRICT — the finished video must contain NO readable text of any kind:\n- Do NOT name the business, its owner, its city, or its phone number in the prompt\n- Do NOT ask for logos on shirts, polos, vans, hats, patches, signs, storefronts, or paperwork\n- Do NOT ask for on-screen captions, subtitles, lower thirds, chyrons, or phone numbers\n- Wardrobe should be a plain solid-color work polo with no visible writing or emblem\n- Any incidental signs/labels in the scene must be unreadable or out of focus\n\nEnds with: Photorealistic, cinematic, 4K, high-energy fast-cut editing, dramatic atmosphere, plain unbranded wardrobe, absolutely no visible text or numbers anywhere in frame.\n\nOutput the prompt only. No explanation, no quotes, no title.` },
         { role: 'user', content: `Service: ${post.service}\nHook: ${post.hook}\nCaption:\n${caption}${post.video_prompt ? `\n\nScene idea from the content planner (rewrite it to be far more exciting — do not copy it):\n${post.video_prompt}` : ''}` },
@@ -569,11 +569,11 @@ export async function generateCinematicPrompt(post) {
   });
   const json = await res.json();
   if (json.error) {
-    hopLog('facebook-poster→openai', 'warn', `prompt gen error: ${json.error.message} — using schedule prompt`);
+    hopLog('facebook-poster→xai', 'warn', `prompt gen error: ${json.error.message} — using schedule prompt`);
     return post.video_prompt || null;
   }
   let prompt = json.choices?.[0]?.message?.content?.trim() || post.video_prompt || null;
-  // GPT sometimes drops the required style/no-text tail — enforce it ourselves.
+  // The model sometimes drops the required style/no-text tail — enforce it ourselves.
   if (prompt && !/no visible text/i.test(prompt)) {
     prompt += ' Photorealistic, cinematic, 4K, high-energy fast-cut editing, dramatic atmosphere, plain unbranded wardrobe, absolutely no visible text or numbers anywhere in frame.';
   }
@@ -917,7 +917,7 @@ async function runSinglePayload(args) {
     videoPath = resolveVideoPath(post);
     if (!fs.existsSync(videoPath)) {
       const prompt = await generateCinematicPrompt(post);
-      if (!prompt) throw new Error('video_prompt or video_file required for video posts (no OPENAI_API_KEY to generate one)');
+      if (!prompt) throw new Error('video_prompt or video_file required for video posts (no XAI_API_KEY to generate one)');
       hopLog('facebook-poster', 'info', `Generating video via ${VIDEO_BACKEND}: ${prompt.slice(0, 80)}...`);
       try {
         generateGeminiVideo(prompt, videoPath);
