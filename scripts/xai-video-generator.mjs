@@ -31,7 +31,9 @@ if (fs.existsSync(envPath)) {
 }
 
 const XAI_API_KEY = process.env.XAI_API_KEY || process.env.GROK_API_KEY || '';
-const XAI_VIDEO_MODEL = process.env.GROK_VIDEO_MODEL || 'grok-imagine-video-1.5';
+// grok-imagine-video-1.5 is image-to-video ONLY (HTTP 400 "Text-to-video is
+// not supported for this model"). Text-to-video requires grok-imagine-video.
+const XAI_VIDEO_MODEL = process.env.GROK_VIDEO_MODEL || 'grok-imagine-video';
 const XAI_VIDEO_RESOLUTION = process.env.GROK_VIDEO_RESOLUTION || '720p';
 const POLL_INTERVAL_MS = 5000;
 // xAI typically returns in 1-3 min; leave headroom for queue depth on the
@@ -105,7 +107,8 @@ async function pollUntilDone(requestId) {
     await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
     const res = await httpsRequest(pollUrl, { method: 'GET', headers: authHeader });
     const data = res.body || {};
-    if (res.status !== 200) {
+    // xAI returns HTTP 202 (not 200) while the job is still pending.
+    if (res.status !== 200 && res.status !== 202) {
       throw new Error(`Poll HTTP ${res.status}: ${JSON.stringify(data).slice(0, 300)}`);
     }
     if (data.status === 'done') {
