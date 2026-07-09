@@ -53,6 +53,16 @@ C:\Workspace\Active\MCC\ecosystem.config.cjs  <- PM2 app definitions (different 
 
 ---
 
+## Session Map (for small-context executors)
+
+This plan is executed in THREE separate sessions, each started fresh. In every session: read the **Codebase Primer** above first, then ONLY the tasks listed for your session. Do not read or execute the other sessions' tasks. Earlier sessions' commits are your starting state.
+
+- **Session 1:** Task 1 (preflight) + Task 2 (mark stale GBP rows skipped). No commits.
+- **Session 2:** Task 3 (facebook-poster Grok swap) + Task 4 (mav-bridge Grok swap). Two commits.
+- **Session 3:** Task 5 (pytrends) + Task 6 (scheduled tasks) + Task 7 (PM2 restore) + Task 8 (final verification). One commit.
+
+---
+
 ### Task 1: Preflight
 
 **Files:** none (checks only).
