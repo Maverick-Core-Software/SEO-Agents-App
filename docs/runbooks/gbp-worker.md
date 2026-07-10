@@ -34,6 +34,21 @@ on 2026-07-10 with exit 0xC000013A). Node's stdout/stderr goes to
 `logs\gbp-worker.log`; check there first when diagnosing a silent death. The
 Playwright browser window still appears during actual posts — that's expected.
 
+## Restart the worker (e.g. after a code change)
+
+`schtasks /end` kills only the wscript wrapper and orphans the node process, and an
+immediate `/run` gets swallowed by IgnoreNew while the scheduler is tearing down. Do it
+in three steps:
+
+    schtasks /end /tn "Grizzly SEO GBP Worker"
+    # kill the orphaned node (verify the command line first!):
+    Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
+      Where-Object { $_.CommandLine -like '*gbp-worker.mjs*' } |
+      ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+    schtasks /run /tn "Grizzly SEO GBP Worker"
+
+The worker imports its code at startup — a merged fix does nothing until restart.
+
 ## Verify it's working
 
     node C:\Workspace\Active\SEO-Agents-App\scripts\gbp-worker.mjs --once
