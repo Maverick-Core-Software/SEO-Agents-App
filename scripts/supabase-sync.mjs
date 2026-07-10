@@ -149,7 +149,7 @@ function parseWebsiteTasks(executionQueueText, finalReportText) {
         priority: 'high',
         title: t,
         description: `Missing: ${missing.trim()}\nNext step: ${next.trim()}`,
-        details: { task_id: id.trim(), source: 'final_report' },
+        details: mergeClassification({ task_id: id.trim(), source: 'final_report' }, { title: t, description: `Missing: ${missing.trim()}\nNext step: ${next.trim()}` }),
         status: 'pending_approval',
       });
     }
@@ -173,7 +173,7 @@ function parseWebsiteTasks(executionQueueText, finalReportText) {
         priority: 'high',
         title,
         description: [missing && `Missing: ${missing}`, next && `Next step: ${next}`].filter(Boolean).join('\n'),
-        details: { task_id: taskId, source: 'final_report' },
+        details: mergeClassification({ task_id: taskId, source: 'final_report' }, { title, description: [missing && `Missing: ${missing}`, next && `Next step: ${next}`].filter(Boolean).join('\n') }),
         status: 'pending_approval',
       });
     }
@@ -209,7 +209,7 @@ function parseWebsiteTasks(executionQueueText, finalReportText) {
         priority: mapPriority(rawPriority),
         title,
         description: getField('Description') || getField('DESCRIPTION') || '',
-        details: { task_id: taskId, source: 'execution_queue' },
+        details: mergeClassification({ task_id: taskId, source: 'execution_queue' }, { title, description: getField('Description') || getField('DESCRIPTION') || '' }),
         status: 'pending_approval',
       });
     }
@@ -233,6 +233,42 @@ function mapPriority(raw) {
   if (r.includes('high')) return 'high';
   if (r.includes('low')) return 'low';
   return 'medium';
+}
+
+// ─────────────────────────────────────────────
+// Platform & action-type classification (CONTRACT)
+// ─────────────────────────────────────────────
+
+function classifyTask(title, description) {
+  const text = `${title} ${description}`.toLowerCase();
+
+  let platform = 'other';
+  if (/google|business profile|gbp|google my business/.test(text)) platform = 'gbp';
+  else if (/facebook|instagram|post to|social media|tiktok|linkedin/.test(text)) platform = 'social';
+  else if (/citation|directory|yelp|bbb|angies|yellow pages|listings?/.test(text)) platform = 'directory';
+  else if (/page|blog|meta|title tag|schema|sitemap|robots|homepage|faq|content|home page|index\.|edit|update|service/.test(text)) platform = 'website';
+
+  let website_action_type = null;
+  if (platform === 'website') {
+    if (/blog/.test(text)) website_action_type = 'website_blog_post';
+    else if (/service/.test(text)) website_action_type = 'website_service_page_update';
+    else if (/faq/.test(text)) website_action_type = 'website_faq_update';
+    else if (/hour/.test(text)) website_action_type = 'website_hours_update';
+    else if (/contact.?form|phone|email/.test(text)) website_action_type = 'website_contact_form_update';
+    else if (/gallery/.test(text)) website_action_type = 'website_gallery_update';
+    else if (/nav|layout|header|footer|sitemap|robots/.test(text)) website_action_type = 'website_layout_update';
+    else website_action_type = 'website_copy_update';
+  }
+
+  return { platform, website_action_type };
+}
+
+function mergeClassification(details, task) {
+  const classified = classifyTask(task.title, task.description || '');
+  const merged = { ...details };
+  merged.platform = classified.platform;
+  if (classified.website_action_type) merged.website_action_type = classified.website_action_type;
+  return merged;
 }
 
 // ─────────────────────────────────────────────

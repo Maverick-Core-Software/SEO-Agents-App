@@ -34,6 +34,9 @@ Copy-Item .env.example .env
 
 Add your `OPENAI_API_KEY` to `.env`. Add `SERPER_API_KEY` if you want live Google-style search through Serper.
 
+Environment variables are listed in `.env.example`. Key variables include:
+- `MAV_WEBSITE_AUTO_EXEC=1` — auto-execute approved website tasks by priority (set to `0` for manual review fallback).
+
 ## Run
 
 Validate the crew without calling an LLM:

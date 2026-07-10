@@ -6,9 +6,13 @@
  *
  * Responsibilities:
  *   - Picks up approved facebook/gbp posts and runs posting scripts
- *   - Picks up approved website tasks and runs the relevant agents
+ *   - Picks up approved website tasks and auto-executes them by priority
  *   - Writes execution results back to Supabase
  *   - Logs everything to run_logs table
+ *
+ * Auto-execution: approved website tasks are executed automatically (MAV_WEBSITE_AUTO_EXEC=1).
+ * Set MAV_WEBSITE_AUTO_EXEC=0 to disable auto-execution and fall back to manual review mode.
+ * Tasks are processed by priority (critical, high, medium, low), one per poll cycle.
  */
 
 import http from 'node:http';
@@ -59,6 +63,8 @@ const GRIZZLY_HCP_DIR = process.env.GRIZZLY_HCP_DIR || 'C:\\Workspace\\Active\\g
 const ALERTED_PATH = path.join(PROJECT_ROOT, 'state', 'alerted.json');
 const GRAPH_API_VERSION = process.env.FB_GRAPH_API_VERSION || 'v22.0';
 const FB_PAGE_ACCESS_TOKEN = process.env.FB_PAGE_ACCESS_TOKEN || process.env.FB_ACCESS_TOKEN || '';
+// Auto-execute approved website tasks by priority (enabled by default; set to '0' to disable)
+const WEBSITE_AUTO_EXEC = (process.env.MAV_WEBSITE_AUTO_EXEC || '1').toLowerCase() !== '0';
 
 if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
   console.error('[mav-bridge] SUPABASE_URL or SUPABASE_SERVICE_KEY not set — exiting');
@@ -408,18 +414,118 @@ async function executeApprovedRun(run) {
   }
 
   // ── 3. Website tasks ───────────────────────────────────────────
-  // website-task command was removed from seo-agents.exe; tasks are reviewed
-  // and executed manually through the dashboard action queue.
-  const { data: tasks } = await supabase
-    .from('website_tasks')
-    .select('*')
-    .eq('run_id', runId)
-    .eq('status', 'approved')
-    .order('priority');
+  if (WEBSITE_AUTO_EXEC) {
+    const PRIORITY_MAP = { critical: 0, high: 1, medium: 2, low: 3 };
 
-  if (tasks?.length) {
-    await log(runId, 'website', 'info', `${tasks.length} website task(s) need manual review — use the action queue in the dashboard`);
-    // Leave tasks as 'approved' so the dashboard action queue can surface them
+    const { data: tasks } = await supabase
+      .from('website_tasks')
+      .select('*')
+      .eq('run_id', runId)
+      .eq('status', 'approved')
+      .is('details->platform', null, 'is')
+      .or('details->platform.eq.website')
+      .order('priority');
+
+    if (tasks?.length) {
+      // Sort by priority (critical→low), tie-break oldest created_at first
+      const sorted = tasks.sort((a, b) => {
+        const pa = PRIORITY_MAP[a.priority] ?? 4;
+        const pb = PRIORITY_MAP[b.priority] ?? 4;
+        if (pa !== pb) return pa - pb;
+        return new Date(a.created_at) < new Date(b.created_at) ? -1 : 1;
+      });
+
+      // Claim exactly ONE task per poll cycle via compare-and-swap
+      for (const task of sorted) {
+        const { data: claimed, error: claimErr } = await supabase
+          .from('website_tasks')
+          .update({ status: 'executing' })
+          .eq('id', task.id)
+          .eq('status', 'approved')
+          .select('*')
+          .maybeSingle();
+
+        if (claimErr) {
+          await log(runId, 'website', 'error', `Claim failed: ${claimErr.message}`);
+          break;
+        }
+        if (!claimed) {
+          // Another worker took it — skip this cycle
+          break;
+        }
+
+        await log(runId, 'website', 'info', `Claimed task ${task.id}: ${task.title}`);
+
+        const actionType = task.details?.website_action_type || 'website_copy_update';
+        const command = `seo-agents website "${task.title}. ${task.description}" --type ${actionType} --live`;
+
+        try {
+          await log(runId, 'website', 'info', `Executing: ${command}`);
+          const { stdout } = await execFileAsync(SEO_AGENTS_EXE, [
+            'website',
+            `"${task.title}. ${task.description}"`,
+            '--type', actionType,
+            '--live',
+          ], { cwd: PROJECT_ROOT, timeout: 20 * 60 * 1000, encoding: 'utf8', windowsHide: true });
+
+          // Parse the last JSON object on stdout
+          const output = (stdout || '').trim();
+          const jsonMatch = output.match(/({\s*[\s\S]*?})\s*$/);
+          if (jsonMatch) {
+            const result = JSON.parse(jsonMatch[1]);
+            if (result.status === 'pushed') {
+              await supabase
+                .from('website_tasks')
+                .update({
+                  status: 'done',
+                  details: { ...task.details, result },
+                  completed_at: new Date().toISOString(),
+                })
+                .eq('id', task.id);
+              await log(runId, 'website', 'info', `Task done: ${task.title}`);
+            } else {
+              const statusMap = { preview: 'preview', validation_failed: 'validation_failed', error: 'error', push_failed: 'push_failed' };
+              const errStatus = statusMap[result.status] || result.status;
+              await supabase
+                .from('website_tasks')
+                .update({
+                  status: 'error',
+                  details: { ...task.details, result: { status: errStatus, message: result.message || result.status } },
+                })
+                .eq('id', task.id);
+              await log(runId, 'website', 'warn', `Task failed: ${task.title} — ${result.status}`);
+            }
+          } else {
+            throw new Error('No JSON result found in stdout');
+          }
+        } catch (e) {
+          // Never leave a task stuck in 'executing'
+          await supabase
+            .from('website_tasks')
+            .update({
+              status: 'error',
+              details: { ...task.details, result: { status: 'error', message: e.message } },
+            })
+            .eq('id', task.id);
+          await log(runId, 'website', 'error', `Task error: ${task.title} — ${e.message}`);
+        }
+        // Only process one task per cycle
+        break;
+      }
+    } else {
+      await log(runId, 'website', 'info', 'No website tasks for this run');
+    }
+  } else {
+    const { data: tasks } = await supabase
+      .from('website_tasks')
+      .select('*')
+      .eq('run_id', runId)
+      .eq('status', 'approved')
+      .order('priority');
+
+    if (tasks?.length) {
+      await log(runId, 'website', 'info', `${tasks.length} website task(s) need manual review — use the action queue in the dashboard`);
+    }
   }
 
   // ── Mark run done ──────────────────────────────────────────────
