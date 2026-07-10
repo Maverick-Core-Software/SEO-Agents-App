@@ -7,6 +7,7 @@ import {
   gbpDailyStatusForExit,
   centralDateHour,
   runDailyGbp,
+  runGbpForApprovedRun,
 } from './gbp-runner.mjs';
 
 // excelDateToIso: Date, Excel serial, and string forms
@@ -78,3 +79,52 @@ console.log('ok gbp-runner pure helpers');
 }
 
 console.log('ok gbp-runner orchestration');
+
+// --- runGbpForApprovedRun: Day 1's workbook approval gate must be stamped
+// (mark-gbp-approved --date <day1>) BEFORE the Day-1 driver runs, or the driver
+// exits 4 (pending_approval) every time. Regression: run 2c5fc296, 2026-07-10.
+{
+  const calls = [];
+  const makeQb = () => {
+    const qb = {
+      from: () => qb,
+      select: () => qb,
+      gt: () => Promise.resolve({ data: null, error: null }),
+      eq: () => qb,
+      update: () => qb,
+    };
+    return qb;
+  };
+  const runPhase = async (runId, phase, cmd, args) => {
+    calls.push({ cmd, args });
+    return { ok: true, exitCode: 0, stdout: '{"result":"posted","postUrl":"u"}', stderr: '' };
+  };
+
+  await runGbpForApprovedRun({
+    runId: 'r1',
+    gbpPosts: [
+      { id: 'p1', day: 1, post_date: '2026-07-10', run_id: 'r1' },
+      { id: 'p2', day: 2, post_date: '2026-07-11', run_id: 'r1' },
+    ],
+    deps: {
+      supabase: makeQb(),
+      runPhase,
+      log: async () => {},
+      env: {}, // no GBP_WORKBOOK_PATH => no Excel touched
+      projectRoot: process.cwd(),
+      paths: { photoPick: 'C:/nonexistent/photo-pick.mjs', gbpPoster: 'C:/fake/driver.mjs', seoAgentsExe: 'seo-agents.exe' },
+    },
+  });
+
+  const approveIdx = calls.findIndex(c =>
+    c.args?.[0] === 'mark-gbp-approved' && c.args.includes('2026-07-10'));
+  const driverIdx = calls.findIndex(c => c.args?.[0] === 'C:/fake/driver.mjs');
+  assert.ok(approveIdx !== -1, 'mark-gbp-approved must include Day 1 post_date');
+  assert.ok(driverIdx !== -1, 'Day 1 driver should run');
+  assert.ok(approveIdx < driverIdx, 'Day 1 approval must be stamped before the driver runs');
+  // Day 2 must still be approved too (same call or a later one).
+  assert.ok(calls.some(c => c.args?.[0] === 'mark-gbp-approved' && c.args.includes('2026-07-11')),
+    'mark-gbp-approved must still cover Days 2-7');
+}
+
+console.log('ok gbp-runner day1 approval gate');

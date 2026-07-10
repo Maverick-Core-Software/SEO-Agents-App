@@ -153,7 +153,8 @@ async function applyDriverResult({ supabase, post, result, env, log }) {
 }
 
 // Run-time GBP for a freshly-approved run: curate photos (H:->E:), sync the Excel
-// workbook, post Day 1 immediately, mark Days 2-7 scheduled + approved-in-workbook.
+// workbook, stamp the approval gate for all days, post Day 1 immediately, mark
+// Days 2-7 scheduled.
 // deps: { supabase, runPhase, log, env, projectRoot, paths }
 //   paths: { photoPick, gbpPoster, seoAgentsExe }
 export async function runGbpForApprovedRun({ runId, gbpPosts, deps }) {
@@ -175,7 +176,16 @@ export async function runGbpForApprovedRun({ runId, gbpPosts, deps }) {
     return;
   }
 
-  // 2. Post Day 1 now.
+  // 2. Propagate the weekly approval into the workbook gate for ALL days, including
+  // Day 1 — sync-gbp-schedule writes "Needs approval" for un-posted rows, so without
+  // this the Day-1 driver exits 4 (pending_approval) every time.
+  const dateArgs = gbpPosts.map(p => p.post_date).filter(Boolean).flatMap(d => ['--date', d]);
+  if (dateArgs.length) {
+    const appr = await runPhase(runId, 'gbp', paths.seoAgentsExe, ['mark-gbp-approved', ...dateArgs], projectRoot);
+    if (!appr.ok) await log(runId, 'gbp', 'warn', `mark-gbp-approved failed (posts may block on approval gate): ${appr.error}`);
+  }
+
+  // 3. Post Day 1 now.
   const day1 = gbpPosts.find(p => p.day === 1);
   if (day1) {
     await log(runId, 'gbp', 'info', 'Posting Day 1 GBP immediately...');
@@ -184,16 +194,11 @@ export async function runGbpForApprovedRun({ runId, gbpPosts, deps }) {
     await log(runId, 'gbp', status === 'posted' ? 'info' : 'warn', `Day 1 GBP → ${status} (exit ${r.exitCode})`);
   }
 
-  // 3. Mark Days 2-7 scheduled + propagate the weekly approval into the workbook gate.
+  // 4. Mark Days 2-7 scheduled (approval already stamped above).
   const later = gbpPosts.filter(p => p.day > 1);
   if (later.length) {
     await supabase.from('weekly_posts').update({ status: 'scheduled' })
       .eq('run_id', runId).eq('platform', 'gbp').gt('day', 1);
-    const dateArgs = later.map(p => p.post_date).filter(Boolean).flatMap(d => ['--date', d]);
-    if (dateArgs.length) {
-      const appr = await runPhase(runId, 'gbp', paths.seoAgentsExe, ['mark-gbp-approved', ...dateArgs], projectRoot);
-      if (!appr.ok) await log(runId, 'gbp', 'warn', `mark-gbp-approved failed (Days 2-7 may block): ${appr.error}`);
-    }
     await log(runId, 'gbp', 'info', 'Days 2-7 marked scheduled + approved in workbook');
   }
 }
