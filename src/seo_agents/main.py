@@ -20,7 +20,6 @@ from seo_agents.actions import (
     mark_gbp_dates_approved,
     run_action,
     sync_gbp_schedule_to_workbook,
-    wordpress_adapter_status,
     write_action_queue,
 )
 from seo_agents.crew import (
@@ -34,7 +33,7 @@ from seo_agents.crew import (
     build_facebook_crew,
     build_poster_crew,
     build_seo_crew,
-    build_wordpress_crew,
+    build_website_crew,
 )
 from seo_agents.status import (
     build_workflow_status,
@@ -43,6 +42,7 @@ from seo_agents.status import (
     validate_workflow_outputs,
     write_workflow_status,
 )
+from seo_agents.website import apply_edit, website_adapter_status
 
 
 RESEARCH_OUTPUTS = [
@@ -248,8 +248,8 @@ def _call_local_llm(prompt: str, max_tokens: int = 2000) -> str:
 
 
 def generate_blog_post(topic: str, keywords: str = "", status: str = "draft") -> dict:
-    """Use Qwen to write a blog post then push it to WordPress via the REST adapter."""
-    import subprocess
+    """Use Qwen to write a blog post, then publish it to the static site via the Website Manager."""
+    from seo_agents.website import apply_edit as website_apply_edit
 
     kw_line = f"\nTarget keywords to naturally weave in: {keywords}" if keywords else ""
     prompt = (
@@ -261,8 +261,7 @@ def generate_blog_post(topic: str, keywords: str = "", status: str = "draft") ->
         "- Tone: direct, honest, contractor-real — no corporate fluff, no fear tactics\n"
         "- No DIY electrical instructions that could replace a licensed electrician\n"
         "- Include 2-4 H2 subheadings\n"
-        "- End with a short CTA paragraph mentioning Grizzly's DFW service area and linking "
-        "to https://www.grizzlyelectricaltx.com/contact-us/\n"
+        "- End with a short CTA paragraph mentioning Grizzly's DFW service area and linking to /#contact\n"
         "- Output ONLY the HTML body content (p, h2, ul/li tags). No <html>, no <head>, no <body> wrapper.\n"
         "- First line must be the title as plain text prefixed with TITLE: (e.g. TITLE: My Post Title)\n"
         "- Second line must be a one-sentence excerpt prefixed with EXCERPT:\n"
@@ -297,23 +296,14 @@ def generate_blog_post(topic: str, keywords: str = "", status: str = "draft") ->
     print(f"  Tags    : {', '.join(tag_names)}")
     print(f"  Content : {len(content_html)} chars")
 
-    action = {
-        "id": f"BLOG-{datetime.now().strftime('%Y%m%d%H%M%S')}",
+    edit = {
         "action_type": "website_blog_post",
-        "content_type": "post",
-        "draft": {
-            "title": title,
-            "excerpt": excerpt,
-            "content": content_html,
-            "status": status,
-        },
+        "target": "",
+        "title": title,
+        "meta_description": excerpt,
+        "html": content_html,
+        "summary": f"blog: {title}",
     }
-
-    wp_config = os.getenv(
-        "WORDPRESS_SITE_CONFIG",
-        str(Path(__file__).parent.parent.parent / "config" / "wordpress-sites" / "grizzly.json"),
-    )
-    wp_adapter = os.getenv("WORDPRESS_ACTION_ADAPTER", "")
 
     result = {
         "topic": topic,
@@ -323,27 +313,9 @@ def generate_blog_post(topic: str, keywords: str = "", status: str = "draft") ->
         "content_chars": len(content_html),
         "status": status,
     }
-
-    if not wp_adapter or not Path(wp_adapter).exists():
-        result["wp_result"] = {"status": "skipped", "reason": "WORDPRESS_ACTION_ADAPTER not configured"}
-        return result
-
-    payload = json.dumps({"live": True, "approved": True, "action": action})
-    cmd = ["node", wp_adapter, "--config", wp_config, "--payload", payload]
-    try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120, cwd=str(Path(wp_adapter).parent))
-        wp_out = json.loads(proc.stdout.strip().splitlines()[-1]) if proc.stdout.strip() else {}
-        post_result = next((r for r in wp_out.get("results", []) if r.get("post_id")), {})
-        result["wp_result"] = {
-            "status": wp_out.get("status"),
-            "post_id": post_result.get("post_id"),
-            "link": post_result.get("link"),
-            "post_status": post_result.get("post_status"),
-            "message": post_result.get("message"),
-        }
-    except Exception as e:
-        result["wp_result"] = {"status": "error", "error": str(e)}
-
+    # 'publish' commits and pushes (Vercel deploys); anything else writes a
+    # preview under outputs/website_preview/ only.
+    result["site_result"] = website_apply_edit(edit, live=(status == "publish"))
     return result
 
 
@@ -581,11 +553,11 @@ def parse_args() -> argparse.Namespace:
 
     blog = subparsers.add_parser(
         "blog-post",
-        help="Generate a blog post with Qwen and publish it to WordPress as a draft.",
+        help="Generate a blog post with Qwen and stage it for the static site (publish with --publish).",
     )
     blog.add_argument("topic", help="Blog post topic or title idea.")
-    blog.add_argument("--publish", action="store_true", help="Publish immediately instead of saving as draft.")
-    blog.add_argument("--dry-run", action="store_true", help="Generate content but do not push to WordPress.")
+    blog.add_argument("--publish", action="store_true", help="Commit and push the post live instead of writing a preview.")
+    blog.add_argument("--dry-run", action="store_true", help="Generate content only; do not touch the site repo or previews.")
     blog.add_argument("--keywords", default="", help="Optional comma-separated target keywords.")
 
     fb_schedule = subparsers.add_parser(
@@ -595,16 +567,15 @@ def parse_args() -> argparse.Namespace:
     fb_schedule.add_argument("--days", type=int, default=7, help="Number of days to schedule. Default: 7")
     fb_schedule.add_argument("--start-date", default="", help="Start date YYYY-MM-DD. Default: next business day.")
 
-    # --- wordpress subcommand ---
-    wordpress = subparsers.add_parser(
-        "wordpress",
-        help="Write or update WordPress content (blog post or service page) and push to WP via REST API.",
+    # --- website subcommand ---
+    website = subparsers.add_parser(
+        "website",
+        help="Edit the live Grizzly static site (blog posts, section updates) and deploy via git push.",
     )
-    wordpress.add_argument("task", help="What to write or update. E.g. 'blog post about panel upgrades' or 'update the EV charger page headline'.")
-    wordpress.add_argument("--publish", action="store_true", help="Publish immediately instead of saving as draft.")
-    wordpress.add_argument("--update", action="store_true", help="Update an existing page (requires --slug).")
-    wordpress.add_argument("--slug", default="", help="Target page slug for updates (e.g. 'electrical-panel-upgrade').")
-    wordpress.add_argument("--dry-run", action="store_true", help="Generate content but do not push to WordPress.")
+    website.add_argument("task", help="What to change. E.g. 'add a generator installation card to the services section'.")
+    website.add_argument("--type", default="", dest="action_type", help="website_* action type. Inferred by the agent if omitted.")
+    website.add_argument("--section", default="", help="Target section key in index.html (see knowledge/website-structure.md).")
+    website.add_argument("--live", action="store_true", help="Write into the site repo, commit, and push (deploys via Vercel). Default: preview only.")
 
     # Legacy: allow `seo-agents <topic>` as shorthand for `seo-agents research <topic>`
     parser.add_argument("topic", nargs="?", help=argparse.SUPPRESS)
@@ -896,7 +867,7 @@ def main() -> None:
 
     elif command == "adapter-status":
         result = {
-            "wordpress_browser": wordpress_adapter_status(),
+            "website_manager": website_adapter_status(),
             "google_business_profile": gbp_adapter_status(),
         }
         if args.json:
@@ -927,7 +898,7 @@ def main() -> None:
         status_val = "publish" if args.publish else "draft"
         dry_run = getattr(args, "dry_run", False)
         if dry_run:
-            # Generate content only, skip WP push
+            # Generate content only, skip site changes
             kw_line = f"\nTarget keywords: {args.keywords}" if args.keywords else ""
             prompt = (
                 "You are a content writer for Grizzly Electrical Solutions (DFW electrician). "
@@ -936,20 +907,24 @@ def main() -> None:
                 "First line: TITLE: ...\nSecond line: EXCERPT: ...\nThird line: TAGS: ...\n"
                 "Then blank line then HTML body only."
             )
-            print(f"  Dry run — generating content only (no WordPress push)...")
+            print(f"  Dry run — generating content only (no site changes)...")
             raw = _call_local_llm(prompt, max_tokens=2000)
             print(raw)
         else:
-            result = generate_blog_post(args.topic, keywords=args.keywords, status=status_val)
-            wp = result.get("wp_result", {})
-            if wp.get("post_id"):
-                print(f"\n✅ Blog post created:")
-                print(f"   Title    : {result['title']}")
-                print(f"   Post ID  : {wp['post_id']}")
-                print(f"   Status   : {wp['post_status']}")
-                print(f"   Preview  : {wp['link']}")
+            result = generate_blog_post(args.topic, keywords=getattr(args, "keywords", ""), status=status_val)
+            site = result.get("site_result", {})
+            if site.get("status") == "pushed":
+                print(f"\n✅ Blog post published:")
+                print(f"   Title  : {result['title']}")
+                print(f"   URL    : {site.get('url')}")
+                print(f"   Commit : {site.get('commit')}")
+            elif site.get("status") == "preview":
+                print(f"\n✅ Blog post draft generated (site untouched):")
+                print(f"   Title   : {result['title']}")
+                print(f"   Preview : {site.get('preview_dir')}")
+                print(f"   Publish : re-run with --publish to commit and deploy")
             else:
-                print(f"\n⚠ Blog post generated but WP push failed:")
+                print(f"\n⚠ Blog post generated but site publish failed:")
                 print(json.dumps(result, indent=2))
                 sys.exit(1)
 
@@ -969,70 +944,27 @@ def main() -> None:
             print(f"\n❌ Facebook Schedule crew failed: {e}")
             sys.exit(1)
 
-    elif command == "wordpress":
-        mode = "publish" if args.publish else "draft"
-        slug = getattr(args, "slug", "") or ""
-        dry_run = getattr(args, "dry_run", False)
-        crew = build_wordpress_crew(task=args.task, mode=mode, slug=slug)
-
-        if dry_run:
-            print(f"Ready: {crew.name}")
-            print(f"Agent: {crew.agents[0].role}")
-            print(f"Mode: {mode}, Slug: {slug or '(new post)'}")
-            print("  --dry-run: crew config shown, no LLM call made")
-            return
-
-        print(f"\n📝 Running WordPress Content crew...")
-        print(f"   Task   : {args.task}")
-        print(f"   Mode   : {mode}")
-        print(f"   Target : {slug or 'new blog post'}")
+    elif command == "website":
+        print(f"\n🌐 Running Website Manager crew...")
+        print(f"   Task    : {args.task}")
+        print(f"   Type    : {args.action_type or '(agent decides)'}")
+        print(f"   Section : {args.section or '(agent decides)'}")
+        print(f"   Mode    : {'LIVE (commit + push)' if args.live else 'preview only'}")
         try:
-            result = crew.kickoff()
-            print(result)
-            completion_path = OUTPUT_DIR / "wordpress_completion.md"
-            print(f"\n✅ Content written to: {completion_path}")
-
-            # Auto-push to WordPress if adapter is configured
-            wp_adapter = os.getenv("WORDPRESS_ACTION_ADAPTER", "")
-            wp_config = os.getenv(
-                "WORDPRESS_SITE_CONFIG",
-                str(Path(__file__).parent.parent.parent / "config" / "wordpress-sites" / "grizzly.json"),
-            )
-            if not wp_adapter or not Path(wp_adapter).exists():
-                print("  ℹ  WORDPRESS_ACTION_ADAPTER not set — content saved locally only.")
-                print("     Run `seo-agents run-action <id>` after adding to the action queue, or push manually.")
-            else:
-                import subprocess
-                content = completion_path.read_text(encoding="utf-8") if completion_path.exists() else ""
-                action: dict = {
-                    "id": f"WP-{datetime.now().strftime('%Y%m%d%H%M%S')}",
-                    "action_type": "website_blog_post" if not slug else "website_content_publish",
-                    "title": args.task,
-                    "completion": {"deliverable": content},
-                }
-                if slug:
-                    action["slug"] = slug
-                    action["content_type"] = "page"
-                payload = json.dumps({"live": True, "approved": True, "action": action})
-                cmd = ["node", wp_adapter, "--config", wp_config, "--payload", payload]
-                try:
-                    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120,
-                                          cwd=str(Path(wp_adapter).parent))
-                    out_lines = proc.stdout.strip().splitlines()
-                    wp_out = json.loads(out_lines[-1]) if out_lines else {}
-                    post_result = next((r for r in wp_out.get("results", []) if r.get("post_id")), {})
-                    if post_result.get("post_id"):
-                        print(f"\n✅ WordPress push complete:")
-                        print(f"   Post ID : {post_result['post_id']}")
-                        print(f"   Status  : {post_result.get('post_status')}")
-                        print(f"   Preview : {post_result.get('link')}")
-                    else:
-                        print(f"\n⚠  WordPress push returned no post_id:")
-                        print(json.dumps(wp_out, indent=2))
-                except Exception as e:
-                    print(f"\n⚠  WordPress push failed: {e}")
+            crew = build_website_crew(task=args.task, action_type=args.action_type, target=args.section)
+            crew.kickoff()
         except Exception as e:
-            print(f"\n❌ WordPress Content crew failed: {e}")
+            print(f"\n❌ Website Manager crew failed: {e}")
+            sys.exit(1)
+        edit_path = OUTPUT_DIR / "website_edit.json"
+        try:
+            edit = json.loads(edit_path.read_text(encoding="utf-8"))
+        except Exception as e:
+            print(f"\n❌ Crew finished but website_edit.json is unreadable: {e}")
+            sys.exit(1)
+        result = apply_edit(edit, live=args.live)
+        print(json.dumps(result, indent=2))
+        if result.get("status") in {"validation_failed", "error"}:
             sys.exit(1)
 
     else:
@@ -1041,7 +973,7 @@ def main() -> None:
         print("  seo-agents execute               — run execution phase (after owner review)")
         print("  seo-agents post-schedule         — generate 7-day GBP posting schedule")
         print("  seo-agents facebook-schedule     — generate 7-day Facebook posting schedule (hooks + videos)")
-        print("  seo-agents wordpress <task>      — write/update WordPress content and push as draft")
+        print("  seo-agents website <task>        — edit the live static site (preview by default, --live to deploy)")
         print("  seo-agents status                — show workflow status")
         print("  seo-agents validate              — validate generated outputs")
         print("  seo-agents actions               — show executable action queue")
@@ -1049,7 +981,7 @@ def main() -> None:
         print("  seo-agents adapter-status        — show live adapter readiness")
         print("  seo-agents sync-gbp-schedule     — sync GBP schedule to poster workbook")
         print("  seo-agents compact-baselines     — merge baselines into one file, archive old ones")
-        print("  seo-agents blog-post <topic>     — generate blog post with Qwen, push to WordPress as draft")
+        print("  seo-agents blog-post <topic>     — generate blog post with Qwen and stage it for /blog/")
         print("  seo-agents --help                — full help")
         sys.exit(1)
 
