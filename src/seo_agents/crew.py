@@ -32,6 +32,18 @@ class CompletionReport(BaseModel):
     completions: list[TaskCompletion]
 
 
+class WebsiteEdit(BaseModel):
+    """Structured output of the Website Manager crew. seo_agents.website.apply_edit
+    consumes this directly — field names are a contract."""
+
+    action_type: str = Field(description="One of the website_* action types")
+    target: str = Field(default="", description="Section key in index.html (e.g. services, faq, contact) or the blog slug for website_blog_post")
+    title: str = Field(default="", description="Blog post title (website_blog_post only)")
+    meta_description: str = Field(default="", description="Blog meta description (website_blog_post only)")
+    html: str = Field(description="Complete replacement HTML: the full section block including its outer tag, or the blog post body")
+    summary: str = Field(default="", description="One-line description of the change, used as the git commit message")
+
+
 def structured_completions_enabled() -> bool:
     return os.getenv("CREWAI_STRUCTURED_COMPLETIONS", "true").lower() in {"1", "true", "yes", "on"}
 
@@ -70,7 +82,7 @@ def read_latest_baseline(stem_prefix: str) -> str:
     """Return content of the most recently modified baseline file matching stem_prefix*.md.
 
     Using the newest file by mtime means adding an updated baseline (e.g.
-    wordpress-contact-form-access-2026-07-01.md) automatically supersedes the
+    grizzly-current-status-2026-07-10.md) automatically supersedes the
     old one — no code change required.
     """
     matches = sorted(
@@ -427,22 +439,16 @@ def build_executor_crew() -> Crew:
 
     execution_queue = read_output("grizzly_execution_queue.md")
     manager_plan = read_output("grizzly_local_presence_plan.md")
-    wordpress_handoff = read_latest_baseline("wordpress-contact-form-access")
-    contact_form_story = read_latest_baseline("contact-form-repair-success-story")
-    wordpress_config_path = PROJECT_ROOT / "config" / "wordpress-sites" / "grizzly.json"
-    wordpress_config = read_text(wordpress_config_path) if wordpress_config_path.exists() else "{}"
+    structure_path = PROJECT_ROOT / "knowledge" / "website-structure.md"
+    website_structure = read_text(structure_path) if structure_path.exists() else "[website-structure.md not found]"
 
     queue_context = (
-        "You are reading the execution queue plus current system handoff evidence. "
-        "Use the queue for task scope, and use the handoff evidence to avoid stale blockers. "
-        "If a task was previously blocked but current handoff evidence proves access or repair, reflect the current state.\n\n"
+        "You are reading the execution queue plus the live website structure reference. "
+        "The Grizzly website is a static HTML site (index.html plus /blog/ pages) in a git repo, "
+        "deployed by Vercel on every push — there is no WordPress and no CMS. Website changes are "
+        "applied by the Website Manager adapter through the action queue.\n\n"
         f"EXECUTION QUEUE:\n\n{execution_queue}\n\n"
-        "CURRENT WORDPRESS SITE CONFIG (no credentials):\n\n"
-        f"```json\n{wordpress_config}\n```\n\n"
-        "CURRENT WORDPRESS CONTACT FORM HANDOFF:\n\n"
-        f"{wordpress_handoff}\n\n"
-        "CONTACT FORM REPAIR SUCCESS STORY:\n\n"
-        f"{contact_form_story}"
+        f"LIVE WEBSITE STRUCTURE REFERENCE:\n\n{website_structure}"
     )
 
     # --- Executor agents ---
@@ -534,10 +540,10 @@ def build_executor_crew() -> Crew:
             markdown=True,
         )
 
-    wordpress_executor = Agent(
-        role="WordPress Content Executor",
-        goal="Execute WordPress content tasks from the execution queue and produce ready-to-publish blog posts and page updates with a completion report.",
-        backstory=agent_backstory("wordpress-content-agent.txt"),
+    website_executor = Agent(
+        role="Website Manager Executor",
+        goal="Execute website tasks from the execution queue and produce ready-to-apply HTML edits with a completion report.",
+        backstory=agent_backstory("website-manager-agent.txt"),
         tools=tools,
         llm=exec_llm,
         verbose=is_verbose(),
@@ -546,7 +552,7 @@ def build_executor_crew() -> Crew:
     content_exec_task = exec_task(content_executor, "Local Content Production Executor", "content", "content_completion")
     assets_exec_task = exec_task(assets_executor, "Local Presence Assets Executor", "GBP/assets", "assets_completion")
     technical_exec_task = exec_task(technical_executor, "Technical SEO and CRO Executor", "technical SEO", "technical_completion")
-    wordpress_exec_task = exec_task(wordpress_executor, "WordPress Content Executor", "WordPress content", "wordpress_completion")
+    website_exec_task = exec_task(website_executor, "Website Manager Executor", "website", "website_completion")
 
     # --- Verification tasks ---
     delegation_verify_task = Task(
@@ -566,7 +572,7 @@ def build_executor_crew() -> Crew:
             "and a table listing each task ID, title, assigned executor, and verification result."
         ),
         agent=scheduling_verifier,
-        context=[content_exec_task, assets_exec_task, technical_exec_task, wordpress_exec_task],
+        context=[content_exec_task, assets_exec_task, technical_exec_task, website_exec_task],
         output_file=out("delegation_verification.md"),
         markdown=True,
     )
@@ -588,15 +594,15 @@ def build_executor_crew() -> Crew:
             "and owner sign-off items. File saved to outputs/final_report.md."
         ),
         agent=manager_verifier,
-        context=[content_exec_task, assets_exec_task, technical_exec_task, wordpress_exec_task, delegation_verify_task],
+        context=[content_exec_task, assets_exec_task, technical_exec_task, website_exec_task, delegation_verify_task],
         output_file=out("final_report.md"),
         markdown=True,
     )
 
     return Crew(
         name="Grizzly Executor Crew",
-        agents=[content_executor, assets_executor, technical_executor, wordpress_executor, scheduling_verifier, manager_verifier],
-        tasks=[content_exec_task, assets_exec_task, technical_exec_task, wordpress_exec_task, delegation_verify_task, manager_final_task],
+        agents=[content_executor, assets_executor, technical_executor, website_executor, scheduling_verifier, manager_verifier],
+        tasks=[content_exec_task, assets_exec_task, technical_exec_task, website_exec_task, delegation_verify_task, manager_final_task],
         process=Process.sequential,
         verbose=is_verbose(),
     )
@@ -966,74 +972,100 @@ def build_facebook_crew(
 
 
 # ---------------------------------------------------------------------------
-# WordPress Content Crew  (seo-agents wordpress <task>)
+# Website Manager Crew  (seo-agents website <task>)
 # ---------------------------------------------------------------------------
 
-def build_wordpress_crew(
-    task: str,
-    mode: str = "draft",
-    slug: str = "",
-) -> Crew:
+def build_website_crew(task: str, action_type: str = "", target: str = "") -> Crew:
     """
-    On-demand WordPress content crew. One agent, one task.
-    mode: 'draft' (default) | 'publish'
-    slug: target page slug for update tasks (empty = new blog post)
+    On-demand Website Manager crew. One agent, one task.
+    Python extracts the current HTML deterministically and the agent returns a
+    structured WebsiteEdit; seo_agents.website.apply_edit does the splice,
+    validation, and git work. The LLM never edits files directly.
     """
-    exec_llm = build_exec_llm()
-    tools = build_tools()
-
-    site_url = DEFAULT_SITE_URL
-    publish_status = "publish" if mode == "publish" else "draft"
-
-    task_description = (
-        f"Site: {site_url}\n"
-        f"Target slug: {slug or '(new blog post)'}\n"
-        f"Publish status: {publish_status}\n\n"
-        f"Task: {task}\n\n"
+    from seo_agents.website import (
+        DEFAULT_SECTION_FOR_ACTION,
+        WEBSITE_ACTION_TYPES,
+        WEBSITE_SITE_URL,
+        extract_section,
+        load_index,
+        parse_sections,
     )
-    if slug:
-        task_description += (
-            f"This is a page UPDATE. Use ScrapeWebsiteTool to load {site_url}{slug.lstrip('/')}/ "
-            "and record the current content before rewriting.\n"
+
+    exec_llm = build_exec_llm()
+    structure_path = PROJECT_ROOT / "knowledge" / "website-structure.md"
+    structure_doc = read_text(structure_path) if structure_path.exists() else "[website-structure.md not found]"
+
+    index_html = load_index()
+    section_keys = list(parse_sections(index_html))
+    resolved_target = target or DEFAULT_SECTION_FOR_ACTION.get(action_type, "")
+
+    description = (
+        f"Live site: {WEBSITE_SITE_URL} (static HTML repo, deployed by Vercel on git push)\n"
+        f"Requested action_type: {action_type or '(choose the best website_* type)'}\n"
+        f"Known action types: {', '.join(sorted(WEBSITE_ACTION_TYPES))}\n"
+        f"Known section keys: {', '.join(section_keys)}\n\n"
+        f"SITE STRUCTURE REFERENCE:\n\n{structure_doc}\n\n"
+        f"TASK: {task}\n\n"
+    )
+    if action_type == "website_blog_post":
+        description += (
+            "This is a NEW BLOG POST for the static site.\n"
+            "- Set target to a short URL slug (lowercase, hyphens).\n"
+            "- Set title and meta_description.\n"
+            "- Set html to the post BODY ONLY: <p>, <h2>, <ul>/<li> tags. 400-700 words, "
+            "2-4 H2 subheadings, direct honest contractor tone, no DIY instructions that replace "
+            "a licensed electrician. End with a short CTA paragraph linking to /#contact.\n"
+            "- Do NOT include <html>, <head>, <body>, or page chrome — the publisher adds it.\n"
+        )
+    elif resolved_target and resolved_target in section_keys:
+        current = extract_section(index_html, resolved_target)
+        description += (
+            f"This is an EDIT of the '{resolved_target}' block in index.html. Current HTML of that block:\n\n"
+            f"{current}\n\n"
+            f"- Set target to exactly '{resolved_target}'.\n"
+            "- Set html to the COMPLETE replacement block: same outer tag, same id, class, and "
+            "style attributes. Keep every inline style, class, and data-* attribute the task does "
+            "not explicitly change. Change ONLY what the task requires.\n"
         )
     else:
-        task_description += (
-            "This is a NEW BLOG POST. Use ScrapeWebsiteTool to check 1-2 existing Grizzly posts "
-            "for tone reference before writing.\n"
+        description += (
+            "Pick the correct target section key from the known section keys above, then produce "
+            "the complete replacement block for that section following the structure reference. "
+            "Set target to that key. Keep all inline styles and attributes you are not changing.\n"
         )
+    description += (
+        "\nGeneral rules:\n"
+        "- html must be raw HTML only — no markdown, no code fences, no commentary.\n"
+        "- Never invent business facts (address, phone, license, review text). Use only what the "
+        "current HTML, structure reference, or task provides.\n"
+        "- Set summary to a one-line description of the change (used as the git commit message).\n"
+    )
 
     agent = Agent(
-        role="WordPress Content Agent",
-        goal="Write and update Grizzly Electrical Solutions web content that ranks and converts.",
-        backstory=agent_backstory("wordpress-content-agent.txt"),
-        tools=tools,
+        role="Website Manager",
+        goal="Keep the Grizzly Electrical static site accurate and converting by producing precise, ready-to-apply HTML edits.",
+        backstory=agent_backstory("website-manager-agent.txt"),
         llm=exec_llm,
         verbose=is_verbose(),
     )
 
-    wp_task = Task(
-        description=task_description,
+    website_task = Task(
+        description=description,
         expected_output=(
-            "A complete content deliverable in the exact TITLE:/EXCERPT:/TAGS: format (for posts) "
-            "or ACTION_PAYLOAD block (for page updates), followed by a COMPLETION REPORT block."
+            "A WebsiteEdit JSON object with action_type, target, title, meta_description, html, and summary."
         ),
         agent=agent,
-        output_file=out("wordpress_completion.md"),
-        markdown=True,
+        output_json=WebsiteEdit,
+        output_file=out("website_edit.json"),
     )
 
     return Crew(
-        name="Grizzly WordPress Content Crew",
+        name="Grizzly Website Manager Crew",
         agents=[agent],
-        tasks=[wp_task],
+        tasks=[website_task],
         process=Process.sequential,
         verbose=is_verbose(),
     )
-
-
-# ---------------------------------------------------------------------------
-# Public alias (backward compat)
-# ---------------------------------------------------------------------------
 
 def build_seo_crew(
     topic: str,

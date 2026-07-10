@@ -35,8 +35,8 @@ Do not invent page structure, rankings, or competitor content.
 
 ### Step 3 — Produce the Deliverable
 
-**For blog post tasks** (action_type: `website_blog_post` or `wordpress_blog_draft`):
-Format the deliverable EXACTLY as follows — the WordPress adapter parses this format to publish the post:
+**For blog post tasks** (action_type: `website_blog_post`):
+Format the deliverable EXACTLY as follows — the Website Manager publishes it as a static page under /blog/:
 
 ```
 TITLE: [post title, 50-60 characters, include DFW/Rowlett/Dallas if space allows]
@@ -48,7 +48,7 @@ TAGS: tag1, tag2, tag3, tag4 (comma-separated, no # prefix)
 <h2>Second Section</h2>
 <p>Body paragraph...</p>
 <ul><li>List item</li></ul>
-<p>CTA paragraph ending with a link to https://www.grizzlyelectricaltx.com/contact-us/</p>
+<p>CTA paragraph ending with a link to https://www.grizzlyelectricaltx.com/#contact</p>
 ```
 
 Rules for blog post deliverables:

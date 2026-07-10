@@ -76,61 +76,33 @@ $env:PYTHONPATH='src'
 
 Live actions require approval first. Dry-runs create run records without changing external systems.
 
-## Website / WordPress Action Adapter
+## Website Manager Adapter
 
-The website action layer is configured for Grizzly WordPress repair work at:
+The Grizzly website is a static HTML repo (index.html + /blog/ pages) deployed by Vercel on every push to main:
 
-```text
-config/wordpress-sites/grizzly.json
-```
-
-This file stores site structure, public URLs, Contact Form 7 IDs, safe repair patterns, and verification steps. It must not store WordPress credentials.
+    C:\Workspace\Active\Grizzly Launch\grizzly-website   (github.com/barnscarter-ops/grizzly-website)
 
 Current adapter behavior:
 
-- Website actions are routed to `wordpress_browser` in `outputs/action_queue.json`.
-- Dry-runs execute the WordPress adapter planner and do not change the live site.
-- Live runs require owner approval, an authenticated browser session, and a configured `WORDPRESS_ACTION_ADAPTER`.
-- Browser/session credentials stay outside the repo.
-- Contact Form 7 repair can inventory forms, update Mail sender headers, and perform non-submitting public form verification.
+- Website actions are routed to `website_manager` in `outputs/action_queue.json`.
+- Dry-runs generate the proposed files under `outputs/website_preview/` and never touch the site repo.
+- Live runs require owner approval, then write the files, validate them, commit only those files, and push (Vercel deploys automatically).
+- The HTML structure reference lives in `knowledge/website-structure.md`.
+- Optional env overrides: `WEBSITE_REPO_DIR`, `WEBSITE_BRANCH`, `WEBSITE_SITE_URL`.
 
 Useful commands:
 
-```powershell
-$env:PYTHONPATH='src'
-.\.venv\Scripts\python.exe -m seo_agents.main adapter-status
-.\.venv\Scripts\python.exe -m seo_agents.main actions --json
-.\.venv\Scripts\python.exe -m seo_agents.main run-action task-<id>
-```
+    $env:PYTHONPATH='src'
+    .\.venv\Scripts\python.exe -m seo_agents.main adapter-status
+    .\.venv\Scripts\python.exe -m seo_agents.main website "update Saturday hours to 8AM - 4PM"
+    .\.venv\Scripts\python.exe -m seo_agents.main website "update Saturday hours to 8AM - 4PM" --live
+    .\.venv\Scripts\python.exe -m seo_agents.main blog-post "surge protection for DFW storm season" --publish
 
-One-time WordPress browser auth:
+Approved live website action flow:
 
-```powershell
-$env:WORDPRESS_BROWSER_SESSION_DIR='C:\Workspace\Shared\Agents\BrowserSessions\grizzly-wordpress'
-node .\scripts\wordpress-action-adapter.mjs --config .\config\wordpress-sites\grizzly.json --auth
-```
-
-Read-only session verification:
-
-```powershell
-$env:WORDPRESS_BROWSER_SESSION_DIR='C:\Workspace\Shared\Agents\BrowserSessions\grizzly-wordpress'
-node .\scripts\wordpress-action-adapter.mjs --config .\config\wordpress-sites\grizzly.json --check-session
-```
-
-Approved live WordPress action flow:
-
-```powershell
-$env:PYTHONPATH='src'
-.\.venv\Scripts\python.exe -m seo_agents.main approve-action task-t002 --by MCC --note "Approved WordPress CF7 repair"
-.\.venv\Scripts\python.exe -m seo_agents.main run-action task-t002 --live
-```
-
-The first proven website repair pattern is documented in:
-
-```text
-knowledge/baselines/wordpress-contact-form-access-2026-06-08.md
-knowledge/baselines/contact-form-repair-success-story-2026-06-08.md
-```
+    $env:PYTHONPATH='src'
+    .\.venv\Scripts\python.exe -m seo_agents.main approve-action task-t002 --by MCC --note "Approved website update"
+    .\.venv\Scripts\python.exe -m seo_agents.main run-action task-t002 --live
 
 ## GBP Posting Adapter
 

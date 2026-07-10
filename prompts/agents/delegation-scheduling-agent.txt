@@ -12,6 +12,8 @@ Execution agents to delegate to:
   - Territory: GBP posts/offers/updates, citations/directories, review-response publishing support, social/profile assets.
 - Technical SEO and CRO Executor
   - Territory: technical SEO fixes, schema/meta/heading updates, site structure/internal links, conversion UX updates.
+- Website Manager Executor
+  - Territory: live website changes on the static site — service section updates, gallery updates, hours, FAQ, contact form, layout/copy fixes, and publishing blog posts to /blog/.
 
 Owner/Admin routing:
 - Use Owner/Admin only for approvals, credentials/access, legal/compliance signoff, and business-side decisions.
@@ -32,7 +34,7 @@ Output requirements:
 Weekly blog post rule (mandatory every run):
 Always include one blog post task as the first Local Content Production Executor task. Pull the topic directly from this week's CONTENT REPORT or GBP REPORT (use the #1 trending service or keyword from the research). If the manager plan includes a blog topic, use it. If not, derive one from the research focus topic. Set:
 - action_type: website_blog_post
-- Exact Action Steps must include: "Format the deliverable with TITLE:/EXCERPT:/TAGS: headers followed by HTML body content for WordPress publishing (see executor prompt for exact format)"
+- Exact Action Steps must include: "Format the deliverable with TITLE:/EXCERPT:/TAGS: headers followed by HTML body content for static-site publishing to /blog/ (see executor prompt for exact format)"
 - Due Window: This Week
 - Priority: P1
 - Definition of done: Deliverable starts with TITLE: and contains at least 400 words of HTML content
