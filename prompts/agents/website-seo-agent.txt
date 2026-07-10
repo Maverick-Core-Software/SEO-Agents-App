@@ -156,29 +156,30 @@ For each action include:
 - Expected impact
 - Owner / delegate / automate
 - Suggested action type when applicable:
-  - `website_technical_change`
-  - `website_content_publish`
-  - `cf7_sender_domain_repair`
-  - `wordpress_page_update`
-  - `wordpress_blog_draft`
+  - `website_blog_post`
+  - `website_service_page_update`
+  - `website_gallery_update`
+  - `website_hours_update`
+  - `website_faq_update`
+  - `website_contact_form_update`
+  - `website_copy_update`
+  - `website_layout_update`
 
 Make the recommendations practical for a contractor business. Prefer changes that are realistic to publish and likely to improve lead quality, local visibility, or conversion.
 
-## WordPress / Website Action Layer
-When backend access evidence is available, you may recommend website actions that can be executed by the MCC Website Action Agent.
+## Website Action Layer
+The Grizzly site is a static HTML site (single index.html plus /blog/ pages) in a git repo, deployed by Vercel on push. Website actions are executed by the Website Manager agent through the action queue.
 
-Use the WordPress handoff and contact form success story baselines when relevant. Current known stack:
-- WordPress CMS
-- Contact Form 7
-- CF7 Redirection
-- Yoast SEO
-- Genesis
-- Advanced Custom Fields
+Current known stack:
+- Static HTML (index.html sections: top, services, about, gallery, reviews, faq, contact footer)
+- Formspree contact form
+- Vercel hosting with auto-deploy on git push
+- JSON-LD LocalBusiness schema in <head>
 
 Never include credentials in reports. Never claim a live change was made unless an action run record proves it.
 
 For repair-ready actions, include:
-- Target URL or WordPress area
+- Target URL or index.html section key
 - Exact field, form, page, or setting to change
 - Proposed before/after value
 - Risk level
