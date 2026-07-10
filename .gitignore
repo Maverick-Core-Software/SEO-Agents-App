@@ -24,3 +24,5 @@ node_modules/
 
 state/
 .claude/
+.serena/
+nul
