@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from seo_agents.crew import OUTPUT_DIR
+from seo_agents.website import WEBSITE_ACTION_TYPES, run_website_action, website_adapter_status
 
 
 ACTION_QUEUE_FILE = OUTPUT_DIR / "action_queue.json"
@@ -33,21 +34,8 @@ GBP_BROWSER_SESSION_DIR = Path(os.getenv(
     "GBP_BROWSER_SESSION_DIR",
     r"C:\Users\carte\.claude\gbp-session",
 ))
-WORDPRESS_SITE_CONFIG = Path(os.getenv(
-    "WORDPRESS_SITE_CONFIG",
-    r"C:\Workspace\Active\SEO-Agents-App\config\wordpress-sites\grizzly.json",
-))
-WORDPRESS_ACTION_ADAPTER = os.getenv(
-    "WORDPRESS_ACTION_ADAPTER",
-    r"C:\Workspace\Active\SEO-Agents-App\scripts\wordpress-action-adapter.mjs",
-).strip()
-WORDPRESS_BROWSER_SESSION_DIR = Path(os.getenv(
-    "WORDPRESS_BROWSER_SESSION_DIR",
-    r"C:\Workspace\Shared\Agents\BrowserSessions\grizzly-wordpress",
-))
 GBP_POSTER_TIMEOUT_S = int(os.getenv("GBP_POSTER_TIMEOUT_S", "420"))
 GBP_POSTER_HEADLESS = os.getenv("GBP_POSTER_HEADLESS", "0").lower() in {"1", "true", "yes", "on"}
-WORDPRESS_ADAPTER_TIMEOUT_S = int(os.getenv("WORDPRESS_ADAPTER_TIMEOUT_S", "300"))
 GBP_PROFILE_ADAPTER = os.getenv(
     "GBP_PROFILE_ADAPTER",
     r"C:\Workspace\Active\SEO-Agents-App\scripts\gbp-profile-adapter.mjs",
@@ -252,7 +240,7 @@ def _completions_from_json(payload: Any) -> dict[str, dict[str, str]]:
 
 def _load_completions() -> dict[str, dict[str, str]]:
     completions: dict[str, dict[str, str]] = {}
-    for stem in ("content_completion", "assets_completion", "technical_completion"):
+    for stem in ("content_completion", "assets_completion", "technical_completion", "website_completion"):
         # Structured JSON (preferred, regex-free) wins; markdown is the fallback
         # for older runs or models that failed structured output. A stale JSON
         # from a previous run must not shadow a fresher markdown report.
@@ -279,36 +267,45 @@ def _load_action_completions() -> dict[str, dict[str, Any]]:
     return completions
 
 
+_WEBSITE_TYPE_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
+    ("website_blog_post", ("blog",)),
+    ("website_contact_form_update", ("contact form", "form field", "form submission")),
+    ("website_gallery_update", ("gallery", "project photo", "before and after", "before/after")),
+    ("website_hours_update", ("hours update", "business hours", "opening hours", "hours of operation")),
+    ("website_faq_update", ("faq", "frequently asked")),
+    ("website_service_page_update", ("service page", "services section", "service card", "service area")),
+    ("website_layout_update", ("layout", "navigation", "nav link", "header", "footer", "hero")),
+]
+
+
 def _infer_action_type(executor: str, title: str, steps: list[str]) -> str:
     haystack = f"{executor} {title} {' '.join(steps)}".lower()
-    if "contact form" in haystack or "technical" in executor.lower():
-        return "website_technical_change"
     if "gbp" in haystack or "google business" in haystack:
         return "gbp_profile_update"
     if "facebook" in haystack or "fb" in executor.lower():
         return "publish_facebook_post"
-    if "review" in haystack:
+    if "review" in haystack and "website" not in executor.lower():
         return "review_management"
-    if "blog post" in haystack or "blog" in executor.lower():
-        return "website_blog_post"
-    if "service page" in haystack or "content" in executor.lower():
-        return "website_content_publish"
+    for action_type, keywords in _WEBSITE_TYPE_KEYWORDS:
+        if any(keyword in haystack for keyword in keywords):
+            return action_type
+    if "website" in haystack or "landing page" in haystack or "copy" in haystack or "content" in executor.lower():
+        return "website_copy_update"
     return "manual_followup"
 
 
 def _risk_for_action(action_type: str) -> str:
-    if action_type in {"website_technical_change", "gbp_profile_update", "website_content_publish"}:
+    if action_type in {"website_layout_update", "website_contact_form_update", "gbp_profile_update"}:
         return "high"
-    if action_type in {"review_management", "publish_gbp_post", "website_blog_post", "publish_facebook_post"}:
+    if action_type in WEBSITE_ACTION_TYPES or action_type in {"review_management", "publish_gbp_post", "publish_facebook_post"}:
         return "medium"
     return "low"
 
 
 def _platform_for_action(action_type: str) -> str:
+    if action_type in WEBSITE_ACTION_TYPES:
+        return "website"
     return {
-        "website_technical_change": "website_cms",
-        "website_content_publish": "website_cms",
-        "website_blog_post": "website_cms",
         "gbp_profile_update": "google_business_profile",
         "publish_gbp_post": "google_business_profile",
         "publish_facebook_post": "facebook_page",
@@ -379,7 +376,7 @@ def parse_execution_actions() -> list[dict[str, Any]]:
             "approval_required": status != "verified" and (
                 completion.get("owner_signoff_needed", "").upper() == "YES" or bool(dependencies)
             ),
-            "live_adapter": "wordpress_browser" if platform == "website_cms" else None,
+            "live_adapter": "website_manager" if platform == "website" else None,
         })
     return actions
 
@@ -542,7 +539,7 @@ def _apply_run_results(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def build_action_queue() -> dict[str, Any]:
     actions = _apply_run_results(_apply_approvals([*parse_execution_actions(), *parse_gbp_post_actions(), *parse_facebook_post_actions()]))
     adapters = {
-        "wordpress_browser": wordpress_adapter_status(),
+        "website_manager": website_adapter_status(),
         "google_business_profile": gbp_adapter_status(),
         "facebook_page": facebook_adapter_status(),
     }
@@ -650,10 +647,21 @@ def run_action(action_id: str, live: bool = False) -> dict[str, Any]:
         else:
             result_status = "adapter_failed"
             message = f"Facebook poster adapter failed: {driver_result.get('message', command_result.get('stderr', ''))}"
-    elif action.get("live_adapter") == "wordpress_browser":
-        command_result = _run_wordpress_adapter(action, live=live)
-        result_status = "live_complete" if live and command_result["exit_code"] == 0 else "dry_run_complete" if command_result["exit_code"] == 0 else "adapter_failed"
-        message = "WordPress adapter completed." if command_result["exit_code"] == 0 else "WordPress adapter failed."
+    elif action.get("live_adapter") == "website_manager":
+        command_result = run_website_action(action, live=live)
+        adapter_status_value = command_result.get("status", "")
+        if adapter_status_value == "pushed":
+            result_status = "live_complete"
+            message = f"Website change committed and pushed ({command_result.get('commit')}). Vercel deploy triggered."
+        elif adapter_status_value == "preview":
+            result_status = "dry_run_complete"
+            message = f"Website edit preview written to {command_result.get('preview_dir')}. No live change made."
+        elif adapter_status_value == "push_failed":
+            result_status = "live_unverified"
+            message = "Website change committed locally but git push failed. Push manually, then verify the deploy."
+        else:
+            result_status = "adapter_failed"
+            message = command_result.get("message") or "Website adapter failed."
     elif live:
         result_status = "blocked_adapter"
         message = f"No live adapter configured for {action['platform']} yet."
@@ -678,114 +686,7 @@ def run_action(action_id: str, live: bool = False) -> dict[str, Any]:
     return run_record
 
 
-def _load_wordpress_config() -> dict[str, Any]:
-    if not WORDPRESS_SITE_CONFIG.exists():
-        raise FileNotFoundError(f"WordPress site config not found: {WORDPRESS_SITE_CONFIG}")
-    return json.loads(WORDPRESS_SITE_CONFIG.read_text(encoding="utf-8"))
 
-
-def wordpress_adapter_status() -> dict[str, Any]:
-    status: dict[str, Any] = {
-        "name": "wordpress-browser",
-        "site_config": str(WORDPRESS_SITE_CONFIG),
-        "adapter": WORDPRESS_ACTION_ADAPTER or None,
-        "browser_session_dir": str(WORDPRESS_BROWSER_SESSION_DIR),
-        "state": "missing",
-        "config_ready": False,
-        "browser_session_ready": WORDPRESS_BROWSER_SESSION_DIR.exists(),
-        "live_adapter_ready": False,
-        "capabilities": [],
-        "missing": [],
-    }
-    if not WORDPRESS_SITE_CONFIG.exists():
-        status["missing"].append("WordPress site config")
-        return status
-    try:
-        config = _load_wordpress_config()
-    except Exception as error:
-        status["state"] = "error"
-        status["missing"].append(str(error))
-        return status
-    status["config_ready"] = True
-    status["site_id"] = config.get("site_id")
-    status["site_url"] = config.get("site_url")
-    status["wp_admin_url"] = config.get("wp_admin_url")
-    status["contact_forms"] = [
-        {"name": form.get("name"), "post_id": form.get("post_id")}
-        for form in config.get("contact_forms", [])
-    ]
-    status["capabilities"] = [
-        "wp_session_check",
-        "cf7_inventory",
-        "cf7_mail_settings_dry_run",
-        "cf7_mail_edit",
-        "public_form_submit_test",
-        "wordpress_page_update_draft",
-    ]
-    if WORDPRESS_ACTION_ADAPTER:
-        adapter_path = Path(WORDPRESS_ACTION_ADAPTER)
-        status["live_adapter_ready"] = adapter_path.exists()
-        if not adapter_path.exists():
-            status["missing"].append("WordPress action adapter script")
-    else:
-        status["missing"].append("WORDPRESS_ACTION_ADAPTER not configured")
-    if not status["browser_session_ready"]:
-        status["missing"].append("WordPress browser session directory")
-    if status["config_ready"] and status["live_adapter_ready"] and status["browser_session_ready"]:
-        status["state"] = "live_ready"
-    elif status["config_ready"]:
-        status["state"] = "approval_ready"
-    return status
-
-
-def _run_wordpress_adapter(action: dict[str, Any], live: bool) -> dict[str, Any]:
-    try:
-        config = _load_wordpress_config()
-    except Exception as error:
-        return {
-            "exit_code": 2,
-            "command": "wordpress-browser",
-            "stdout": "",
-            "stderr": str(error),
-        }
-    payload = {
-        "site": {
-            "site_id": config.get("site_id"),
-            "site_url": config.get("site_url"),
-            "wp_admin_url": config.get("wp_admin_url"),
-        },
-        "live": live,
-        "action": action,
-    }
-    if not WORDPRESS_ACTION_ADAPTER:
-        return {
-            "exit_code": 127,
-            "command": "wordpress-browser",
-            "stdout": "",
-            "stderr": "WORDPRESS_ACTION_ADAPTER is not configured yet.",
-        }
-    adapter_path = Path(WORDPRESS_ACTION_ADAPTER)
-    if not adapter_path.exists():
-        return {
-            "exit_code": 127,
-            "command": str(adapter_path),
-            "stdout": "",
-            "stderr": f"WordPress action adapter not found: {adapter_path}",
-        }
-    command = [
-        "node",
-        str(adapter_path),
-        "--config",
-        str(WORDPRESS_SITE_CONFIG),
-        "--payload",
-        json.dumps(payload),
-    ]
-    return _run_subprocess(
-        command,
-        cwd=str(adapter_path.parent),
-        timeout_s=WORDPRESS_ADAPTER_TIMEOUT_S,
-        display_command=" ".join(command[:4]) + " --payload <json>",
-    )
 
 
 def _run_gbp_poster(action: dict[str, Any], live: bool) -> dict[str, Any]:
