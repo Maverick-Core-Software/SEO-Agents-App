@@ -17,18 +17,19 @@ Generated 2026-07-09 from index.html (~1,270 lines, ~84 KB). If the site is rede
 | vercel.json, _redirects | Hosting config — do not edit without a specific task |
 
 ## index.html sections (keys used by the Website Manager)
-Section keys come from the block's id, or a slug of its first heading when it has no id.
+Section keys come from the block's id. All sections must have a unique `id` attribute.
 
 | Key | Block | What's inside |
 |---|---|---|
 | top | `<section id="top">` | Hero: h1 "QUALITY WORK. FAIR PRICE. EVERY TIME.", tagline, CTAs, phone banner |
 | services | `<section id="services">` | "ELECTRICAL SERVICES" — 16 service cards |
 | about | `<section id="about">` | "OWNER-OPERATED. CODE-OBSESSED. ALWAYS ON CALL." — owner story |
-| commercial-electrical-for-dfw-businesses | `<section>` (no id) | "COMMERCIAL ELECTRICAL" pitch |
+| commercial-electrical | `<section id="commercial-electrical">` | "COMMERCIAL ELECTRICAL" pitch |
 | gallery | `<section id="gallery">` | "OUR WORK SPEAKS" — 8 project cards, images from /uploads/ |
 | reviews | `<section id="reviews">` | Customer testimonials (6 cards) |
-| section-9 | `<section class="pg emg-bar">` | Red 24/7 emergency strip (#cc2200) — no id, no heading |
+| emergency-bar | `<section id="emergency-bar">` | Red 24/7 emergency strip (#cc2200) |
 | faq | `<section id="faq">` | "ANSWERS BEFORE YOU ASK" — FAQ items |
+| service-areas | `<section id="service-areas">` | List of towns served |
 | contact | `<footer id="contact">` | Hours block (Mon–Fri 8AM–6PM, Sat 8AM–2PM, Sun Closed), contact info, Formspree form (action https://formspree.io/f/meebvlze) |
 
 Exact current keys at any time:

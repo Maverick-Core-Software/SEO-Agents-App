@@ -71,22 +71,34 @@ def _section_key(open_tag: str, block: str, ordinal: int) -> str:
     id_match = re.search(r'id="([^"]+)"', open_tag)
     if id_match:
         return id_match.group(1)
-    heading = re.search(r"<h[12][^>]*>(.*?)</h[12]>", block, re.IGNORECASE | re.DOTALL)
-    if heading:
-        text = " ".join(re.sub(r"<[^>]+>", " ", heading.group(1)).split())
-        slug = _slugify(text[:40])
-        if slug:
-            return slug
-    return f"section-{ordinal}"
+    raise ValueError(
+        f"Section / footer block at ordinal {ordinal} is missing an 'id' attribute. open_tag={open_tag!r}"
+    )
 
 
 def parse_sections(html_text: str) -> dict[str, tuple[int, int]]:
-    """Map every top-level <section>/<footer> block to its (start, end) span.
+    """Map every top-level <section>/<footer> block, plus local and FAQ schemas, to its (start, end) span.
 
-    Keys: the tag's id, else a slug of its first h1/h2 text, else section-<n>.
-    Spans include the opening and closing tags.
+    Keys: the tag's id. Spans include the opening and closing tags.
     """
     sections: dict[str, tuple[int, int]] = {}
+
+    # Extract LocalBusiness schema block in head
+    schema_match = re.search(
+        r'(?s)(?:<!--\s*LocalBusiness Schema\s*-->\s*)?<script type=.application/ld\+json.>[^<]*?Electrician.*?</script>',
+        html_text
+    )
+    if schema_match:
+        sections["local-schema"] = (schema_match.start(), schema_match.end())
+
+    # Extract FAQ schema block in head
+    faq_schema_match = re.search(
+        r'(?s)(?:<!--\s*FAQ Schema\s*-->\s*)?<script type=.application/ld\+json.>[^<]*?FAQPage.*?</script>',
+        html_text
+    )
+    if faq_schema_match:
+        sections["faq-schema"] = (faq_schema_match.start(), faq_schema_match.end())
+
     pos = 0
     ordinal = 0
     while True:
@@ -103,6 +115,7 @@ def parse_sections(html_text: str) -> dict[str, tuple[int, int]]:
                 break
             if tag.group(1).lower() == tag_name:
                 depth += -1 if tag.group(0).startswith("</") else 1
+              # Correcting indentation for safety
             scan = tag.end()
         ordinal += 1
         block = html_text[open_match.start():scan]
@@ -404,6 +417,14 @@ def apply_edit(edit: dict[str, Any], live: bool = False) -> dict[str, Any]:
             "url": url,
             "notes": notes,
             "message": f"Preview written to {PREVIEW_DIR}. Re-run live to commit and deploy.",
+        }
+
+    # Ensure local repo is synced before making edits
+    pull = _git("pull", "--rebase", "origin", WEBSITE_BRANCH)
+    if pull.returncode != 0:
+        return {
+            "status": "error",
+            "message": f"git pull --rebase failed: {pull.stderr.strip() or pull.stdout.strip()}",
         }
 
     for relpath, content in files.items():
