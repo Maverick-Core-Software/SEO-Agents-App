@@ -22,7 +22,7 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createClient } from '@supabase/supabase-js';
 import { makeRunPhase } from './lib/run-phase.mjs';
-import { centralDateHour, runGbpForApprovedRun, runDailyGbp } from './lib/gbp-runner.mjs';
+import { centralDateHour, runGbpForApprovedRun, runDailyGbp, markGbpPostedAndArchive } from './lib/gbp-runner.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '..');
@@ -211,6 +211,11 @@ async function poll() {
                 // Verification succeeded — remove from queue
                 verifyQueue = verifyQueue.filter(q => q.postId !== item.postId);
                 await log(item.runId, 'gbp', 'info', `Verification confirmed for ${item.date}`);
+                // For natively scheduled days this is the first moment we know the
+                // post is live, so Excel Posted=TRUE + photo archiving happen here.
+                // For driver-posted days it already ran — a harmless no-op re-stamp
+                // (photo already moved → skipped).
+                await markGbpPostedAndArchive({ postDate: String(item.date).slice(0, 10), exitCode: 0, runId: item.runId, env: process.env, log });
                 continue;
               }
             }
