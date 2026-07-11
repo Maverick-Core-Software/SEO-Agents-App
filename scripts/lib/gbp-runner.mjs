@@ -237,6 +237,7 @@ export async function runDailyGbp({ supabase, runPhase, log, env, todayDate, gbp
   const { data: todayGbp } = await supabase
     .from('weekly_posts')
     .select('id, run_id, post_date, photo_file, status')
+    .eq('platform', 'gbp')
     .in('status', ['scheduled', 'scheduled_native'])
     .eq('post_date', todayDate)
     .order('post_date', { ascending: true });
