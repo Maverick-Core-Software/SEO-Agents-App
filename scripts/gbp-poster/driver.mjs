@@ -4,6 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { fileURLToPath, pathToFileURL } from 'url';
+import assert from 'node:assert/strict';
 
 const __filename = fileURLToPath(import.meta.url);
 
@@ -16,6 +17,10 @@ const VERIFY_ATTEMPTS = 5;
 // Pre-submit compose steps may be retried (nothing has been posted yet). Once the
 // Post button is clicked we NEVER retry — a re-send would create a duplicate post.
 const POST_ATTEMPTS = 2;
+
+// ponytail: schedule time is fixed at 9:00 AM business-local; make it a config
+// field if a second time is ever needed.
+const SCHEDULE_TIME_LABEL = /^9:00[\s\u202F]*AM$/;
 
 // Map an error message to a coarse, actionable failure reason so logs/results say
 // *why* a run failed without a human reading a stack trace. Order matters: the
@@ -56,7 +61,7 @@ async function detectBlockingInterstitial(page) {
 }
 
 function parseArgs(argv) {
-    const args = { dryRun: false, auth: false, headless: false, date: null, config: DEFAULT_CONFIG };
+    const args = { dryRun: false, auth: false, headless: false, date: null, schedule: false, config: DEFAULT_CONFIG };
     for (let i = 0; i < argv.length; i += 1) {
         const arg = argv[i];
         if (arg === '--dry-run') args.dryRun = true;
@@ -66,6 +71,7 @@ function parseArgs(argv) {
         else if (arg.startsWith('--date=')) args.date = arg.slice('--date='.length);
         else if (arg === '--config') args.config = argv[++i];
         else if (arg.startsWith('--config=')) args.config = arg.slice('--config='.length);
+        else if (arg === '--schedule') args.schedule = true;
     }
     args.date ||= new Date().toISOString().slice(0, 10);
     return args;
@@ -244,6 +250,54 @@ async function fillComposerDescription(ctx, value, page) {
     }
 }
 
+async function setComposerSchedule(ctx, page, isoDate) {
+    // Convert yyyy-mm-dd → MM/DD/YYYY
+    const parts = isoDate.split('-');
+    const formatted = `${parts[1]}/${parts[2]}/${parts[0]}`;
+
+    logStep('engaging schedule toggle');
+    const toggle = ctx.getByRole('switch', { name: 'Schedule post' });
+    await toggle.click({ timeout: 10000 });
+    const isChecked = await toggle.getAttribute('aria-checked');
+    assert.equal(isChecked, 'true', 'Schedule toggle did not engage — it will classify as ui_changed_or_timeout');
+
+    logStep('typing schedule date');
+    const dateCombobox = ctx.getByRole('combobox', { name: /Date/i }).first();
+    await dateCombobox.click({ timeout: 10000 });
+    await page.keyboard.press('Control+A').catch(() => {});
+    await page.keyboard.insertText(formatted);
+    await page.keyboard.press('Tab');
+    const readback = (await dateCombobox.inputValue().catch(() => '')) || '';
+    assert.equal(readback, formatted, `Date read-back mismatch: expected ${formatted}, got ${readback}`);
+
+    logStep('selecting 9:00 AM schedule time');
+    const timeCombobox = ctx.getByRole('combobox', { name: 'Time' }).first();
+    await timeCombobox.click({ timeout: 10000 });
+    await ctx.getByRole('option', { name: SCHEDULE_TIME_LABEL }).first().click({ timeout: 10000 });
+    const timeReadback = (await timeCombobox.inputValue().catch(() => '')) || '';
+    assert.ok(SCHEDULE_TIME_LABEL.test(timeReadback), `Time read-back mismatch: expected 9:00 AM (tolerant), got '${timeReadback}'`);
+}
+
+async function setComposerCta(ctx, page, url) {
+    logStep('revealing CTA link fields');
+    const addLinkBtn = ctx.locator('button[aria-label="Add link fields"]').first();
+    await addLinkBtn.click({ timeout: 10000 });
+
+    logStep('opening button type menu');
+    const typeBtn = ctx.getByRole('button', { name: 'None' }).first();
+    await typeBtn.click({ timeout: 10000 });
+
+    logStep('picking Learn more');
+    await ctx.getByRole('menuitem', { name: 'Learn more' }).first().click({ timeout: 10000 });
+
+    logStep('typing CTA URL');
+    const urlInput = ctx.getByRole('textbox', { name: /Link for your button/ }).first();
+    await urlInput.click({ timeout: 10000 });
+    await page.keyboard.insertText(url);
+    const readback = await urlInput.inputValue().catch(() => '');
+    assert.equal(readback, url, `CTA URL read-back mismatch: expected ${url}, got ${readback}`);
+}
+
 async function clickComposerPost(ctx, page) {
     const postButton = ctx.getByRole('button', { name: 'Post', exact: true }).last();
     if (!(await postButton.count())) {
@@ -258,6 +312,19 @@ async function clickComposerPost(ctx, page) {
     if (await errorBanner.isVisible({ timeout: 1000 }).catch(() => false)) {
         throw new Error(`GBP showed an error after submitting: ${(await errorBanner.innerText().catch(() => '')).trim()}`);
     }
+}
+
+function resolveCtaUrl(payload, config) {
+    const map = config?.cta_url_map || {};
+    // Topic is exhausted before caption: captions often mention other services in
+    // passing (e.g. an EV-charger post discussing panel capacity).
+    for (const hay of [payload.topic, payload.caption]) {
+        const lower = String(hay || '').toLowerCase();
+        for (const [key, url] of Object.entries(map)) {
+            if (lower.includes(key)) return url;
+        }
+    }
+    return config?.default_cta_url || null;
 }
 
 function captionSnippet(caption) {
@@ -362,7 +429,7 @@ function emitResult(result) {
 // Open the composer, fill it, attach the image, and submit. The PRE-submit work is
 // retried on transient/UI failures; once `submitted` flips true we rethrow without
 // retrying so a half-accepted post is never re-sent (duplicate guard).
-async function composeAndSubmit(page, payload) {
+async function composeAndSubmit(page, payload, schedule = false) {
     let lastErr;
     for (let attempt = 1; attempt <= POST_ATTEMPTS; attempt += 1) {
         let submitted = false;
@@ -374,6 +441,17 @@ async function composeAndSubmit(page, payload) {
             if (payload.imagePath) {
                 await attachImage(ctx, payload.imagePath, page);
             }
+            if (payload.ctaUrl) {
+                try {
+                    await setComposerCta(ctx, page, payload.ctaUrl);
+                } catch (err) {
+                    // ponytail: CTA is nice-to-have — never let it block the post.
+                    logStep(`CTA failed (${err.message}) — posting without button`);
+                }
+            }
+            if (schedule) {
+                await setComposerSchedule(ctx, page, payload.date);
+            }
             logStep('submitting post');
             submitted = true; // past here a failure must NOT trigger a re-submit
             await clickComposerPost(ctx, page);
@@ -383,7 +461,10 @@ async function composeAndSubmit(page, payload) {
             lastErr = e;
             const reason = classifyFailure(e.message);
             logStep('compose failed', { attempt, reason, submitted, message: String(e.message || e) });
-            if (submitted || !RETRYABLE.has(reason) || attempt >= POST_ATTEMPTS) throw e;
+            if (submitted || !RETRYABLE.has(reason) || attempt >= POST_ATTEMPTS) {
+                if (submitted) e.submitted = true;
+                throw e;
+            }
             logStep('retrying after reload (nothing was submitted)');
             await page.goto('https://business.google.com/', { waitUntil: 'domcontentloaded' }).catch(() => {});
             await page.waitForTimeout(2000);
@@ -422,6 +503,7 @@ async function main() {
 
     const postData = parseSchedule(workbookPath, args.date);
     const payload = buildPayload(postData);
+    payload.ctaUrl = resolveCtaUrl(payload, config);
     if (!payload.caption) throw new Error(`Post ${args.date} has no caption/body text.`);
 
     // If workbook image path is missing/stale, fall back to the curated folder by date prefix.
@@ -466,11 +548,17 @@ async function main() {
         image_path: payload.imagePath,
         image_exists: payload.imagePath ? fs.existsSync(payload.imagePath) : false,
         workbook_path: workbookPath,
+        schedule: args.schedule,
+        cta: payload.ctaUrl || null,
     };
     console.log(JSON.stringify({ mode: args.dryRun ? 'dry-run' : 'live', payload: preview }, null, 2));
 
     if (args.dryRun) {
-        emitResult({ result: 'dry_run', date: payload.date, verified: false, postUrl: null });
+        if (args.schedule) {
+            emitResult({ result: 'schedule_dry_run', date: payload.date, scheduledTime: '9:00 AM', verified: false, postUrl: null, cta: payload.ctaUrl });
+        } else {
+            emitResult({ result: 'dry_run', date: payload.date, verified: false, postUrl: null });
+        }
         return;
     }
 
@@ -481,7 +569,14 @@ async function main() {
     const page = await context.newPage();
 
     try {
-        await composeAndSubmit(page, payload);
+        await composeAndSubmit(page, payload, args.schedule);
+        if (args.schedule) {
+            // A scheduled post is not live yet — the Posts-list check would always
+            // fail. The composer closing without error IS the confirmation.
+            emitResult({ result: 'scheduled_native', date: payload.date, scheduledTime: '9:00 AM', verified: false, postUrl: null });
+            console.log('Post scheduled natively on GBP.');
+            return;
+        }
         // composeAndSubmit returning means the post WAS submitted (the composer
         // closed, which GBP treats as acceptance). A verification failure here
         // must NOT be reported as 'failed' (exit 1) — that masks the successful
@@ -504,12 +599,21 @@ async function main() {
             process.exitCode = 3;
         }
     } catch (e) {
-        const reason = classifyFailure(e.message);
-        const artifacts = await saveFailureArtifacts(page);
-        emitResult({ result: 'failed', date: payload.date, verified: false, postUrl: null, failure_reason: reason, error: String(e.message || e) });
-        console.error(`Error during GBP posting [${reason}]:`, e.message || e);
-        console.error(`Debug artifacts: ${JSON.stringify(artifacts)}`);
-        process.exitCode = 1;
+        if (args.schedule && e.submitted) {
+            // Duplicate guard: the Post click already happened, so this must never
+            // fall back to a live re-post. Exit 3 → runner marks scheduled_native
+            // with an error note; daily verification confirms or alerts.
+            emitResult({ result: 'schedule_unconfirmed', date: payload.date, scheduledTime: '9:00 AM', verified: false, postUrl: null, error: String(e.message || e) });
+            console.error(`Schedule submit clicked but composer errored (${e.message || e}). Do NOT retry — daily verification will confirm or alert.`);
+            process.exitCode = 3;
+        } else {
+            const reason = classifyFailure(e.message);
+            const artifacts = await saveFailureArtifacts(page);
+            emitResult({ result: 'failed', date: payload.date, verified: false, postUrl: null, failure_reason: reason, error: String(e.message || e) });
+            console.error(`Error during GBP posting [${reason}]:`, e.message || e);
+            console.error(`Debug artifacts: ${JSON.stringify(artifacts)}`);
+            process.exitCode = 1;
+        }
     } finally {
         await context.close();
     }

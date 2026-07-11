@@ -5,6 +5,7 @@ import {
   parseDriverJson,
   gbpNeedsVerificationMessage,
   gbpDailyStatusForExit,
+  gbpScheduleStatusForExit,
   centralDateHour,
   runDailyGbp,
   runGbpForApprovedRun,
@@ -45,6 +46,18 @@ assert.equal(early.cstHour, 0);
 
 console.log('ok gbp-runner pure helpers');
 
+// gbpScheduleStatusForExit: exit code => scheduled-post update intent
+assert.deepEqual(gbpScheduleStatusForExit(0, {}),
+  { status: 'scheduled_native', error: null });
+assert.equal(gbpScheduleStatusForExit(3, {}).status, 'scheduled_native');
+assert.ok(gbpScheduleStatusForExit(3, {}).error.includes('unconfirmed'));
+assert.deepEqual(gbpScheduleStatusForExit(4, {}),
+  { status: 'pending_approval', error: null });
+assert.deepEqual(gbpScheduleStatusForExit(1, {}),
+  { status: 'scheduled', error: null });
+
+console.log('ok gbpScheduleStatusForExit');
+
 // --- runDailyGbp wiring: a verified post (exit 0) marks the row 'posted' ---
 {
   const updates = [];
@@ -55,6 +68,7 @@ console.log('ok gbp-runner pure helpers');
       from: () => qb,
       select: () => qb,
       eq: () => qb,
+      in: () => qb,
       order: () => Promise.resolve({ data: rows }),
       update: (vals) => { updates.push(vals); return { eq: () => Promise.resolve({ data: null, error: null }) }; },
     };
@@ -76,6 +90,42 @@ console.log('ok gbp-runner pure helpers');
   const posted = updates.find(u => u.status === 'posted');
   assert.ok(posted, 'runDailyGbp should mark the row posted on exit 0');
   assert.equal(posted.platform_post_id, 'https://x/post');
+}
+
+// --- runDailyGbp native flip: a scheduled_native row flips to posted without driver run ---
+{
+  const updates = [];
+  const makeQb = (rows) => {
+    const qb = {
+      from: () => qb,
+      select: () => qb,
+      in: () => qb,
+      eq: () => qb,
+      order: () => Promise.resolve({ data: rows }),
+      update: (vals) => { updates.push(vals); return { eq: () => Promise.resolve({ data: null, error: null }) }; },
+    };
+    return qb;
+  };
+  const supabase = makeQb([{ id: 'p1', run_id: 'r1', post_date: '2026-07-12', photo_file: '', status: 'scheduled_native' }]);
+  const runPhaseCalls = [];
+  const runPhase = async (runId, phase, cmd, args) => {
+    runPhaseCalls.push({ cmd, args });
+    return { ok: true, exitCode: 0, stdout: '{}', stderr: '' };
+  };
+
+  await runDailyGbp({
+    supabase,
+    runPhase,
+    log: async () => {},
+    env: {},
+    todayDate: '2026-07-12',
+    gbpPosterPath: 'C:/fake/driver.mjs',
+    projectRoot: process.cwd(),
+  });
+
+  assert.equal(runPhaseCalls.length, 0, 'runPhase should never be called for scheduled_native rows');
+  const flipped = updates.find(u => u.status === 'posted' && u.platform_post_id === null);
+  assert.ok(flipped, 'runDailyGbp should flip scheduled_native to posted with null platform_post_id');
 }
 
 console.log('ok gbp-runner orchestration');
@@ -125,6 +175,50 @@ console.log('ok gbp-runner orchestration');
   // Day 2 must still be approved too (same call or a later one).
   assert.ok(calls.some(c => c.args?.[0] === 'mark-gbp-approved' && c.args.includes('2026-07-11')),
     'mark-gbp-approved must still cover Days 2-7');
+}
+
+// --- runGbpForApprovedRun native scheduling loop: Days 2-7 run with --schedule ---
+{
+  const updates = [];
+  const makeQb = () => {
+    const qb = {
+      from: () => qb,
+      select: () => qb,
+      eq: () => qb,
+      update: (vals) => { updates.push(vals); return { eq: () => Promise.resolve({ data: null, error: null }) }; },
+    };
+    return qb;
+  };
+  const runPhaseCalls = [];
+  const runPhase = async (runId, phase, cmd, args) => {
+    runPhaseCalls.push({ cmd, args });
+    if (args?.[args.length - 2] === '--schedule') {
+      return { ok: true, exitCode: 0, stdout: '{"result":"scheduled_native"}', stderr: '' };
+    }
+    return { ok: true, exitCode: 0, stdout: '{"result":"posted","postUrl":"u"}', stderr: '' };
+  };
+
+  await runGbpForApprovedRun({
+    runId: 'r1',
+    gbpPosts: [
+      { id: 'p1', day: 1, post_date: '2026-07-10', run_id: 'r1' },
+      { id: 'p2', day: 2, post_date: '2026-07-11', run_id: 'r1' },
+    ],
+    deps: {
+      supabase: makeQb(),
+      runPhase,
+      log: async () => {},
+      env: {},
+      projectRoot: process.cwd(),
+      paths: { photoPick: 'C:/nonexistent/photo-pick.mjs', gbpPoster: 'C:/fake/driver.mjs', seoAgentsExe: 'seo-agents.exe' },
+    },
+  });
+
+  const scheduleCall = runPhaseCalls.find(c => c.args?.includes('--schedule'));
+  assert.ok(scheduleCall, 'Day 2 driver should be called with --schedule flag');
+  assert.ok(scheduleCall.args.includes('2026-07-11'), '--schedule invocation should include the post_date');
+  const nativeUpdate = updates.find(u => u.status === 'scheduled_native');
+  assert.ok(nativeUpdate, 'Day 2 row should be updated to scheduled_native');
 }
 
 console.log('ok gbp-runner day1 approval gate');

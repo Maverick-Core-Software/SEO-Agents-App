@@ -49,6 +49,24 @@ export function gbpDailyStatusForExit(exitCode, parsed = {}) {
   return { status: 'error', error: null, archive: false, platform_post_id: null };
 }
 
+// Map driver exit code to the scheduled-post update intent. Duplicate-guard rule:
+// exit 3 (submitted-but-unconfirmed) MUST NEVER fall back to 'scheduled' — a repost
+// of an already-scheduled day would double-post. Instead it stays scheduled_native
+// so the daily verification sweep confirms it.
+export function gbpScheduleStatusForExit(exitCode, parsed = {}) {
+  if (exitCode === 0) {
+    return { status: 'scheduled_native', error: null };
+  }
+  if (exitCode === 3) {
+    return { status: 'scheduled_native', error: 'GBP schedule submitted but unconfirmed (composer error after Post click) — daily verification will confirm or alert.' };
+  }
+  if (exitCode === 4) {
+    return { status: 'pending_approval', error: null };
+  }
+  // else → fallback to old daily-post path
+  return { status: 'scheduled', error: null };
+}
+
 // Derive the Central-time (DST-aware) date + hour from a UTC instant. Used to gate
 // the daily poster to once per calendar day after 9am Central.
 export function centralDateHour(nowUtc) {
@@ -194,13 +212,23 @@ export async function runGbpForApprovedRun({ runId, gbpPosts, deps }) {
     await log(runId, 'gbp', status === 'posted' ? 'info' : 'warn', `Day 1 GBP → ${status} (exit ${r.exitCode})`);
   }
 
-  // 4. Mark Days 2-7 scheduled (approval already stamped above).
-  const later = gbpPosts.filter(p => p.day > 1);
-  if (later.length) {
-    await supabase.from('weekly_posts').update({ status: 'scheduled' })
-      .eq('run_id', runId).eq('platform', 'gbp').gt('day', 1);
-    await log(runId, 'gbp', 'info', 'Days 2-7 marked scheduled + approved in workbook');
+  // 4. Schedule Days 2-7 natively (approval already stamped above).
+  const later = gbpPosts
+    .filter(p => p.day > 1)
+    .sort((a, b) => a.day - b.day);
+  let nativeCount = 0;
+  let fallbackCount = 0;
+  for (const post of later) {
+    await log(runId, 'gbp', 'info', `Scheduling GBP for ${post.post_date} (Day ${post.day})...`);
+    const r = await runPhase(runId, 'gbp', 'node', [paths.gbpPoster, '--date', post.post_date, '--schedule'], projectRoot);
+    const { status, error } = gbpScheduleStatusForExit(r.exitCode);
+    await supabase.from('weekly_posts').update({ status, error }).eq('id', post.id);
+    const lvl = status !== 'scheduled_native' ? 'warn' : 'info';
+    await log(runId, 'gbp', lvl, `Day ${post.day} ${post.post_date} → ${status} (exit ${r.exitCode}${error ? ': ' + error.slice(0, 80) : ''})`);
+    if (status === 'scheduled_native') nativeCount++;
+    if (status === 'scheduled') fallbackCount++;
   }
+  await log(runId, 'gbp', 'info', `Days 2-7 scheduling: ${nativeCount} scheduled_native, ${fallbackCount} fallback scheduled`);
 }
 
 // Daily poster: post today's scheduled GBP rows. Caller gates this to once/day >=9am
@@ -208,16 +236,22 @@ export async function runGbpForApprovedRun({ runId, gbpPosts, deps }) {
 export async function runDailyGbp({ supabase, runPhase, log, env, todayDate, gbpPosterPath, projectRoot }) {
   const { data: todayGbp } = await supabase
     .from('weekly_posts')
-    .select('id, run_id, post_date, photo_file')
+    .select('id, run_id, post_date, photo_file, status')
     .eq('platform', 'gbp')
-    .eq('status', 'scheduled')
+    .in('status', ['scheduled', 'scheduled_native'])
     .eq('post_date', todayDate)
     .order('post_date', { ascending: true });
 
   for (const post of todayGbp || []) {
-    await log(post.run_id, 'gbp', 'info', `Posting scheduled GBP for ${post.post_date}`);
-    const result = await runPhase(post.run_id, 'gbp', 'node', [gbpPosterPath, '--date', post.post_date], projectRoot);
-    const status = await applyDriverResult({ supabase, post, result, env, log });
-    await log(post.run_id, 'gbp', status === 'error' ? 'error' : 'info', `Daily GBP ${post.post_date} → ${status} (exit ${result.exitCode})`);
+    if (post.status === 'scheduled_native') {
+      // Native-scheduled post: no driver run — just flip to posted so the verify sweep picks it up.
+      await supabase.from('weekly_posts').update({ status: 'posted', posted_at: new Date().toISOString(), platform_post_id: null, error: null }).eq('id', post.id);
+      await log(post.run_id, 'gbp', 'info', `Native-scheduled GBP for ${post.post_date} — flipped to posted, verification sweep will confirm`);
+    } else {
+      await log(post.run_id, 'gbp', 'info', `Posting scheduled GBP for ${post.post_date}`);
+      const result = await runPhase(post.run_id, 'gbp', 'node', [gbpPosterPath, '--date', post.post_date], projectRoot);
+      const status = await applyDriverResult({ supabase, post, result, env, log });
+      await log(post.run_id, 'gbp', status === 'error' ? 'error' : 'info', `Daily GBP ${post.post_date} → ${status} (exit ${result.exitCode})`);
+    }
   }
 }

@@ -79,6 +79,50 @@ Note: the service still runs under LocalSystem, so GBP will only actually work t
 the service itself has been moved to a user session — otherwise this rollback restores
 the *old broken* behavior. Prefer fixing the worker.
 
+## Native scheduling (Days 2–7) + CTA button
+
+Since the `feat/gbp-native-schedule` change, the worker no longer live-posts every
+morning. On an approved weekly run it posts **Day 1 immediately** (unchanged) and then
+invokes the driver once per remaining day with `--schedule`, which uses GBP's native
+"Schedule this post" toggle. Google's servers publish Days 2–7 at **9:00 AM**
+(`SCHEDULE_TIME_LABEL` in `scripts/gbp-poster/driver.mjs`); the worker only has to be
+alive to *verify*.
+
+Status flow:
+
+    approved ─claim→ posting ─┬ day 1:  driver --date D1            → posted / needs_verification / error
+                              └ days 2-7: driver --date Dn --schedule
+                                            exit 0 → scheduled_native
+                                            exit 3 → scheduled_native  (+ error note "schedule unconfirmed")
+                                            exit 4 → pending_approval
+                                            else   → scheduled         (old daily path posts it — fallback)
+
+    daily ≥9am Central:
+      status='scheduled'        & post_date=today → driver posts it (fallback, unchanged)
+      status='scheduled_native' & post_date=today → flip row to posted, posted_at=now,
+                                                    platform_post_id=null (NO driver run)
+                                                    → verify sweep picks it up 10 min later
+    verify success → markGbpPostedAndArchive (Excel Posted=TRUE + photo → archive)
+    verify failure ×4 → status='error' (mav-bridge alerting fires)
+
+Rules to know:
+
+- **`scheduled_native`** means "Google owns publishing this post; we only verify."
+- **Duplicate guard:** driver exit 3 in schedule mode (error *after* the Post click)
+  stays `scheduled_native` — it must never fall back to `scheduled`, because a
+  fallback repost of an actually-scheduled day would double-post. Daily verification
+  confirms it or alerts.
+- **Fallback:** any pre-submit scheduling failure marks that day `scheduled`, and the
+  old daily-post path handles it — one bad day never blocks the rest of the week.
+- Excel `Posted=TRUE` + photo archiving for natively scheduled days happen at
+  **verification time**, not schedule time.
+- **CTA button:** every post gets a "Learn more" button. The URL comes from
+  `cta_url_map` in `config/gbp-poster.config.json` (topic matched before caption,
+  first key wins) with `default_cta_url` (homepage) as fallback. A CTA failure never
+  blocks a post — the driver logs it and posts without the button.
+- **Timezone assumption to confirm on the first real run:** GBP schedules in the
+  business's local time (Central). Expected: a Day-2 post goes live at 9:00 AM CT.
+
 ## Photo Ingestion
 
 Job-site photos must land in the pipeline's source folder before the picker can score
