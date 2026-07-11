@@ -61,7 +61,7 @@ async function detectBlockingInterstitial(page) {
 }
 
 function parseArgs(argv) {
-    const args = { dryRun: false, auth: false, headless: false, date: null, config: DEFAULT_CONFIG };
+    const args = { dryRun: false, auth: false, headless: false, date: null, schedule: false, config: DEFAULT_CONFIG };
     for (let i = 0; i < argv.length; i += 1) {
         const arg = argv[i];
         if (arg === '--dry-run') args.dryRun = true;
@@ -315,10 +315,14 @@ async function clickComposerPost(ctx, page) {
 }
 
 function resolveCtaUrl(payload, config) {
-    const haystack = ((payload.topic || '') + ' ' + (payload.caption || '')).toLowerCase();
     const map = config?.cta_url_map || {};
-    for (const [key, url] of Object.entries(map)) {
-        if (haystack.includes(key)) return url;
+    // Topic is exhausted before caption: captions often mention other services in
+    // passing (e.g. an EV-charger post discussing panel capacity).
+    for (const hay of [payload.topic, payload.caption]) {
+        const lower = String(hay || '').toLowerCase();
+        for (const [key, url] of Object.entries(map)) {
+            if (lower.includes(key)) return url;
+        }
     }
     return config?.default_cta_url || null;
 }
@@ -566,6 +570,13 @@ async function main() {
 
     try {
         await composeAndSubmit(page, payload, args.schedule);
+        if (args.schedule) {
+            // A scheduled post is not live yet — the Posts-list check would always
+            // fail. The composer closing without error IS the confirmation.
+            emitResult({ result: 'scheduled_native', date: payload.date, scheduledTime: '9:00 AM', verified: false, postUrl: null });
+            console.log('Post scheduled natively on GBP.');
+            return;
+        }
         // composeAndSubmit returning means the post WAS submitted (the composer
         // closed, which GBP treats as acceptance). A verification failure here
         // must NOT be reported as 'failed' (exit 1) — that masks the successful
@@ -577,18 +588,10 @@ async function main() {
         try {
             ({ verified, postUrl, verificationSnapshot, verificationAttempts } = await verifyPosted(page, payload.caption));
         } catch (verifyErr) {
-            if (args.schedule) {
-                emitResult({ result: 'schedule_unconfirmed', date: payload.date, scheduledTime: '9:00 AM', verified: false, postUrl: null });
-            } else {
-                console.error(`Post was submitted but verification crashed (${verifyErr.message}). Treat as posted-but-unverified — do NOT retry without checking GBP first.`);
-                verificationSnapshot = await saveFailureArtifacts(page).catch(() => null);
-            }
+            console.error(`Post was submitted but verification crashed (${verifyErr.message}). Treat as posted-but-unverified — do NOT retry without checking GBP first.`);
+            verificationSnapshot = await saveFailureArtifacts(page).catch(() => null);
         }
-        if (args.schedule) {
-            emitResult({ result: 'scheduled_native', date: payload.date, scheduledTime: '9:00 AM', verified: false, postUrl: null });
-        } else {
-            emitResult({ result: 'posted', date: payload.date, verified, postUrl, verificationSnapshot, verificationAttempts });
-        }
+        emitResult({ result: 'posted', date: payload.date, verified, postUrl, verificationSnapshot, verificationAttempts });
         if (verified) {
             console.log('Post submitted and verified on GBP.');
         } else {
@@ -596,16 +599,21 @@ async function main() {
             process.exitCode = 3;
         }
     } catch (e) {
-        if (e.submitted) {
+        if (args.schedule && e.submitted) {
+            // Duplicate guard: the Post click already happened, so this must never
+            // fall back to a live re-post. Exit 3 → runner marks scheduled_native
+            // with an error note; daily verification confirms or alerts.
             emitResult({ result: 'schedule_unconfirmed', date: payload.date, scheduledTime: '9:00 AM', verified: false, postUrl: null, error: String(e.message || e) });
+            console.error(`Schedule submit clicked but composer errored (${e.message || e}). Do NOT retry — daily verification will confirm or alert.`);
             process.exitCode = 3;
         } else {
             const reason = classifyFailure(e.message);
             const artifacts = await saveFailureArtifacts(page);
             emitResult({ result: 'failed', date: payload.date, verified: false, postUrl: null, failure_reason: reason, error: String(e.message || e) });
+            console.error(`Error during GBP posting [${reason}]:`, e.message || e);
+            console.error(`Debug artifacts: ${JSON.stringify(artifacts)}`);
+            process.exitCode = 1;
         }
-        console.error(`Debug artifacts: ${JSON.stringify(artifacts)}`);
-        process.exitCode = 1;
     } finally {
         await context.close();
     }

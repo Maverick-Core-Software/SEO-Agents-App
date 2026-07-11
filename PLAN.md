@@ -90,7 +90,7 @@ Config-only — no workbook/Supabase columns. Add to `config/gbp-poster.config.j
 }
 ```
 
-Resolution rule: search `topic + ' ' + caption` (lowercased) for each `cta_url_map` key **in insertion order — first match wins**; no match → `default_cta_url`; if both config fields are absent → `null` (no CTA; backwards compatible).
+Resolution rule: search the **topic first, then the caption** (each lowercased) for each `cta_url_map` key **in insertion order — first match wins**; no match in either → `default_cta_url`; if both config fields are absent → `null` (no CTA; backwards compatible). Topic-before-caption matters: captions often mention other services in passing (a real EV-charger post's caption mentions "panel" and would otherwise misroute to panel-upgrades).
 
 ### Status flow after this change
 
@@ -157,7 +157,7 @@ const SCHEDULE_TIME_LABEL = /^9:00[\s ]*AM$/;
 ### - [ ] Task 2: "Learn more" CTA button on every post
 
 1. **Config** — add the `default_cta_url` and `cta_url_map` fields to `config/gbp-poster.config.json` exactly per the **CTA URL resolution** contract in the primer (keep the file's existing fields and JSON formatting untouched).
-2. **`resolveCtaUrl(payload, config)`** — new small pure function in `scripts/gbp-poster/driver.mjs`, near `buildPayload`. Implements the resolution rule from the contract: lowercase haystack of `payload.topic` + `' '` + `payload.caption` (tolerate either being missing), iterate `Object.entries(config.cta_url_map ?? {})`, first key contained in the haystack wins, else `config.default_cta_url ?? null`.
+2. **`resolveCtaUrl(payload, config)`** — new small pure function in `scripts/gbp-poster/driver.mjs`, near `buildPayload`. Implements the resolution rule from the contract: for each of `payload.topic` then `payload.caption` (lowercased, tolerate missing), iterate `Object.entries(config.cta_url_map ?? {})` — first key contained wins; topic is exhausted before the caption is tried; else `config.default_cta_url ?? null`.
 3. **`setComposerCta(ctx, page, url)`** — new async function next to `setComposerSchedule`. Follows the **CTA-UI contract** table step by step (locators verbatim; `logStep` each stage). After typing the URL, assert `.inputValue()` read-back equals `url`; throw a descriptive `Error` otherwise.
 4. **composeAndSubmit wiring** — inside the try, after the `attachImage` block and **before** the schedule call / `submitted = true`:
 ```js
