@@ -6,7 +6,10 @@
 
 **Goal:** On an approved weekly run, the GBP worker posts Day 1 immediately (unchanged) and then uses Google Business Profile's **native "Schedule this post" toggle** to schedule Days 2–7 inside the same approved-run handling — one Playwright burst on Day 1 instead of a live posting run every morning. The daily 9am pass becomes **verification-only** for natively scheduled days. Google's servers publish the posts; our reliability no longer depends on the worker being alive at 9am.
 
+**Also in scope:** every post (Day 1 and scheduled) gets a native **"Learn more" CTA button** linking to the topically matching service page on grizzlyelectricaltx.com (config-driven map, homepage fallback).
+
 **Locked decisions (do not revisit):**
+0. CTA type is always **Learn more**; URL resolution is config-only (no workbook/Supabase/pipeline changes). A CTA failure must never block the post — degrade to posting without the button.
 1. Scheduled publish time is **9:00 AM** (business-local/Central) for every scheduled day.
 2. If natively scheduling a given day fails, that day falls back to the **old daily-post path** (status `scheduled`) — the fallback code already exists and stays.
 3. New Supabase status **`scheduled_native`** = "Google owns publishing this post; we only verify."
@@ -56,6 +59,39 @@ Date format is `MM/DD/YYYY` (US locale, zero-padded). Convert from ISO `yyyy-mm-
 
 **ASSUMPTION to confirm on first real run:** GBP schedules in the business's local timezone (Central). Expected: Day-2 post goes live at 9:00 AM CT.
 
+### CTA-UI contract (CONTRACT — recon-verified live 2026-07-11, nothing guessed)
+
+Inside the same composer context `ctx`, under "Add more details":
+
+| Step | Locator (verbatim) | Behavior |
+|---|---|---|
+| Reveal | `ctx.locator('button[aria-label="Add link fields"]').first()` | Visible text is "Button". Click reveals heading `Add a button (optional)` + a type button named `None`. |
+| Type menu | `ctx.getByRole('button', { name: 'None' }).first()` | Click opens a **frame-scoped** menu of `role=menuitem`: None, Book, Order online, Buy, Learn more, Sign up, Call now. |
+| Pick type | `ctx.getByRole('menuitem', { name: 'Learn more' }).first()` | Click. The type button's accessible name changes from `None` to `Learn more` and a URL field appears. |
+| URL | `ctx.getByRole('textbox', { name: /Link for your button/ }).first()` | An `input[type="url"]`. Click, `page.keyboard.insertText(url)`. Read back with `.inputValue()` — must equal the typed URL exactly (verified with `https://www.grizzlyelectricaltx.com/`). |
+
+CTA is set **before** the schedule toggle and before `submitted = true` — it is pre-submit and therefore safe to fail/retry.
+
+### CTA URL resolution (CONTRACT)
+
+Config-only — no workbook/Supabase columns. Add to `config/gbp-poster.config.json` (verbatim keys/values; live slugs verified against the site's sitemap 2026-07-11):
+
+```json
+"default_cta_url": "https://www.grizzlyelectricaltx.com/",
+"cta_url_map": {
+  "panel": "https://www.grizzlyelectricaltx.com/panel-upgrades/",
+  "breaker": "https://www.grizzlyelectricaltx.com/panel-upgrades/",
+  "charger": "https://www.grizzlyelectricaltx.com/ev-charger-installation/",
+  "generator": "https://www.grizzlyelectricaltx.com/generator-inlet-installation/",
+  "lighting": "https://www.grizzlyelectricaltx.com/recessed-lighting/",
+  "commercial": "https://www.grizzlyelectricaltx.com/commercial-electrical/",
+  "troubleshoot": "https://www.grizzlyelectricaltx.com/electrical-troubleshooting/",
+  "flicker": "https://www.grizzlyelectricaltx.com/electrical-troubleshooting/"
+}
+```
+
+Resolution rule: search `topic + ' ' + caption` (lowercased) for each `cta_url_map` key **in insertion order — first match wins**; no match → `default_cta_url`; if both config fields are absent → `null` (no CTA; backwards compatible).
+
 ### Status flow after this change
 
 ```
@@ -81,7 +117,8 @@ Duplicate-guard rule (same spirit as `submitted` in `composeAndSubmit`): once th
 
 | File | Change |
 |---|---|
-| `scripts/gbp-poster/driver.mjs` | `--schedule` flag; `setComposerSchedule(ctx, page, isoDate)`; schedule branch in `main()` (no live verification) |
+| `scripts/gbp-poster/driver.mjs` | `--schedule` flag; `setComposerSchedule(ctx, page, isoDate)`; schedule branch in `main()` (no live verification); `resolveCtaUrl` + `setComposerCta` (all posts) |
+| `config/gbp-poster.config.json` | `default_cta_url` + `cta_url_map` fields |
 | `scripts/lib/gbp-runner.mjs` | `gbpScheduleStatusForExit`; per-day scheduling loop replacing the Days-2–7 bulk update; `scheduled_native` handling in `runDailyGbp` |
 | `scripts/lib/gbp-runner.test.mjs` | new assertions for both |
 | `scripts/gbp-worker.mjs` | verify-success → `markGbpPostedAndArchive` hook |
@@ -95,7 +132,7 @@ Session 1 additionally: `git checkout -b feat/gbp-native-schedule main`. Expecte
 
 ---
 
-## Session 1 — Driver schedule mode (Tasks 1–3)
+## Session 1 — Driver schedule mode + CTA button (Tasks 1–4)
 
 ### - [ ] Task 1: `--schedule` flag + `setComposerSchedule`
 
@@ -117,7 +154,26 @@ const SCHEDULE_TIME_LABEL = /^9:00[\s ]*AM$/;
    - `logStep(...)` at each stage like neighboring functions.
 4. **composeAndSubmit** (anchor: `async function composeAndSubmit(page, payload) {`): give it a third parameter `schedule = false`. Inside the try, after the `attachImage` block and **before** `submitted = true`, add: `if (schedule) await setComposerSchedule(ctx, page, payload.date);`. Everything else (retry loop, duplicate guard) untouched.
 
-### - [ ] Task 2: schedule branch in `main()`
+### - [ ] Task 2: "Learn more" CTA button on every post
+
+1. **Config** — add the `default_cta_url` and `cta_url_map` fields to `config/gbp-poster.config.json` exactly per the **CTA URL resolution** contract in the primer (keep the file's existing fields and JSON formatting untouched).
+2. **`resolveCtaUrl(payload, config)`** — new small pure function in `scripts/gbp-poster/driver.mjs`, near `buildPayload`. Implements the resolution rule from the contract: lowercase haystack of `payload.topic` + `' '` + `payload.caption` (tolerate either being missing), iterate `Object.entries(config.cta_url_map ?? {})`, first key contained in the haystack wins, else `config.default_cta_url ?? null`.
+3. **`setComposerCta(ctx, page, url)`** — new async function next to `setComposerSchedule`. Follows the **CTA-UI contract** table step by step (locators verbatim; `logStep` each stage). After typing the URL, assert `.inputValue()` read-back equals `url`; throw a descriptive `Error` otherwise.
+4. **composeAndSubmit wiring** — inside the try, after the `attachImage` block and **before** the schedule call / `submitted = true`:
+```js
+if (payload.ctaUrl) {
+  try {
+    await setComposerCta(ctx, page, payload.ctaUrl);
+  } catch (err) {
+    // ponytail: CTA is nice-to-have — never let it block the post.
+    logStep(`CTA failed (${err.message}) — posting without button`);
+  }
+}
+```
+   Populate `payload.ctaUrl` via `resolveCtaUrl` where the payload is built (anchor: `buildPayload`) so both normal and schedule modes get it.
+5. **Dry-run** — include `cta: payload.ctaUrl` in the existing `mode:` preview JSON, and add a `cta` field to both the `dry_run` and `schedule_dry_run` result objects.
+
+### - [ ] Task 3: schedule branch in `main()`
 
 1. Pass the flag through at the call site (anchor: `await composeAndSubmit(page, payload);`) → `await composeAndSubmit(page, payload, args.schedule);`.
 2. Branch the post-submit handling on `args.schedule`:
@@ -128,36 +184,38 @@ const SCHEDULE_TIME_LABEL = /^9:00[\s ]*AM$/;
 ```
    - The catch block, schedule mode only: if the error was thrown **after submission** (composeAndSubmit rethrows with `submitted` truth known only internally — detect via a small change: have `composeAndSubmit` attach `e.submitted = true` to errors thrown post-submit, in both modes), emit `{ result: 'schedule_unconfirmed', date: payload.date, ... }` and `process.exitCode = 3`. Pre-submit errors keep the existing `failed` result / exit 1 path.
    - Non-schedule mode behavior must be byte-for-byte unchanged.
-3. Dry-run (anchor: `if (args.dryRun) {`): when `args.schedule` is also set, emit `{ result: 'schedule_dry_run', date: payload.date, scheduledTime: '9:00 AM', verified: false, postUrl: null }` instead of the existing `dry_run` result. Also include `schedule: args.schedule` in the existing `mode:` preview JSON.
+3. Dry-run (anchor: `if (args.dryRun) {`): when `args.schedule` is also set, emit `{ result: 'schedule_dry_run', date: payload.date, scheduledTime: '9:00 AM', verified: false, postUrl: null, cta: payload.ctaUrl }` instead of the existing `dry_run` result. Also include `schedule: args.schedule` in the existing `mode:` preview JSON.
 
-### - [ ] Task 3: Session 1 verification + commit
+### - [ ] Task 4: Session 1 verification + commit
 
 ```bash
 node --check scripts/gbp-poster/driver.mjs && echo SYNTAX-OK
+node -e "JSON.parse(require('fs').readFileSync('config/gbp-poster.config.json','utf8')); console.log('CONFIG-OK')"
 ```
-Expected: `SYNTAX-OK`.
+Expected: `SYNTAX-OK` then `CONFIG-OK`.
 
 Pick any workbook date that is Approved and not yet posted for the dry-run (ask the orchestrator if unsure; `2026-07-12` should hold), then:
 ```bash
 node scripts/gbp-poster/driver.mjs --date 2026-07-12 --schedule --dry-run
 ```
-Expected: preview JSON with `"mode": "dry-run"` and `"schedule": true`, then a final stdout line containing `"result":"schedule_dry_run"` and `"scheduledTime":"9:00 AM"`. Exit code 0. **No browser must open.**
+Expected: preview JSON with `"mode": "dry-run"`, `"schedule": true`, and a `"cta"` value starting with `https://www.grizzlyelectricaltx.com/`, then a final stdout line containing `"result":"schedule_dry_run"`, `"scheduledTime":"9:00 AM"`, and the same `"cta"` URL. Exit code 0. **No browser must open.**
 
 ```bash
 grep -c "setComposerSchedule" scripts/gbp-poster/driver.mjs
+grep -c "setComposerCta" scripts/gbp-poster/driver.mjs
 ```
-Expected: `2` (definition + call site).
+Expected: `2` and `2` (definition + call site each).
 
 Commit (message verbatim):
 ```
-feat(gbp-driver): --schedule mode using GBP native "Schedule this post"
+feat(gbp-driver): --schedule mode and "Learn more" CTA button
 ```
 
 ---
 
-## Session 2 — Runner orchestration (Tasks 4–6)
+## Session 2 — Runner orchestration (Tasks 5–7)
 
-### - [ ] Task 4: `gbpScheduleStatusForExit` + native scheduling loop
+### - [ ] Task 5: `gbpScheduleStatusForExit` + native scheduling loop
 
 In `scripts/lib/gbp-runner.mjs`:
 
@@ -173,7 +231,7 @@ In `scripts/lib/gbp-runner.mjs`:
    - After the loop, log a one-line summary: how many `scheduled_native` vs fallback `scheduled`.
    - A driver failure on one day must not stop the loop for remaining days.
 
-### - [ ] Task 5: `scheduled_native` in the daily path
+### - [ ] Task 6: `scheduled_native` in the daily path
 
 In `runDailyGbp` (anchor: `export async function runDailyGbp(`):
 1. Change the query to `.in('status', ['scheduled', 'scheduled_native'])` (replacing `.eq('status', 'scheduled')`) and add `status` to the selected columns.
@@ -181,10 +239,10 @@ In `runDailyGbp` (anchor: `export async function runDailyGbp(`):
    - `scheduled` → existing driver-post behavior, unchanged.
    - `scheduled_native` → **no driver run.** Update the row to `{ status: 'posted', posted_at: new Date().toISOString(), platform_post_id: null, error: null }` and log e.g. `Native-scheduled GBP for <date> — flipped to posted, verification sweep will confirm`. (Null `platform_post_id` + status `posted` is exactly what seeds the worker's verify queue.)
 
-### - [ ] Task 6: tests + Session 2 verification + commit
+### - [ ] Task 7: tests + Session 2 verification + commit
 
 Extend `scripts/lib/gbp-runner.test.mjs`, mirroring its existing stub patterns:
-1. `gbpScheduleStatusForExit`: assert all four mappings from Task 4 (exit 0, 3, 4, 1).
+1. `gbpScheduleStatusForExit`: assert all four mappings from Task 5 (exit 0, 3, 4, 1).
 2. Approved-run loop: reuse the existing `runGbpForApprovedRun` test's stub shape (its `makeQb` needs `update(...)` to capture values like the `runDailyGbp` test's does, and `.eq()` chains ending in a resolvable). Two-day fixture (`day: 1`, `day: 2`); `runPhase` returns exit 0 with stdout `'{"result":"scheduled_native"}'` for the `--schedule` invocation. Assert: the Day-2 driver call args include both `'--schedule'` and `'2026-07-11'` (its post_date), and an update with `status: 'scheduled_native'` was captured.
 3. `runDailyGbp` native flip: one row with `status: 'scheduled_native'`; a `runPhase` stub that **pushes to a calls array** — assert it was never called, and an update with `status: 'posted'` and `platform_post_id: null` was captured.
 4. End each block with a `console.log('ok ...')` line like the existing ones.
@@ -201,9 +259,9 @@ feat(gbp-runner): natively schedule Days 2-7 on approval; daily path verifies sc
 
 ---
 
-## Session 3 — Worker hook + docs (Tasks 7–9)
+## Session 3 — Worker hook + docs (Tasks 8–10)
 
-### - [ ] Task 7: archive on verify success
+### - [ ] Task 8: archive on verify success
 
 In `scripts/gbp-worker.mjs`:
 1. Extend the runner import (anchor: `import { centralDateHour, runGbpForApprovedRun, runDailyGbp } from './lib/gbp-runner.mjs';`) with `markGbpPostedAndArchive`.
@@ -213,11 +271,11 @@ await markGbpPostedAndArchive({ postDate: String(item.date).slice(0, 10), exitCo
 ```
 Add a short comment: for natively scheduled days this is the first moment we know the post is live, so Excel `Posted=TRUE` + photo archiving happen here; for driver-posted days it already ran and is a harmless no-op re-stamp (photo already moved → skipped).
 
-### - [ ] Task 8: runbook
+### - [ ] Task 9: runbook
 
-Update `docs/runbooks/gbp-worker.md`: add a section describing the native-scheduling flow — the Status flow diagram from this plan's primer (adapted to prose or verbatim), the `--schedule` driver flag, the `scheduled_native` status, the 9:00 AM constant in the driver, the fallback rule, and the timezone assumption to confirm on the first run. Keep the existing restart-procedure content untouched.
+Update `docs/runbooks/gbp-worker.md`: add a section describing the native-scheduling flow — the Status flow diagram from this plan's primer (adapted to prose or verbatim), the `--schedule` driver flag, the `scheduled_native` status, the 9:00 AM constant in the driver, the fallback rule, the "Learn more" CTA button (config-driven `cta_url_map`, homepage fallback, never blocks a post), and the timezone assumption to confirm on the first run. Keep the existing restart-procedure content untouched.
 
-### - [ ] Task 9: final verification + commit
+### - [ ] Task 10: final verification + commit
 
 ```bash
 node --check scripts/gbp-worker.mjs && node --check scripts/gbp-poster/driver.mjs && node --check scripts/lib/gbp-runner.mjs && node scripts/lib/gbp-runner.test.mjs
@@ -245,5 +303,5 @@ feat(gbp-worker): archive on verify success; document native scheduling
 
 1. PR `feat/gbp-native-schedule` → `main`, merge.
 2. Restart the GBP worker per `docs/runbooks/gbp-worker.md` — **requires Carter's explicit consent** (his hard rule; confirm no post/verification is mid-flight).
-3. First real exercise: next approved SEO run. Watch Day-1 logs for the 6 `--schedule` invocations; next morning confirm the Day-2 post went live at 9:00 AM Central (timezone assumption) and that verification flipped it to verified + archived the photo.
+3. First real exercise: next approved SEO run. Watch Day-1 logs for the 6 `--schedule` invocations; next morning confirm the Day-2 post went live at 9:00 AM Central (timezone assumption) and that verification flipped it to verified + archived the photo. Also confirm the live posts show the "Learn more" button linking to the right service page.
 4. MCC dashboard note: `scheduled_native` is a new status string — check the SEO Approval page renders it acceptably (cosmetic only).
