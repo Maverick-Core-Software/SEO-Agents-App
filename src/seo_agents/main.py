@@ -48,6 +48,11 @@ from seo_agents.crew import (
     build_seo_crew,
     build_website_crew,
 )
+from seo_agents.run_context import (
+    RunContext,
+    build_run_context,
+    release_run_context,
+)
 from seo_agents.status import (
     build_workflow_status,
     format_status_text,
@@ -485,6 +490,7 @@ def parse_args() -> argparse.Namespace:
     research.add_argument("--region", default="", help=f"Target search region. Default: {DEFAULT_REGION}")
     research.add_argument("--keywords", default="", help="Comma-separated seed keywords.")
     research.add_argument("--dry-run", action="store_true", help="Show crew config without calling LLM.")
+    research.add_argument("--skip-execute", action="store_true", help="Skip execution pipeline (research-only mode). Claims and gates still run.")
 
     # --- execute subcommand ---
     execute = subparsers.add_parser(
@@ -597,6 +603,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--region", default="", help=argparse.SUPPRESS)
     parser.add_argument("--keywords", default="", help=argparse.SUPPRESS)
     parser.add_argument("--dry-run", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--skip-execute", action="store_true", help=argparse.SUPPRESS)
 
     return parser.parse_args()
 
@@ -710,6 +717,7 @@ def main() -> None:
 
     if command == "research" or (command is None and args.topic):
         topic = getattr(args, "topic", "") or ""
+        skip_execute = getattr(args, "skip_execute", False)
         run_args = {
             "topic": topic,
             "site_url": getattr(args, "site_url", ""),
@@ -718,7 +726,78 @@ def main() -> None:
             "keywords": getattr(args, "keywords", ""),
         }
 
-        # Compact baselines first so agents don't re-recommend completed items
+        # Detect provider/model early.
+        from seo_agents.crew import build_run_id, _detect_provider_and_model
+
+        run_id = build_run_id(topic, run_args.get("site_url", ""))
+        provider, research_model, exec_model = _detect_provider_and_model()
+
+        # Build run context and acquire exclusive lock.
+        try:
+            ctx = build_run_context(
+                topic=topic,
+                output_dir=OUTPUT_DIR,
+                archive_dir=ARCHIVE_DIR,
+                run_id=run_id,
+                provider=provider,
+                research_model=research_model,
+                exec_model=exec_model,
+                site_url=run_args.get("site_url", ""),
+                audience=run_args.get("audience", ""),
+                region=run_args.get("region", ""),
+                keywords=run_args.get("keywords", ""),
+            )
+        except Exception as exc:
+            print(f"❌ Could not acquire run lock: {exc}")
+            sys.exit(1)
+
+        # Dry-run decision happens BEFORE any external/mutating step.
+        if args.dry_run:
+            # Compact baselines only if dry-run produces a manifest so Test-Path checks pass.
+            # But no LLM, no Supabase, no adapter calls.
+            manifest = RunManifest(
+                run_id=run_id,
+                topic=topic,
+                provider=provider,
+                model=research_model,
+                research_model=research_model,
+                exec_model=exec_model,
+                started_at=ctx.started_at,
+                site_url=run_args.get("site_url", ""),
+                region=run_args.get("region", ""),
+                audience=run_args.get("audience", ""),
+                keywords=run_args.get("keywords", ""),
+                dry_run=True,
+            )
+            # Build the crew config only (no LLM call).
+            crew = build_seo_crew(
+                topic=topic,
+                site_url=run_args["site_url"],
+                audience=run_args["audience"],
+                region=run_args["region"],
+                keywords=run_args["keywords"],
+                previous_context="",
+                completed_tasks="",
+                run_id=run_id,
+            )
+            print(f"Ready: {crew.name}")
+            print(f"Agents ({len(crew.agents)}):")
+            for agent in crew.agents:
+                print(f"  - {agent.role}")
+            print(f"Tasks: {len(crew.tasks)}")
+            print(f"Run ID: {run_id}")
+            write_run_manifest(manifest)
+            write_evidence_package([], run_id=run_id)
+            write_claim_graph([], run_id=run_id)
+            write_task_graph([], run_id)
+            print(f"✅ Dry-run manifest written to {RUN_MANIFEST_PATH}")
+            print(f"✅ Dry-run evidence_package written to {EVIDENCE_PACKAGE_PATH}")
+            print(f"✅ Dry-run claim_graph written to {CLAIM_GRAPH_PATH}")
+            print(f"✅ Dry-run task_graph written to {OUTPUT_DIR}/task_graph.json")
+            release_run_context(ctx)
+            return
+
+        # Live mode — proceed with baseline compaction and Supabase fetch.
         print("\n🗜  Compacting baselines before research...")
         try:
             compact_result = compact_baselines()
@@ -739,11 +818,6 @@ def main() -> None:
             print(f"   ✅ {completed_tasks.count(chr(10) + '  -')} completed task(s) loaded for verification")
         else:
             print("   ℹ  No completed tasks found — skipping verification step")
-        # Build deterministic run ID and detect provider/model.
-        from seo_agents.crew import build_run_id, _detect_provider_and_model
-
-        run_id = build_run_id(topic, run_args.get("site_url", ""))
-        provider, research_model, exec_model = _detect_provider_and_model()
 
         crew = build_seo_crew(
             topic=topic,
@@ -755,37 +829,6 @@ def main() -> None:
             completed_tasks=completed_tasks,
             run_id=run_id,
         )
-        if args.dry_run:
-            print(f"Ready: {crew.name}")
-            print(f"Agents ({len(crew.agents)}):")
-            for agent in crew.agents:
-                print(f"  - {agent.role}")
-            print(f"Tasks: {len(crew.tasks)}")
-            print(f"Run ID: {run_id}")
-            # Dry-run: write manifest + empty evidence/claim graph so Test-Path checks pass.
-            manifest = RunManifest(
-                run_id=run_id,
-                topic=topic,
-                provider=provider,
-                model=research_model,
-                research_model=research_model,
-                exec_model=exec_model,
-                started_at=_now_iso(),
-                site_url=run_args.get("site_url", ""),
-                region=run_args.get("region", ""),
-                audience=run_args.get("audience", ""),
-                keywords=run_args.get("keywords", ""),
-                dry_run=True,
-            )
-            write_run_manifest(manifest)
-            write_evidence_package([])
-            write_claim_graph([])
-            write_task_graph([], run_id)
-            print(f"✅ Dry-run manifest written to {RUN_MANIFEST_PATH}")
-            print(f"✅ Dry-run evidence_package written to {EVIDENCE_PACKAGE_PATH}")
-            print(f"✅ Dry-run claim_graph written to {CLAIM_GRAPH_PATH}")
-            print(f"✅ Dry-run task_graph written to {OUTPUT_DIR}/task_graph.json")
-            return
         t0 = time.monotonic()
         try:
             result = crew.kickoff()
@@ -810,20 +853,27 @@ def main() -> None:
                 dry_run=False,
             )
             write_run_manifest(manifest)
-            write_evidence_package([])
-            write_claim_graph([])
+            write_evidence_package([], run_id=run_id)
+            write_claim_graph([], run_id=run_id)
             print(f"\n📄 Run manifest: {RUN_MANIFEST_PATH}")
             print(f"📄 Evidence package: {EVIDENCE_PACKAGE_PATH}")
             print(f"📄 Claim graph: {CLAIM_GRAPH_PATH}")
-            print(f"\n{'─'*60}")
-            print("🚀 Research complete — auto-starting execution pipeline...")
-            print(f"{'─'*60}")
-            _run_execute_pipeline()
+            if skip_execute:
+                print(f"\n{'─' * 60}")
+                print("⏭  --skip-execute: research complete — skipping execution pipeline.")
+                print(f"{'─' * 60}")
+            else:
+                print(f"\n{'─' * 60}")
+                print("🚀 Research complete — auto-starting execution pipeline...")
+                print(f"{'─' * 60}")
+                _run_execute_pipeline()
         except Exception as e:
             write_run_health("research", "failed", topic=topic, error=str(e), started_at=t0)
             write_workflow_status(phase="research", phase_status="failed", args=run_args, error=str(e))
             print(f"\n❌ Research crew failed: {e}")
             sys.exit(1)
+        finally:
+            release_run_context(ctx)
 
     elif command == "execute":
         if args.dry_run:

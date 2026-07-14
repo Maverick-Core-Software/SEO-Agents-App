@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+import uuid
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any
@@ -246,10 +247,18 @@ def write_run_manifest(manifest: RunManifest) -> Path:
 # Evidence package writer
 # ---------------------------------------------------------------------------
 
-def write_evidence_package(evidence_list: list[dict[str, Any]]) -> Path:
-    """Write all evidence units collected this run."""
+def write_evidence_package(
+    evidence_list: list[dict[str, Any]],
+    run_id: str = "",
+) -> Path:
+    """Write all evidence units collected this run.
+
+    If ``evidence_list`` is empty, ``run_id`` is explicitly required so the
+    writer does not silently lose the invocation identity.
+    """
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    payload = {"run_id": evidence_list[0].get("run_id", "") if evidence_list else "", "evidence": evidence_list}
+    rid = evidence_list[0].get("run_id", "") if evidence_list else run_id
+    payload = {"run_id": rid, "evidence": evidence_list}
     tmp = EVIDENCE_PACKAGE_PATH.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     tmp.replace(EVIDENCE_PACKAGE_PATH)
@@ -260,10 +269,18 @@ def write_evidence_package(evidence_list: list[dict[str, Any]]) -> Path:
 # Claim graph writer
 # ---------------------------------------------------------------------------
 
-def write_claim_graph(claims: list[dict[str, Any]]) -> Path:
-    """Write the claim graph — a directed graph of claims with relations."""
+def write_claim_graph(
+    claims: list[dict[str, Any]],
+    run_id: str = "",
+) -> Path:
+    """Write the claim graph — a directed graph of claims with relations.
+
+    If ``claims`` is empty, ``run_id`` is explicitly required so the writer
+    does not silently lose the invocation identity.
+    """
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    payload = {"run_id": claims[0].get("run_id", "") if claims else "", "claims": claims}
+    rid = claims[0].get("run_id", "") if claims else run_id
+    payload = {"run_id": rid, "claims": claims}
     tmp = CLAIM_GRAPH_PATH.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     tmp.replace(CLAIM_GRAPH_PATH)
@@ -297,7 +314,17 @@ def write_observability_event(
     event["run_id"] = run_id or event.get("run_id", "unknown")
     if "timestamp" not in event or not event["timestamp"]:
         event["timestamp"] = now_iso()
-    tmp = OBSERVABILITY_PATH.with_suffix(".jsonl.tmp")
-    with open(tmp, "a", encoding="utf-8") as fh:
-        fh.write(json.dumps(event, indent=2) + "\n")
+
+    # Append atomically: read existing content, write tmp, replace.
+    tmp = OBSERVABILITY_PATH.with_suffix(
+        f".jsonl.tmp-{uuid.uuid4().hex[:8]}"
+    )
+    existing = ""
+    if OBSERVABILITY_PATH.exists():
+        existing = OBSERVABILITY_PATH.read_text(encoding="utf-8")
+    content = existing.rstrip("\n")
+    if content:
+        content += "\n"
+    content += json.dumps(event, indent=2) + "\n"
+    tmp.write_text(content, encoding="utf-8")
     tmp.replace(OBSERVABILITY_PATH)
