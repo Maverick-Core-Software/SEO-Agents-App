@@ -13,6 +13,10 @@ from typing import Any
 from seo_agents.crew import OUTPUT_DIR
 from seo_agents.website import WEBSITE_ACTION_TYPES, run_website_action, website_adapter_status
 
+# Session 3: imports for lineage/claim fields on action objects
+from seo_agents.contracts import ExecutionTask, stable_hash
+from seo_agents.evidence import TASK_GRAPH_PATH, write_task_graph
+
 
 ACTION_QUEUE_FILE = OUTPUT_DIR / "action_queue.json"
 ACTION_APPROVALS_FILE = OUTPUT_DIR / "action_approvals.json"
@@ -335,7 +339,72 @@ def _status_for_action(
     return "needs_review"
 
 
-def parse_execution_actions() -> list[dict[str, Any]]:
+def _priority_for_action(action_type: str, risk: str, executor: str) -> dict[str, Any]:
+    """Session 3: derive priority tier from action characteristics (v1 proposed defaults)."""
+    # Impact heuristic: lead-gen actions > content > maintenance
+    impact = {
+        "gbp_profile_update": 0.85,
+        "website_contact_form_update": 0.80,
+        "website_layout_update": 0.70,
+        "website_blog_post": 0.65,
+        "website_service_page_update": 0.60,
+        "website_gallery_update": 0.55,
+        "website_hours_update": 0.50,
+        "website_faq_update": 0.50,
+        "website_copy_update": 0.50,
+    }.get(action_type, 0.40)
+
+    # Confidence: high-risk adapter actions get higher confidence (we have tooling)
+    confidence = 0.7 if risk == "high" else 0.5 if risk == "medium" else 0.4
+
+    # Urgency: blog posts are time-sensitive ("this week")
+    urgency = 0.8 if action_type == "website_blog_post" else 0.5
+
+    # Strategic alignment: content updates and local fixes are core SEO
+    strategic_alignment = 0.7 if action_type in {
+        "gbp_profile_update", "website_blog_post", "website_service_page_update",
+        "website_copy_update", "website_faq_update", "website_hours_update",
+    } else 0.5
+
+    score = round(0.35 * impact + 0.30 * confidence + 0.20 * urgency + 0.15 * strategic_alignment, 2)
+    # Map score + confidence to tier
+    if score >= 0.80 and confidence >= 0.6:
+        tier = "P0"
+    elif score >= 0.60 and confidence >= 0.5:
+        tier = "P1"
+    elif score >= 0.40:
+        tier = "P2"
+    else:
+        tier = "P3"
+    return {"tier": tier, "score": score, "formula_version": "priority-v1"}
+
+
+def _confidence_for_action(action_type: str, risk: str) -> dict[str, Any]:
+    """Session 3: derive task confidence label."""
+    conf = 0.5 if risk == "medium" else 0.7 if risk == "high" else 0.4
+    label = "high" if conf >= 0.6 else "medium" if conf >= 0.4 else "low"
+    return {"label": label, "score": round(conf, 2)}
+
+
+def _approval_class_for_action(action_type: str) -> str:
+    """Session 3: determine approval class based on risk."""
+    if action_type in {"gbp_profile_update", "website_layout_update", "website_contact_form_update"}:
+        return "mandatory"
+    if action_type in WEBSITE_ACTION_TYPES or action_type in {"review_management", "publish_gbp_post", "publish_facebook_post"}:
+        return "sampled"
+    return "none"
+
+
+def _uncertainty_for_action(action_type: str) -> dict[str, Any]:
+    """Session 3: uncertainty metadata."""
+    gaps: dict[str, Any] = {"proxy_metrics_used": [], "gap_reason": None, "blocked_by": []}
+    if action_type == "website_blog_post":
+        gaps["proxy_metrics_used"] = ["content_topic_trend"]
+        gaps["gap_reason"] = "No live traffic data to validate topic selection"
+    return gaps
+
+
+def parse_execution_actions(run_id: str = "") -> list[dict[str, Any]]:
     queue_text = _markdown_body(_read_text(OUTPUT_DIR / "grizzly_execution_queue.md"))
     completions = _load_completions()
     completion_overrides = _load_action_completions()
@@ -356,6 +425,44 @@ def parse_execution_actions() -> list[dict[str, Any]]:
         action_type = _infer_action_type(executor, title, steps)
         platform = _platform_for_action(action_type)
         status = _status_for_action(completion, dependencies, override)
+        risk = _risk_for_action(action_type)
+        priority = _priority_for_action(action_type, risk, executor)
+        confidence = _confidence_for_action(action_type, risk)
+        approval_class = _approval_class_for_action(action_type)
+        uncertainty = _uncertainty_for_action(action_type)
+        # Build deterministic idempotency key from action attributes
+        idem_seed = f"{action_type}:{title}:{executor}:{'|'.join(steps)}"
+        idempotency_key = stable_hash(prefix="idem_", data=idem_seed)
+        # Build verification dict from checklist
+        verification_dict: dict[str, Any] = {}
+        if verification:
+            verification_dict["checklist"] = verification
+        # Build rollback string
+        rollback = f"Revert: revert {action_type} changes for '{title}'"
+        # Build supporting_claim_ids (extract from queue text if present; empty if not)
+        claim_match = re.search(r"\*\*Supporting Claim IDs\*\*:\s*(.+)", part)
+        supporting_claim_ids: list[str] = []
+        if claim_match:
+            supporting_claim_ids = [
+                cid.strip()
+                for cid in claim_match.group(1).split(",")
+                if cid.strip().startswith("claim_")
+            ]
+        # Build preconditions
+        preconditions: list[str] = []
+        if platform == "website" and not action_type.startswith("website_blog_post"):
+            preconditions.append("Website repo must be cloned and accessible")
+        if action_type in {"gbp_profile_update", "publish_gbp_post"}:
+            preconditions.append("Google Business Profile access required")
+        if action_type == "publish_facebook_post":
+            preconditions.append("Facebook Page access token required")
+        # Build acceptance criteria from definition of done
+        acceptance_criteria: list[str] = []
+        if completion:
+            dod = completion.get("definition_of_done", "")
+            if dod:
+                acceptance_criteria.append(dod)
+        acceptance_criteria.append(f"{action_type} action verified complete")
         actions.append({
             "id": action_id,
             "source": "execution_queue",
@@ -364,9 +471,9 @@ def parse_execution_actions() -> list[dict[str, Any]]:
             "assigned_agent": executor,
             "action_type": action_type,
             "platform": platform,
-            "risk": _risk_for_action(action_type),
+            "risk": risk,
             "status": status,
-            "priority": _extract_numbered_field(part, "Priority"),
+            "priority": priority,
             "due_window": _extract_numbered_field(part, "Due Window"),
             "steps": steps,
             "dependencies": dependencies,
@@ -377,6 +484,16 @@ def parse_execution_actions() -> list[dict[str, Any]]:
                 completion.get("owner_signoff_needed", "").upper() == "YES" or bool(dependencies)
             ),
             "live_adapter": "website_manager" if platform == "website" else None,
+            # Session 3 additive lineage fields
+            "supporting_claim_ids": supporting_claim_ids,
+            "confidence": confidence,
+            "approval_class": approval_class,
+            "uncertainty": uncertainty,
+            "idempotency_key": idempotency_key,
+            "verification": verification_dict,
+            "rollback": rollback,
+            "preconditions": preconditions,
+            "acceptance_criteria": acceptance_criteria,
         })
     return actions
 
@@ -398,22 +515,25 @@ def _parse_gbp_post_blocks(text: str) -> list[dict[str, str]]:
     return posts
 
 
-def parse_gbp_post_actions() -> list[dict[str, Any]]:
+def parse_gbp_post_actions(run_id: str = "") -> list[dict[str, Any]]:
     posts = _parse_gbp_post_blocks(_read_text(OUTPUT_DIR / "gbp_posting_schedule.md"))
     actions: list[dict[str, Any]] = []
     for index, post in enumerate(posts, start=1):
         post_id = post.get("date") or f"day-{index}"
+        action_id = f"gbp-post-{post_id}"
+        action_type = "publish_gbp_post"
+        idem_seed = f"{action_type}:{post.get('headline', '')}:{post_id}"
         actions.append({
-            "id": f"gbp-post-{post_id}",
+            "id": action_id,
             "source": "gbp_posting_schedule",
             "source_task_id": f"GBP-{index:03d}",
             "title": post.get("headline") or f"GBP post day {index}",
             "assigned_agent": "Grizzly GBP Poster Agent",
-            "action_type": "publish_gbp_post",
+            "action_type": action_type,
             "platform": "google_business_profile",
             "risk": "medium",
             "status": "needs_approval" if "approval" in post.get("status", "").lower() else "dry_run_ready",
-            "priority": "P2",
+            "priority": {"tier": "P1", "score": 0.60, "formula_version": "priority-v1"},
             "due_window": post.get("date") or "",
             "steps": [
                 "Review post copy and photo selection.",
@@ -428,6 +548,20 @@ def parse_gbp_post_actions() -> list[dict[str, Any]]:
             "post": post,
             "approval_required": True,
             "live_adapter": "google_business_profile",
+            # Session 3 additive lineage fields
+            "supporting_claim_ids": [],
+            "confidence": {"label": "medium", "score": 0.5},
+            "approval_class": "mandatory",
+            "uncertainty": {"proxy_metrics_used": [], "gap_reason": None, "blocked_by": []},
+            "idempotency_key": stable_hash(prefix="idem_", data=idem_seed),
+            "verification": {"checklist": [
+                "Confirm post is visible on Google Business Profile.",
+                "Confirm selected photo was used.",
+                "Archive or mark photo as used after publishing.",
+            ]},
+            "rollback": "Unpublish or delete the GBP post from the profile.",
+            "preconditions": ["Google Business Profile access", "Owner approval"],
+            "acceptance_criteria": ["Post visible on GBP profile with selected photo"],
         })
     return actions
 
@@ -449,22 +583,25 @@ def _parse_facebook_post_blocks(text: str) -> list[dict[str, str]]:
     return posts
 
 
-def parse_facebook_post_actions() -> list[dict[str, Any]]:
+def parse_facebook_post_actions(run_id: str = "") -> list[dict[str, Any]]:
     posts = _parse_facebook_post_blocks(_read_text(OUTPUT_DIR / "facebook_posting_schedule.md"))
     actions: list[dict[str, Any]] = []
     for index, post in enumerate(posts, start=1):
         post_id = post.get("date") or f"day-{index}"
+        action_id = f"fb-post-{post_id}"
+        action_type = "publish_facebook_post"
+        idem_seed = f"{action_type}:{post.get('hook', '')}:{post_id}"
         actions.append({
-            "id": f"fb-post-{post_id}",
+            "id": action_id,
             "source": "facebook_posting_schedule",
             "source_task_id": f"FB-{index:03d}",
             "title": post.get("hook") or post.get("body", "")[:60] or f"Facebook post day {index}",
             "assigned_agent": "Grizzly Facebook Poster Agent",
-            "action_type": "publish_facebook_post",
+            "action_type": action_type,
             "platform": "facebook_page",
             "risk": "medium",
             "status": "needs_approval" if "approval" in post.get("status", "").lower() else "dry_run_ready",
-            "priority": "P2",
+            "priority": {"tier": "P1", "score": 0.60, "formula_version": "priority-v1"},
             "due_window": post.get("date") or "",
             "steps": [
                 "Review post hook, body, and hashtags.",
@@ -479,6 +616,19 @@ def parse_facebook_post_actions() -> list[dict[str, Any]]:
             "post": post,
             "approval_required": True,
             "live_adapter": "facebook_page",
+            # Session 3 additive lineage fields
+            "supporting_claim_ids": [],
+            "confidence": {"label": "medium", "score": 0.5},
+            "approval_class": "mandatory",
+            "uncertainty": {"proxy_metrics_used": [], "gap_reason": None, "blocked_by": []},
+            "idempotency_key": stable_hash(prefix="idem_", data=idem_seed),
+            "verification": {"checklist": [
+                "Confirm post is visible on Facebook Business Page.",
+                "For video posts: confirm video rendered correctly.",
+            ]},
+            "rollback": "Delete the Facebook post from the Business Page.",
+            "preconditions": ["Facebook Page access token", "Owner approval"],
+            "acceptance_criteria": ["Post visible on Facebook Business Page"],
         })
     return actions
 
@@ -536,8 +686,12 @@ def _apply_run_results(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return actions
 
 
-def build_action_queue() -> dict[str, Any]:
-    actions = _apply_run_results(_apply_approvals([*parse_execution_actions(), *parse_gbp_post_actions(), *parse_facebook_post_actions()]))
+def build_action_queue(run_id: str = "") -> dict[str, Any]:
+    actions = _apply_run_results(_apply_approvals([
+        *parse_execution_actions(run_id),
+        *parse_gbp_post_actions(run_id),
+        *parse_facebook_post_actions(run_id),
+    ]))
     adapters = {
         "website_manager": website_adapter_status(),
         "google_business_profile": gbp_adapter_status(),
@@ -565,10 +719,172 @@ def build_action_queue() -> dict[str, Any]:
     }
 
 
-def write_action_queue() -> dict[str, Any]:
-    payload = build_action_queue()
+def _detect_dependency_cycles(actions: list[dict[str, Any]]) -> list[str]:
+    """Session 3: detect cycles in the task dependency graph. Returns list of cycle task_ids."""
+    # Build adjacency map
+    task_deps: dict[str, list[str]] = {}
+    action_ids: set[str] = set()
+    for action in actions:
+        aid = action.get("id", action.get("source_task_id", ""))
+        if not aid:
+            continue
+        task_deps[aid] = action.get("dependencies", [])
+        action_ids.add(aid)
+
+    # DFS cycle detection
+    visited: set[str] = set()
+    rec_stack: set[str] = set()
+    cycles: list[str] = []
+
+    def dfs(node: str) -> bool:
+        visited.add(node)
+        rec_stack.add(node)
+        for dep in task_deps.get(node, []):
+            if dep not in visited:
+                if dep in action_ids and dfs(dep):
+                    return True
+            elif dep in rec_stack:
+                cycles.append(node)
+                return True
+        rec_stack.discard(node)
+        visited.add(node)
+        return False
+
+    for task_id in task_deps:
+        if task_id not in visited:
+            dfs(task_id)
+    return cycles
+
+
+def _unresolved_contradiction_ids(evidence_path: Path = None) -> list[str]:
+    """Session 3: extract claim IDs that have unresolved material contradictions."""
+    # Check evidence_package.json for unresolved contradictions
+    if evidence_path is None:
+        from seo_agents.evidence import EVIDENCE_PACKAGE_PATH
+        evidence_path = EVIDENCE_PACKAGE_PATH
+    if not evidence_path.exists():
+        return []
+    try:
+        raw = json.loads(evidence_path.read_text(encoding="utf-8"))
+        evidence_list = raw.get("evidence", [])
+        result = validate_evidence_package(evidence_list)
+        # Find claims with unresolved contradictions
+        unres: list[str] = []
+        for g in result.get("gates", []):
+            if g.get("gate") == "unresolved_contradiction":
+                cid = g.get("claim_id", "")
+                if cid and cid not in unres:
+                    unres.append(cid)
+        return unres
+    except Exception:
+        return []
+
+
+def write_action_queue(run_id: str = "") -> dict[str, Any]:
+    payload = build_action_queue(run_id)
     _write_json(ACTION_QUEUE_FILE, payload)
+    # Session 3: write task_graph.json with lineage fields and dependency validation
+    _write_task_graph_from_actions(payload.get("actions", []), run_id)
     return payload
+
+
+def _write_task_graph_from_actions(actions: list[dict[str, Any]], run_id: str) -> None:
+    """Session 3: convert actions to task objects and write task_graph.json."""
+    # Detect cycles and unresolved contradictions
+    cycles = _detect_dependency_cycles(actions)
+    contradict_claims = _unresolved_contradiction_ids()
+
+    # Build task list from actions
+    tasks: list[dict[str, Any]] = []
+    for action in actions:
+        # Check if this task is blocked by unresolved contradictions
+        source_claim_ids = action.get("supporting_claim_ids", [])
+        blocked_by_contradiction = False
+        for claim_id in source_claim_ids:
+            if claim_id in contradict_claims:
+                blocked_by_contradiction = True
+                break
+
+        # Build status
+        if blocked_by_contradiction:
+            status = "blocked"
+        elif action.get("status") in {"needs_approval", "blocked_access"}:
+            status = "waiting_on_owner" if action["status"] == "needs_approval" else "waiting_on_tool_access"
+        elif action.get("status") == "dry_run_ready":
+            status = "ready"
+        elif action.get("status") == "verified":
+            status = "verified"
+        else:
+            status = "ready"
+
+        # Build dependencies list
+        deps = action.get("dependencies", [])
+        # Add cycle-blocked tasks
+        for cycle_task in cycles:
+            if cycle_task not in deps:
+                deps.append(cycle_task)
+
+        # Build task object
+        source_task_id = action.get("source_task_id", "")
+        task = {
+            "task_id": f"T-{run_id}-{action.get('source_task_id', '?').replace('-','_')[:10]}",
+            "run_id": run_id,
+            "title": action.get("title", ""),
+            "task_type": action.get("action_type", "content_update"),
+            "supporting_claim_ids": source_claim_ids,
+            "owner": _owner_for_action(action.get("action_type", ""), action.get("assigned_agent", "")),
+            "priority": action.get("priority", {"tier": "P2", "score": 0.4, "formula_version": "priority-v1"}),
+            "confidence": action.get("confidence", {"label": "medium", "score": 0.5}),
+            "dependencies": deps,
+            "preconditions": action.get("preconditions", []),
+            "acceptance_criteria": action.get("acceptance_criteria", []),
+            "verification": action.get("verification", {}),
+            "rollback": action.get("rollback", ""),
+            "approval_class": action.get("approval_class", "none"),
+            "uncertainty": action.get("uncertainty", {"proxy_metrics_used": [], "gap_reason": None, "blocked_by": []}),
+            "idempotency_key": action.get("idempotency_key", ""),
+            "status": status,
+        }
+        tasks.append(task)
+
+    # Session 3: create research_gap tasks for unresolved claim contradictions
+    for claim_id in contradict_claims:
+        task = {
+            "task_id": f"T-{run_id}-RG-{claim_id[-8:]:0>8}",
+            "run_id": run_id,
+            "title": f"Resolve contradiction for claim {claim_id}",
+            "task_type": "research_gap",
+            "supporting_claim_ids": [claim_id],
+            "owner": "owner_review",
+            "priority": {"tier": "P0", "score": 0.9, "formula_version": "priority-v1"},
+            "confidence": {"label": "high", "score": 0.8},
+            "dependencies": [],
+            "preconditions": ["Review evidence_package.json and claim_graph.json"],
+            "acceptance_criteria": ["Contradiction resolved or evidence re-verified"],
+            "verification": {"checklist": ["Check that claim is confirmed or rejected with evidence"]},
+            "rollback": "No rollback needed — this is a research task",
+            "approval_class": "mandatory",
+            "uncertainty": {"proxy_metrics_used": ["contradiction_density"], "gap_reason": None, "blocked_by": [claim_id]},
+            "idempotency_key": stable_hash(prefix="idem_", data=f"research_gap:{claim_id}"),
+            "status": "research_gap",
+        }
+        tasks.append(task)
+
+    # Write task graph
+    write_task_graph(tasks, run_id)
+
+
+def _owner_for_action(action_type: str, assigned_agent: str) -> str:
+    """Map action type / executor to owner field."""
+    if "website" in action_type or "Website" in assigned_agent or "Local Content" in assigned_agent:
+        return "content_executor"
+    if "gbp" in action_type or "GBP" in action_type or "Local Presence" in assigned_agent:
+        return "local_presence_assets"
+    if "technical" in action_type or "Technical" in assigned_agent:
+        return "content_executor"  # technical goes to content_executor for now
+    if "review" in action_type or "Review" in assigned_agent:
+        return "local_presence_assets"
+    return "website_manager"
 
 
 def approve_action(action_id: str, approved_by: str = "owner", note: str = "") -> dict[str, Any]:

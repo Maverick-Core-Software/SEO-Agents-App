@@ -30,6 +30,7 @@ from seo_agents.evidence import (
     write_claim_graph,
     write_evidence_package,
     write_run_manifest,
+    write_task_graph,
 )
 from seo_agents.crew import (
     DEFAULT_AUDIENCE,
@@ -776,9 +777,11 @@ def main() -> None:
             write_run_manifest(manifest)
             write_evidence_package([])
             write_claim_graph([])
+            write_task_graph([], run_id)
             print(f"✅ Dry-run manifest written to {RUN_MANIFEST_PATH}")
             print(f"✅ Dry-run evidence_package written to {EVIDENCE_PACKAGE_PATH}")
             print(f"✅ Dry-run claim_graph written to {CLAIM_GRAPH_PATH}")
+            print(f"✅ Dry-run task_graph written to {OUTPUT_DIR}/task_graph.json")
             return
         t0 = time.monotonic()
         try:

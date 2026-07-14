@@ -230,6 +230,24 @@ def _task_counts(tasks: list[dict[str, str]]) -> dict[str, int]:
     }
 
 
+def _has_unresolved_contradictions() -> bool:
+    """Session 3: check for unresolved material contradictions in evidence_package.json."""
+    from seo_agents.evidence import EVIDENCE_PACKAGE_PATH, validate_evidence_package
+    if not EVIDENCE_PACKAGE_PATH.exists():
+        return False
+    try:
+        raw = json.loads(EVIDENCE_PACKAGE_PATH.read_text(encoding="utf-8"))
+        evidence_list = raw.get("evidence", [])
+        result = validate_evidence_package(evidence_list)
+        # Check for unresolved contradiction gates (severity=fail)
+        for g in result.get("gates", []):
+            if g.get("gate") == "unresolved_contradiction" and g.get("severity") == "fail":
+                return True
+    except Exception:
+        pass
+    return False
+
+
 def _phase_statuses(reports: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
     def valid_report(name: str) -> bool:
         report = reports[name]
@@ -297,9 +315,15 @@ def build_workflow_status(
     if phase in phases:
         phases[phase]["status"] = "failed" if error else phase_status
 
+    # Session 3: block queue promotion when material contradictions remain unresolved
+    has_contradictions = _has_unresolved_contradictions()
+
     if error:
         status = "failed"
         next_action = f"Review {phase} failure and logs."
+    elif has_contradictions:
+        status = "blocked_contradictions"
+        next_action = "Resolve unresolved material contradictions in evidence_package.json before promoting queue."
     elif owner_signoffs:
         status = "needs_owner_review"
         next_action = "Review final_report.md owner sign-off items."

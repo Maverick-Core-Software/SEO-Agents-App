@@ -18,18 +18,64 @@ Execution agents to delegate to:
 Owner/Admin routing:
 - Use Owner/Admin only for approvals, credentials/access, legal/compliance signoff, and business-side decisions.
 
+--- GATES (Claim → Decomposition → Sequencing) ---
+
+Gate 1 — Claim → Decomposition:
+- Before creating a task, every durable recommendation MUST reference at least one supporting claim ID (claim_<stable_hash>).
+- If a recommendation has NO supporting claim, mark the task as status=research_gap and include a gap_reason.
+- Do NOT invent claim IDs. If claims are missing from the plan, create a research_gap task and list it as a dependency for the real task.
+
+Gate 2 — Decomposition → Sequencing:
+- Before assigning priority, tasks with dependencies must list them explicitly (dependencies: ["T-<run_id>-NNN"]).
+- No task may be promoted to ready or approved while unresolved material contradictions (from evidence_package.json / claim_graph.json) remain.
+- If the plan contains contradictory recommendations, create a research_gap task that blocks both until resolved.
+
+--- Task Object Contract (execution task) ---
+
+Every task you produce MUST include these fields:
+- task_id: "T-<run_id>-<seq>"
+- run_id: the deterministic run ID for this research cycle
+- title: Concrete action title
+- task_type: "technical_fix" | "content_update" | "local_update" | "review_work" | "research_gap" | "monitoring_alert_check"
+- supporting_claim_ids: list of claim_<stable_hash> IDs that support this task (can be empty only if task_type is research_gap)
+- owner: "website_manager" | "content_executor" | "local_presence_assets" | "owner_review"
+- priority: { tier: "P0" | "P1" | "P2" | "P3", score: <float 0.0-1.0>, formula_version: "priority-v1" }
+- confidence: { label: "high" | "medium" | "low" | "unknown", score: <float 0.0-1.0> }
+- dependencies: list of task_ids this task depends on
+- preconditions: list of required evidence or approval conditions
+- acceptance_criteria: list of observable definition-of-done items
+- verification: { command: "<powershell command or adapter check>", expected: "<expected result>" }
+- rollback: "<specific reversible action>"
+- approval_class: "none" | "sampled" | "mandatory" (default: none for low-risk, mandatory for high-risk like gbp_profile_update, website_layout_update, website_contact_form_update)
+- uncertainty: { proxy_metrics_used: [], gap_reason: null or string, blocked_by: [] }
+- idempotency_key: "sha256:<hash>" (deterministic — same input always produces same key)
+- status: "research_gap" | "ready" | "waiting_on_owner" | "waiting_on_tool_access" | "approved" | "executing" | "verified" | "blocked"
+
+--- Priority Formula v1 (proposed defaults, NOT Google rules) ---
+
+priority_score = 0.35 * impact + 0.30 * confidence + 0.20 * urgency + 0.15 * strategic_alignment
+- P0: score >= 0.80, confidence high, no unresolved material contradiction
+- P1: score >= 0.60, confidence medium or higher
+- P2: score >= 0.40, confidence low or higher
+- P3: score < 0.40 or confidence unknown; prefer research_gap when evidence is missing
+
+These are proposed defaults calibrated in Session 5. Record formula_version on every task.
+
 Output requirements:
 - Keep output simple and agent-readable.
 - Use one task block per action with:
   1) Task ID
   2) Task title
   3) Assigned execution agent
-  4) Priority (P1/P2/P3)
+  4) Priority (P0/P1/P2/P3)
   5) Due window (This Week / Next Week / Later)
   6) Exact action steps
   7) Dependencies / required inputs
   8) Definition of done (verifiable)
   9) Verification checklist for manager + scheduler review
+- When outputting JSON-equivalent task objects, include ALL contract fields above.
+- Supporting_claim_ids MUST be populated for every durable recommendation task.
+- verification and rollback fields MUST be present (can be null when unknown).
 
 Weekly blog post rule (mandatory every run):
 Always include one blog post task as the first Local Content Production Executor task. Pull the topic directly from this week's CONTENT REPORT or GBP REPORT (use the #1 trending service or keyword from the research). If the manager plan includes a blog topic, use it. If not, derive one from the research focus topic. Set:
@@ -45,3 +91,7 @@ Rules:
 - Prefer high-impact lead-generation actions first.
 - Keep tasks practical and implementation-ready.
 - Separate planning from assumptions.
+- Always include supporting_claim_ids (even if empty list) on every task.
+- Always include verification and rollback on every task.
+- Mark research_gap status when evidence is insufficient rather than promoting to ready.
+- When contradictions block tasks, create a research_gap task and list the conflicting tasks as dependencies.
