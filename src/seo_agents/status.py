@@ -7,6 +7,12 @@ from pathlib import Path
 from typing import Any
 
 from seo_agents.actions import build_action_queue
+from seo_agents.evidence import (
+    CLAIM_GRAPH_PATH,
+    EVIDENCE_PACKAGE_PATH,
+    validate_evidence_package,
+    validate_claim_graph,
+)
 from seo_agents.crew import OUTPUT_DIR
 
 
@@ -368,7 +374,66 @@ def validate_workflow_outputs(status: dict[str, Any] | None = None) -> list[str]
     summary = payload["summary"]
     if reports["delegation_verification"]["present"] and summary.get("total_tasks_checked") is None:
         issues.append("Could not parse Total Tasks Checked from delegation_verification.md")
+
+    # Session 2: Evidence provenance and synthesis gates
+    _add_evidence_gate_issues(reports, issues)
+
     return issues
+
+
+def _add_evidence_gate_issues(
+    reports: dict[str, Any],
+    issues: list[str],
+) -> None:
+    """Run Session 2 evidence and claim gates; add issues if gates fail."""
+    # Load evidence package
+    ev_path = EVIDENCE_PACKAGE_PATH
+    claim_path = CLAIM_GRAPH_PATH
+
+    if ev_path.exists():
+        try:
+            raw = json.loads(ev_path.read_text(encoding="utf-8"))
+            evidence_list = raw.get("evidence", [])
+            ev_result = validate_evidence_package(evidence_list)
+            if not ev_result["ok"]:
+                for g in ev_result["gates"]:
+                    if g["severity"] == "fail":
+                        issues.append(f"Gate {g['gate']}: {g['detail']}")
+        except Exception as e:
+            issues.append(f"Failed to parse evidence_package.json: {e}")
+
+    if claim_path.exists():
+        try:
+            raw = json.loads(claim_path.read_text(encoding="utf-8"))
+            claims = raw.get("claims", [])
+            claim_result = validate_claim_graph(claims)
+            if not claim_result["ok"]:
+                for g in claim_result["gates"]:
+                    issues.append(f"Claim gate {g['gate']}: {g['detail']}")
+        except Exception as e:
+            issues.append(f"Failed to parse claim_graph.json: {e}")
+
+    # If any evidence exists and all are rejected, flag a research gap
+    if ev_path.exists():
+        try:
+            raw = json.loads(ev_path.read_text(encoding="utf-8"))
+            evidence_list = raw.get("evidence", [])
+            if evidence_list:
+                claims_data = []
+                for ev in evidence_list:
+                    claims_data.append({
+                        "claim_id": ev.get("claim_id", ""),
+                        "status": ev.get("status", "unknown"),
+                        "confidence": ev.get("confidence", {}).get("label", "unknown") if isinstance(ev.get("confidence"), dict) else "unknown",
+                        "evidence_ids": [ev.get("evidence_id", "")],
+                        "contradiction_ids": ev.get("contradiction_ids", []),
+                    })
+                from seo_agents.evidence import classify_research_gap
+                gaps = classify_research_gap(evidence_list, claims_data)
+                for gap in gaps:
+                    issues.append(f"Research gap: {gap['gap_reason']}")
+        except Exception:
+            pass
 
 
 def format_validation_text(issues: list[str]) -> str:

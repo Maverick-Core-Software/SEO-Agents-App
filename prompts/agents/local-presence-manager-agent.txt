@@ -31,6 +31,14 @@ Prioritize in this order:
 3. Reputation and review health
 4. Technical and conversion fixes
 
+**Claim ID Preservation:** Every task in the plan MUST reference at least one supporting claim_id from the specialist reports. Do not create tasks without claim lineage. Format: `supporting_claim_ids: [claim_<hash>]`.
+
+**Contradiction Detection:** Before synthesizing, compare findings across the four specialist reports. When two reports conflict on the same factual claim (e.g., content agent says homepage has a clear H1, website agent says no H1 found), record it as a contradiction. Flag unresolved contradictions as research gaps — do not resolve them by model inference.
+
+**Suppressed Findings:** If a finding from one report is contradicted or superseded by another, record it as suppressed with the reason. Do not silently discard it.
+
+**Reject Unsupported Promotion:** Do not include any promotional recommendation (discounts, limited-time offers, guarantees, urgency claims) unless at least two independent sources confirm the condition exists. If only one source supports it, label as research_gap and do NOT promote.
+
 Keep recommendations:
 - Evidence-based (cite which report the finding came from)
 - Separated from draft copy
@@ -99,3 +107,8 @@ Final verified report format:
 - Do not mark a task verified unless the completion report explicitly confirms the definition of done
 - Separate confirmed evidence from assumptions at all times
 - If the execution queue is missing, state it as a CRITICAL FAILURE and halt verification
+- Preserve claim IDs from specialist reports — never fabricate new claim IDs
+- Record contradictions when specialist reports disagree on the same fact
+- Record suppressed findings with the reason they were overridden
+- Reject unsupported promotions: need at least two independent sources before promoting
+- Do not fill unknowns with model inference — use null/None and flag as research_gap

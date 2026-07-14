@@ -891,10 +891,43 @@ def main() -> None:
     elif command == "validate":
         status = build_workflow_status(phase="validate", phase_status="complete")
         issues = validate_workflow_outputs(status)
+        # Session 2: add gate-level detail
+        ev_path = OUTPUT_DIR / "evidence_package.json"
+        claim_path = OUTPUT_DIR / "claim_graph.json"
+        gate_detail = {"evidence": "ok", "claims": "ok", "gates": []}
+        if ev_path.exists():
+            try:
+                raw = json.loads(ev_path.read_text(encoding="utf-8"))
+                from seo_agents.evidence import validate_evidence_package
+                ev_result = validate_evidence_package(raw.get("evidence", []))
+                gate_detail["evidence"] = ev_result["ok"]
+                gate_detail["gates"].extend([
+                    {"name": g["gate"], "severity": g["severity"], "detail": g["detail"]}
+                    for g in ev_result.get("gates", [])
+                ])
+            except Exception:
+                gate_detail["evidence"] = "error"
+        if claim_path.exists():
+            try:
+                raw = json.loads(claim_path.read_text(encoding="utf-8"))
+                from seo_agents.evidence import validate_claim_graph
+                cl_result = validate_claim_graph(raw.get("claims", []))
+                gate_detail["claims"] = cl_result["ok"]
+                for g in cl_result.get("gates", []):
+                    gate_detail["gates"].append({
+                        "name": g["gate"], "severity": g["severity"], "detail": g["detail"]
+                    })
+            except Exception:
+                gate_detail["claims"] = "error"
         if args.json:
-            print(json.dumps({"ok": not issues, "issues": issues, "status": status}, indent=2))
+            print(json.dumps({"ok": not issues, "issues": issues, "status": status, "gates": gate_detail}, indent=2))
         else:
             print(format_validation_text(issues))
+            if gate_detail["gates"]:
+                print("\nGate details:")
+                for g in gate_detail["gates"]:
+                    marker = "FAIL" if g["severity"] == "fail" else "WARN"
+                    print(f"  [{marker}] {g['name']}: {g['detail']}")
         if issues:
             sys.exit(1)
 

@@ -228,6 +228,28 @@ Use the Owner Approval Needed section to flag anything that should be confirmed 
 - Promotional offers
 - Any claim that depends on facts not provided in the current request
 
+## Evidence and Claim Requirements
+Every durable recommendation MUST be accompanied by claim metadata. For each recommendation, include:
+- **claim_id**: A stable identifier in the format `claim_<hash>`.
+- **claim_type**: One of `observation|policy|recommendation|hypothesis|negative_finding`.
+- **source_mode**: One of `live|baseline|unavailable`.
+  - `live` = derived from current live page data or search results captured in this run.
+  - `baseline` = derived from existing baseline documentation.
+  - `unavailable` = the data source was not reachable; state explicitly what was missing.
+- **retrieved_at**: ISO-8601 timestamp when the source was last accessed.
+- **negative_findings**: Explicit statements of what was checked and NOT found (e.g., "No H1 tag found on homepage", "No FAQ schema detected on service pages"). Do not infer absence — only record what you verified was absent.
+
+Format each recommendation with its claim block like this:
+
+### Recommendation: [Title]
+[Recommendation text]
+
+**Claim ID:** claim_<hash>
+**Claim Type:** recommendation
+**Source Mode:** live | baseline | unavailable
+**Retrieved At:** <ISO-8601>
+**Negative Findings:** [explicit statements of what was checked and not found, or "none identified"]
+
 ## Report Format
 You MUST wrap your entire output in markers.
 Start your report with: [START:CONTENT]
