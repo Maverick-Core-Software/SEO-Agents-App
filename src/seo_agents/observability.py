@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -71,10 +72,18 @@ def write_observability_event(event: dict[str, Any]) -> None:
     event["run_id"] = event.get("run_id", "unknown")
     if "timestamp" not in event or not event["timestamp"]:
         event["timestamp"] = now_iso()
-    tmp = OUTPUT_DIR / "observability.jsonl.tmp"
-    with open(tmp, "a", encoding="utf-8") as fh:
-        fh.write(json.dumps(event) + "\n")
-    tmp.replace(OUTPUT_DIR / "observability.jsonl")
+
+    target = OUTPUT_DIR / "observability.jsonl"
+    tmp = OUTPUT_DIR / f"observability.jsonl.tmp-{uuid.uuid4().hex[:8]}"
+    existing = ""
+    if target.exists():
+        existing = target.read_text(encoding="utf-8")
+    content = existing.rstrip("\n")
+    if content:
+        content += "\n"
+    content += json.dumps(event) + "\n"
+    tmp.write_text(content, encoding="utf-8")
+    tmp.replace(target)
 
 
 # ---------------------------------------------------------------------------
