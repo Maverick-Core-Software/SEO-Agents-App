@@ -1,0 +1,23 @@
+{
+  "fixture": "idempotent_retry",
+  "run_id": "fixture-test-008",
+  "description": "Two actions with the same idempotency key — only the first should execute; the second should be deduped.",
+  "action_1": {
+    "id": "a001",
+    "title": "Publish GBP post about generator interlock",
+    "action_type": "publish_gbp_post",
+    "platform": "google_business_profile",
+    "status": "approved",
+    "idempotency_key": "idem_fixture_retry_001",
+    "live_adapter": "google_business_profile"
+  },
+  "action_2": {
+    "id": "a002",
+    "title": "Duplicate: Publish GBP post about generator interlock",
+    "action_type": "publish_gbp_post",
+    "platform": "google_business_profile",
+    "status": "approved",
+    "idempotency_key": "idem_fixture_retry_001",
+    "live_adapter": "google_business_profile"
+  }
+}

@@ -1,0 +1,49 @@
+{
+  "fixture": "conflicting_specialists",
+  "run_id": "fixture-test-004",
+  "description": "Two evidence units from different specialist reports with contradictory findings on the same statement.",
+  "evidence_1": {
+    "evidence_id": "ev_fixture_conflict_001",
+    "run_id": "fixture-test-004",
+    "claim_id": "claim_conflict_001",
+    "claim_type": "observation",
+    "statement": "Grizzly Electrical has strong local SEO presence for 'electrician Rowlett TX'.",
+    "scope": {"site": "https://www.grizzlyelectricaltx.com/", "region": "DFW, Texas"},
+    "source": {
+      "kind": "serp",
+      "uri": "https://www.google.com/search?q=electrician+Rowlett+TX",
+      "title": "SERP for 'electrician Rowlett TX'",
+      "retrieved_at": "2026-07-14T08:00:00Z",
+      "authority_rank": 0.7,
+      "access_class": "observed"
+    },
+    "evidence_excerpt": "Grizzly ranks #2 in Rowlett local pack for 'electrician Rowlett TX'",
+    "relation": "supports",
+    "confidence": {"label": "medium", "score": 0.6, "authority": 0.7, "recency": 0.8, "method_transparency": 0.6, "corroboration": 0.4, "access": 0.9, "basis": "SERP check via SerpApi"},
+    "freshness": {"captured_at": "2026-07-14T08:00:00Z", "valid_until": null, "supersedes": []},
+    "contradiction_ids": [],
+    "status": "confirmed"
+  },
+  "evidence_2": {
+    "evidence_id": "ev_fixture_conflict_002",
+    "run_id": "fixture-test-004",
+    "claim_id": "claim_conflict_002",
+    "claim_type": "observation",
+    "statement": "Grizzly Electrical has strong local SEO presence for 'electrician Rowlett TX'.",
+    "scope": {"site": "https://www.grizzlyelectricaltx.com/", "region": "DFW, Texas"},
+    "source": {
+      "kind": "baseline",
+      "uri": "knowledge/baselines/content_report.md",
+      "title": "Prior content report baseline",
+      "retrieved_at": "2026-06-01T08:00:00Z",
+      "authority_rank": 0.5,
+      "access_class": "provided"
+    },
+    "evidence_excerpt": "Previous report noted Grizzly at #5 for 'electrician Rowlett TX' — not 'strong presence'",
+    "relation": "weakens",
+    "confidence": {"label": "medium", "score": 0.5, "authority": 0.5, "recency": 0.3, "method_transparency": 0.5, "corroboration": 0.3, "access": 0.6, "basis": "Prior run baseline document"},
+    "freshness": {"captured_at": "2026-06-01T08:00:00Z", "valid_until": null, "supersedes": []},
+    "contradiction_ids": ["ev_fixture_conflict_001"],
+    "status": "provisional"
+  }
+}

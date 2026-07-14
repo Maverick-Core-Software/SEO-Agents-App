@@ -1,0 +1,40 @@
+{
+  "fixture": "unavailable_serp",
+  "run_id": "fixture-test-003",
+  "description": "Evidence where the SERP/Google source was unreachable — should be marked unavailable.",
+  "evidence": {
+    "evidence_id": "ev_fixture_unavail_001",
+    "run_id": "fixture-test-003",
+    "claim_id": "claim_unavail_001",
+    "claim_type": "hypothesis",
+    "statement": "SERP data for 'electrician Rowlett TX' could not be fetched.",
+    "scope": {"site": "https://www.grizzlyelectricaltx.com/", "region": "DFW, Texas"},
+    "source": {
+      "kind": "serp",
+      "uri": "https://www.google.com/search?q=electrician+Rowlett+TX",
+      "title": "Google SERP — unavailable",
+      "retrieved_at": "2026-07-14T08:00:00Z",
+      "authority_rank": 0.3,
+      "access_class": "unavailable"
+    },
+    "evidence_excerpt": "",
+    "relation": "",
+    "confidence": {
+      "label": "unknown",
+      "score": 0.0,
+      "authority": 0.0,
+      "recency": 0.0,
+      "method_transparency": 0.0,
+      "corroboration": 0.0,
+      "access": 0.0,
+      "basis": "Google SERP not reachable via SerpApi today"
+    },
+    "freshness": {
+      "captured_at": "2026-07-14T08:00:00Z",
+      "valid_until": null,
+      "supersedes": []
+    },
+    "contradiction_ids": [],
+    "status": "unknown"
+  }
+}

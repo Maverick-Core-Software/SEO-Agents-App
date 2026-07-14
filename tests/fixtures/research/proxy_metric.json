@@ -1,0 +1,28 @@
+{
+  "fixture": "proxy_metric",
+  "run_id": "fixture-test-005",
+  "description": "Evidence based on proxy metrics (not direct observation) — should carry uncertainty annotations.",
+  "task": {
+    "task_id": "T-fixture-proxy-001",
+    "run_id": "fixture-test-005",
+    "title": "Improve click-through rate on service pages",
+    "task_type": "content_update",
+    "supporting_claim_ids": ["claim_proxy_001"],
+    "owner": "content_executor",
+    "priority": {"tier": "P1", "score": 0.65, "formula_version": "priority-v1"},
+    "confidence": {"label": "medium", "score": 0.55},
+    "dependencies": [],
+    "preconditions": ["Access to Google Analytics"],
+    "acceptance_criteria": ["Service page CTR improves by 10% in 30 days"],
+    "verification": {"command": "Check GA CTR report for 30-day window", "expected": "CTR up 10%"},
+    "rollback": "Revert meta description and title tag changes.",
+    "approval_class": "sampled",
+    "uncertainty": {
+      "proxy_metrics_used": ["google_analytics_sessions", "serp_click_share"],
+      "gap_reason": "Direct CTR not available; proxy from session volume change",
+      "blocked_by": []
+    },
+    "idempotency_key": "idem_fixture_proxy_001",
+    "status": "ready"
+  }
+}

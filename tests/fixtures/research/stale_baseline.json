@@ -1,0 +1,40 @@
+{
+  "fixture": "stale_baseline",
+  "run_id": "fixture-test-002",
+  "description": "Evidence sourced from a baseline retrieved 90 days ago — should trigger a warning gate.",
+  "evidence": {
+    "evidence_id": "ev_fixture_stale_001",
+    "run_id": "fixture-test-002",
+    "claim_id": "claim_stale_001",
+    "claim_type": "observation",
+    "statement": "GBP profile has 3.2 stars from 12 reviews.",
+    "scope": {"site": "https://www.grizzlyelectricaltx.com/", "region": "DFW, Texas"},
+    "source": {
+      "kind": "baseline",
+      "uri": "knowledge/baselines/gbp_baseline_old.md",
+      "title": "GBP Baseline (old)",
+      "retrieved_at": "2026-04-16T08:00:00Z",
+      "authority_rank": 0.6,
+      "access_class": "provided"
+    },
+    "evidence_excerpt": "GBP: 3.2 stars, 12 reviews",
+    "relation": "supports",
+    "confidence": {
+      "label": "low",
+      "score": 0.3,
+      "authority": 0.6,
+      "recency": 0.1,
+      "method_transparency": 0.5,
+      "corroboration": 0.2,
+      "access": 0.7,
+      "basis": "Baseline from 90 days ago — stale"
+    },
+    "freshness": {
+      "captured_at": "2026-04-16T08:00:00Z",
+      "valid_until": null,
+      "supersedes": []
+    },
+    "contradiction_ids": [],
+    "status": "provisional"
+  }
+}

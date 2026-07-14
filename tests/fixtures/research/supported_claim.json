@@ -1,0 +1,40 @@
+{
+  "fixture": "supported_claim",
+  "run_id": "fixture-test-001",
+  "description": "A single well-sourced, high-authority claim that should pass all gates.",
+  "evidence": {
+    "evidence_id": "ev_fixture_001",
+    "run_id": "fixture-test-001",
+    "claim_id": "claim_supported_001",
+    "claim_type": "recommendation",
+    "statement": "Homepage H1 should explicitly mention 'electrical troubleshooting' as primary service for DFW homeowners.",
+    "scope": {"site": "https://www.grizzlyelectricaltx.com/", "region": "DFW, Texas"},
+    "source": {
+      "kind": "live_page",
+      "uri": "https://www.grizzlyelectricaltx.com/",
+      "title": "Homepage",
+      "retrieved_at": "2026-07-14T08:00:00Z",
+      "authority_rank": 0.9,
+      "access_class": "observed"
+    },
+    "evidence_excerpt": "H1 found: 'Professional Electrical Services — Troubleshooting & Repair in DFW'",
+    "relation": "supports",
+    "confidence": {
+      "label": "high",
+      "score": 0.85,
+      "authority": 0.9,
+      "recency": 1.0,
+      "method_transparency": 0.8,
+      "corroboration": 0.6,
+      "access": 1.0,
+      "basis": "Direct observation of live page H1 tag"
+    },
+    "freshness": {
+      "captured_at": "2026-07-14T08:00:00Z",
+      "valid_until": null,
+      "supersedes": []
+    },
+    "contradiction_ids": [],
+    "status": "confirmed"
+  }
+}

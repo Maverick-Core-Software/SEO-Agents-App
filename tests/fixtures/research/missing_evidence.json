@@ -1,0 +1,16 @@
+{
+  "fixture": "missing_evidence",
+  "run_id": "fixture-test-006",
+  "description": "A claim with no supporting evidence — should fail provenance gate.",
+  "claim": {
+    "claim_id": "claim_missing_001",
+    "claim_type": "recommendation",
+    "statement": "Grizzly should add FAQ schema to all service pages.",
+    "evidence_ids": [],
+    "confidence": "high",
+    "scope": {"site": "https://www.grizzlyelectricaltx.com/", "region": "DFW, Texas"},
+    "relation": "supports",
+    "contradiction_ids": [],
+    "status": "confirmed"
+  }
+}
