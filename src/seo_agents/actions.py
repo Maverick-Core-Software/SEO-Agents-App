@@ -1078,6 +1078,35 @@ def _build_validated_task(
             "claim_validation": [cd for cd in claim_diags if cd["severity"] in {"fail", "warn"}],
         }
 
+    # Task 4.1-fix: ordinary executable actions with no claim IDs must become
+    # research_gap, not be silently promoted to "ready".  Only scheduled content
+    # (GBP/Facebook posts) gets the special empty-claims handling above in the
+    # caller.  By the time we reach here, publish_gbp_post / publish_facebook_post
+    # actions have already been handled by the caller — everything else with empty
+    # claims is an ordinary executable task that needs claims.
+    if not source_claim_ids:
+        return {
+            "task_id": f"T-{claim_run_id}-{action.get('source_task_id', '?').replace('-','_')[:10]}",
+            "run_id": claim_run_id,
+            "action_id": action_id,
+            "title": action.get("title", ""),
+            "task_type": "research_gap",
+            "supporting_claim_ids": [],
+            "owner": action.get("owner", "owner_review"),
+            "priority": {"tier": "P2", "score": 0.4, "formula_version": "priority-v1"},
+            "confidence": {"label": "unknown", "score": 0.0},
+            "dependencies": [],
+            "preconditions": ["Evidence-bound task requires supporting claims"],
+            "acceptance_criteria": ["Task must bind to research claims or be approved as policy-exempt"],
+            "verification": {"checklist": ["Confirm task has supporting evidence or owner approval"]},
+            "rollback": "No rollback needed — this is a research gap task.",
+            "approval_class": action.get("approval_class", "none"),
+            "uncertainty": {"proxy_metrics_used": ["missing_claim_binding"], "gap_reason": "No supporting claims"},
+            "idempotency_key": action.get("idempotency_key", ""),
+            "status": "research_gap",
+            "blocking_reasons": ["ordinary_executable_without_claims"],
+        }
+
     # All gates pass — determine final status
     action_status = action.get("status", "ready")
     if action_status == "dry_run_ready":
@@ -1241,8 +1270,50 @@ def _write_task_graph_from_actions(
         }
         tasks.append(task)
 
+    # Task 4.3-fix: Propagate blocked/unresolved dependency status.
+    # After building the initial task list, resolve status in dependency order
+    # so that any task whose dependency points at a blocked/research_gap/
+    # waiting_* task is itself marked blocked.
+    _propagate_dependency_status(tasks)
+
     # Write task graph
     write_task_graph(tasks, run_id)
+
+
+def _propagate_dependency_status(tasks: list[dict[str, Any]]) -> None:
+    """Propagate blocking status through the task dependency graph.
+
+    Any task with a `dependencies` entry pointing at a task whose final
+    `status` is ``"blocked"``, ``"research_gap"``, ``"waiting_on_owner"``, or
+    ``"waiting_on_tool_access"`` is itself marked ``"blocked"`` with a
+    ``blocking_reasons`` entry naming the blocked prerequisite.
+
+    Tasks with no unresolved/blocked dependencies keep their existing gate-
+    derived status unchanged.
+    """
+    blocked_statuses = {"blocked", "research_gap", "waiting_on_owner", "waiting_on_tool_access"}
+    task_by_id: dict[str, dict[str, Any]] = {}
+    for t in tasks:
+        task_by_id[t["task_id"]] = t
+
+    changed = True
+    while changed:
+        changed = False
+        for task in tasks:
+            deps = task.get("dependencies", [])
+            for dep in deps:
+                dep_task = task_by_id.get(dep)
+                if dep_task is None:
+                    continue
+                dep_status = dep_task.get("status", "")
+                if dep_status in blocked_statuses:
+                    existing_reasons = task.get("blocking_reasons", [])
+                    key = f"blocked_dependency:{dep}"
+                    if key not in existing_reasons:
+                        task["blocking_reasons"] = existing_reasons + [key]
+                        task["status"] = "blocked"
+                        changed = True
+                        break
 
 
 def _owner_for_action(action_type: str, assigned_agent: str) -> str:

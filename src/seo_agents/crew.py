@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -477,12 +478,45 @@ def build_grizzly_crew(
 
 
 # ---------------------------------------------------------------------------
+# Task graph filter for executor crew (Session 4.5 fix)
+# ---------------------------------------------------------------------------
+
+BLOCKED_STATUSES = {"blocked", "research_gap", "waiting_on_owner", "waiting_on_tool_access"}
+
+
+def _filter_executable_tasks() -> list[dict[str, Any]]:
+    """Load task_graph.json and return only executable tasks.
+
+    Only include tasks that are ready/verified/approved.  Blocked, research_gap,
+    and waiting_* tasks are excluded so the executor cannot bypass the task graph.
+    """
+    from seo_agents.evidence import TASK_GRAPH_PATH
+
+    if not TASK_GRAPH_PATH.exists():
+        return []
+    try:
+        data = json.loads(TASK_GRAPH_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+
+    tasks: list[dict[str, Any]] = []
+    for t in data.get("tasks", []):
+        status = t.get("status", "")
+        if status not in BLOCKED_STATUSES:
+            tasks.append(t)
+    return tasks
+
+
+# ---------------------------------------------------------------------------
 # Executor Crew  (seo-agents execute)
 # ---------------------------------------------------------------------------
 
 def build_executor_crew() -> Crew:
     """
-    Reads the execution queue cold — no shared context from the research phase.
+    Reads the execution queue plus the validated task graph.
+    Only tasks from the task graph that are ready/verified/approved are
+    forwarded to the executor agents — blocked, research_gap, and
+    waiting_* tasks are excluded so the executor cannot bypass the task graph.
     Fans tasks to the 3 executors by territory, then runs the manager + delegation
     verification loop against the completion reports.
     """
@@ -494,12 +528,24 @@ def build_executor_crew() -> Crew:
     structure_path = PROJECT_ROOT / "knowledge" / "website-structure.md"
     website_structure = read_text(structure_path) if structure_path.exists() else "[website-structure.md not found]"
 
+    # Task 4.5-fix: Load task_graph.json and filter to executable tasks only.
+    # Only include tasks that are: from the current run; not blocked/research_gap/
+    # waiting_on_owner/waiting_on_tool_access; free of unresolved gate failures.
+    _task_graph_filter = _filter_executable_tasks()
+    _filtered_titles = set(t.get("title", "") for t in _task_graph_filter)
+    _filtered_ids = set(t.get("action_id") for t in _task_graph_filter)
+    _filtered_ids_task = set(t.get("task_id") for t in _task_graph_filter)
+    task_graph_text = ""
+    if _task_graph_filter:
+        task_graph_text = json.dumps(_task_graph_filter, indent=2)
+
     queue_context = (
         "You are reading the execution queue plus the live website structure reference. "
         "The Grizzly website is a static HTML site (index.html plus /blog/ pages) in a git repo, "
         "deployed by Vercel on every push — there is no WordPress and no CMS. Website changes are "
         "applied by the Website Manager adapter through the action queue.\n\n"
         f"EXECUTION QUEUE:\n\n{execution_queue}\n\n"
+        f"VALIDATED TASK GRAPH (only executable tasks — blocked/research_gap tasks excluded):\n\n{task_graph_text}\n\n"
         f"LIVE WEBSITE STRUCTURE REFERENCE:\n\n{website_structure}"
     )
 
