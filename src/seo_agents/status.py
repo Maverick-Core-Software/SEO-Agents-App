@@ -10,6 +10,7 @@ from seo_agents.actions import build_action_queue
 from seo_agents.evidence import (
     CLAIM_GRAPH_PATH,
     EVIDENCE_PACKAGE_PATH,
+    RUN_MANIFEST_PATH,
     validate_evidence_package,
     validate_claim_graph,
 )
@@ -403,6 +404,131 @@ def validate_workflow_outputs(status: dict[str, Any] | None = None) -> list[str]
     _add_evidence_gate_issues(reports, issues)
 
     return issues
+
+
+def validate_outputs_json() -> dict[str, Any]:
+    """Return a structured validation result that distinguishes the six required cases.
+
+    Cases:
+      - dry_run_empty: dry run with intentionally empty evidence
+      - research_only_populated: research-only run with populated evidence
+      - live_missing_extraction: live run with empty/missing evidence
+      - stale_or_mixed_artifacts: stale evidence or mixed run IDs across artifacts
+      - gate_failure: evidence or claim gates failed
+      - malformed_artifact: evidence/claim JSON is malformed
+    """
+    result: dict[str, Any] = {
+        "ok": False,
+        "case": "unknown",
+        "run_id": None,
+        "mode": "unknown",
+        "issues": [],
+        "gates": {"evidence": "ok", "claims": "ok"},
+    }
+
+    # Load manifest
+    manifest: dict[str, Any] = {}
+    if RUN_MANIFEST_PATH.exists():
+        try:
+            manifest = json.loads(RUN_MANIFEST_PATH.read_text(encoding="utf-8"))
+        except Exception as exc:
+            result["issues"].append(f"Malformed manifest: {exc}")
+            result["case"] = "malformed_artifact"
+            return result
+
+    dry_run = manifest.get("dry_run", False)
+    research_only = manifest.get("research_only", False)
+    run_id = manifest.get("run_id")
+    result["run_id"] = run_id
+    result["mode"] = "dry_run" if dry_run else ("research_only" if research_only else "live")
+
+    # Load evidence package
+    evidence_list: list[dict[str, Any]] = []
+    ev_path = EVIDENCE_PACKAGE_PATH
+    if not ev_path.exists():
+        result["issues"].append("Evidence package not found")
+        result["gates"]["evidence"] = "missing"
+    else:
+        try:
+            raw = json.loads(ev_path.read_text(encoding="utf-8"))
+            evidence_list = raw.get("evidence", []) if isinstance(raw, dict) else []
+            ev_run_id = raw.get("run_id") if isinstance(raw, dict) else None
+            if ev_run_id is not None and ev_run_id != run_id:
+                result["issues"].append(
+                    f"Mixed run identity: manifest run_id={run_id} but evidence_package run_id={ev_run_id}"
+                )
+                result["case"] = "stale_or_mixed_artifacts"
+        except Exception as exc:
+            result["issues"].append(f"Malformed evidence package: {exc}")
+            result["gates"]["evidence"] = "malformed"
+            result["case"] = "malformed_artifact"
+
+    # Load claim graph
+    claims: list[dict[str, Any]] = []
+    claim_path = CLAIM_GRAPH_PATH
+    if not claim_path.exists():
+        result["issues"].append("Claim graph not found")
+        result["gates"]["claims"] = "missing"
+    else:
+        try:
+            raw = json.loads(claim_path.read_text(encoding="utf-8"))
+            claims = raw.get("claims", []) if isinstance(raw, dict) else []
+            claim_run_id = raw.get("run_id") if isinstance(raw, dict) else None
+            if claim_run_id is not None and claim_run_id != run_id:
+                result["issues"].append(
+                    f"Mixed run identity: manifest run_id={run_id} but claim_graph run_id={claim_run_id}"
+                )
+                result["case"] = "stale_or_mixed_artifacts"
+        except Exception as exc:
+            result["issues"].append(f"Malformed claim graph: {exc}")
+            result["gates"]["claims"] = "malformed"
+            result["case"] = "malformed_artifact"
+
+    # If we already hit a malformed or mixed-run case, return now.
+    if result["case"] in ("malformed_artifact", "stale_or_mixed_artifacts"):
+        return result
+
+    # Run validators
+    ev_result = validate_evidence_package(evidence_list)
+    claim_result = validate_claim_graph(claims)
+    result["gates"]["evidence"] = "ok" if ev_result.get("ok") else "fail"
+    result["gates"]["claims"] = "ok" if claim_result.get("ok") else "fail"
+
+    for g in ev_result.get("gates", []):
+        result["issues"].append(f"Evidence gate {g['gate']}: {g['detail']}")
+    for g in claim_result.get("gates", []):
+        result["issues"].append(f"Claim gate {g['gate']}: {g['detail']}")
+
+    # Stale evidence
+    stale_gates = [g for g in ev_result.get("gates", []) if g.get("gate") == "stale_evidence"]
+    has_stale_evidence = bool(stale_gates)
+    if has_stale_evidence:
+        result["issues"].append("Stale evidence detected")
+
+    # Determine case based on mode and evidence state.
+    has_evidence = bool(evidence_list)
+    has_claims = bool(claims)
+
+    if dry_run and not has_evidence:
+        result["ok"] = True
+        result["case"] = "dry_run_empty"
+    elif research_only and has_evidence and ev_result.get("ok") and claim_result.get("ok"):
+        result["ok"] = True
+        result["case"] = "research_only_populated"
+    elif not dry_run and not has_evidence:
+        result["case"] = "live_missing_extraction"
+    elif ev_result.get("ok") and claim_result.get("ok"):
+        result["ok"] = True
+        result["case"] = "live_populated"
+    else:
+        result["case"] = "gate_failure"
+
+    # Stale evidence overrides a valid production result.
+    if has_stale_evidence and not dry_run:
+        result["ok"] = False
+        result["case"] = "stale_or_mixed_artifacts"
+
+    return result
 
 
 def _add_evidence_gate_issues(

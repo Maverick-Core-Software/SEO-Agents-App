@@ -212,6 +212,7 @@ class RunManifest(BaseModel):
     audience: str = ""
     keywords: str = ""
     dry_run: bool = False
+    research_only: bool = False
     outputs: list[str] = Field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:

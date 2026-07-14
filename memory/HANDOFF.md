@@ -19,20 +19,21 @@ Evidence-first research-to-execution architecture implemented across 5 plan sess
 | `ac40969` | — | chore: untrack PLAN.md from repo |
 
 ### Test suite
-- **144 Python tests** pass (`pytest -q`)
+- **249 Python tests** pass (`pytest -q`)
 - **6 Node tests** pass (`node --test scripts\lib\*.test.mjs`)
-- `validate --json` gates pass (evidence: true, claims: true, gates: [])
+- `validate --json` distinguishes dry-run, research-only, live missing extraction, stale/mixed artifacts, gate failure, and malformed artifact
 
 ### Key files added/modified
-- `src/seo_agents/contracts.py` — Pydantic models: EvidenceUnit, ClaimObject, ExecutionTask, RunManifest
-- `src/seo_agents/evidence.py` — serialization, gate validation, atomic JSON writers
+- `src/seo_agents/contracts.py` — Pydantic models; added `research_only` flag to RunManifest
+- `src/seo_agents/evidence.py` — serialization, gate validation, atomic JSON writers; prefer explicit `run_id` when writing empty collections
+- `src/seo_agents/finalize.py` — new run finalizer: report snapshot, claim extraction, gate evaluation, artifact + diagnostic writers, observability events
 - `src/seo_agents/observability.py` — structured JSONL event emitter with proposed metrics
 - `src/seo_agents/actions.py` — action queue lineage, idempotency enforcement, failure classification + recovery
-- `src/seo_agents/status.py` — gate wiring, task graph writer
+- `src/seo_agents/status.py` — gate wiring, task graph writer, new `validate_outputs_json()` with six-case classification
 - `src/seo_agents/crew.py` — run ID + route/tool metadata
-- `src/seo_agents/main.py` — dry-run manifest/evidence/claim/task writers
+- `src/seo_agents/main.py` — live research path now finalizes before execution; hard gate failures stop execution
 - `prompts/agents/*.txt` — claim fields, source mode, negative findings, contradiction detection
-- `tests/` — evidence_contracts, synthesis_gates, task_translation, action_queue_lineage, observability, research_regression
+- `tests/` — added `test_finalization.py` (18 tests); existing suites still pass
 - `tests/fixtures/research/` — 8 regression fixture JSON files
 
 ### Outputs (additive, no Markdown removed)

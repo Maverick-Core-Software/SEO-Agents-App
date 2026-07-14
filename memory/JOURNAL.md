@@ -43,10 +43,19 @@
 - Brain-write triad completed: HANDOFF.md, JOURNAL.md, brain vault seo-agents.md updated
 - Calibration record written to outputs/archive/calibration-2026-07-14.md
 
+### Session 3 — Live finalization and gate integration (new plan)
+- New: `src/seo_agents/finalize.py` — run finalizer that snapshots reports, extracts claims/evidence, validates graphs, writes lineage-linked artifacts, emits gate events, and returns a structured result
+- Modified: `src/seo_agents/main.py` — live research path now archives → finalizes → validates → builds task graph → executes only if gates pass; hard gate failures stop before `_run_execute_pipeline()`
+- Modified: `src/seo_agents/status.py` — `validate --json` now returns distinct cases: dry-run empty, research-only populated, live missing extraction, stale/mixed artifacts, gate failure, malformed artifact
+- Modified: `src/seo_agents/evidence.py` — writers prefer explicit `run_id` for empty collections
+- Modified: `src/seo_agents/contracts.py` — added `research_only` to RunManifest
+- New tests: `tests/test_finalization.py` — 18 tests covering finalizer output, live zero-claim gate, failed-package preservation, execution stop on hard gate, validate JSON cases, and old-path removal
+- Verified: 249 Python tests pass, 6 Node tests pass, dry-run and validate CLI work offline
+
 ### Final test count
-- 144 Python tests pass
+- 249 Python tests pass
 - 6 Node tests pass
-- `validate --json` gates pass
+- `validate --json` distinguishes the six required cases
 
 ### Issues encountered
 - Pi crashed twice during long corrective dispatches — context limit. Strategy: shorter inline prompts for remaining test work.

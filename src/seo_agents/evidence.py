@@ -257,7 +257,7 @@ def write_evidence_package(
     writer does not silently lose the invocation identity.
     """
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    rid = evidence_list[0].get("run_id", "") if evidence_list else run_id
+    rid = run_id or (evidence_list[0].get("run_id", "") if evidence_list else "")
     payload = {"run_id": rid, "evidence": evidence_list}
     tmp = EVIDENCE_PACKAGE_PATH.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
@@ -279,7 +279,7 @@ def write_claim_graph(
     does not silently lose the invocation identity.
     """
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    rid = claims[0].get("run_id", "") if claims else run_id
+    rid = run_id or (claims[0].get("run_id", "") if claims else "")
     payload = {"run_id": rid, "claims": claims}
     tmp = CLAIM_GRAPH_PATH.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")

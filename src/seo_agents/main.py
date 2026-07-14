@@ -35,6 +35,7 @@ from seo_agents.evidence import (
     write_run_manifest,
     write_task_graph,
 )
+from seo_agents.finalize import finalize_run
 from seo_agents.crew import (
     DEFAULT_AUDIENCE,
     DEFAULT_REGION,
@@ -57,6 +58,7 @@ from seo_agents.status import (
     build_workflow_status,
     format_status_text,
     format_validation_text,
+    validate_outputs_json,
     validate_workflow_outputs,
     write_workflow_status,
 )
@@ -837,6 +839,15 @@ def main() -> None:
             print(f"\n📁 Research outputs archived to: {run_dir}")
             write_run_health("research", "success", topic=topic, started_at=t0)
             write_workflow_status(phase="research", phase_status="complete", args=run_args)
+            # Finalize evidence and claims before any execution decision.
+            finalize_result = finalize_run(
+                ctx=ctx,
+                report_dir=OUTPUT_DIR,
+                output_dir=OUTPUT_DIR,
+                dry_run=False,
+                research_only=skip_execute,
+                unavailable_tools=[],
+            )
             # Write run-lineage JSON files after crew completes.
             manifest = RunManifest(
                 run_id=run_id,
@@ -851,14 +862,36 @@ def main() -> None:
                 audience=run_args.get("audience", ""),
                 keywords=run_args.get("keywords", ""),
                 dry_run=False,
+                research_only=skip_execute,
             )
             write_run_manifest(manifest)
-            write_evidence_package([], run_id=run_id)
-            write_claim_graph([], run_id=run_id)
             print(f"\n📄 Run manifest: {RUN_MANIFEST_PATH}")
             print(f"📄 Evidence package: {EVIDENCE_PACKAGE_PATH}")
             print(f"📄 Claim graph: {CLAIM_GRAPH_PATH}")
-            if skip_execute:
+            print(f"📄 Extraction diagnostics: {finalize_result['artifact_paths'].get('extraction_diagnostics')}")
+
+            # Build validated task/action graph after finalization.
+            from seo_agents.actions import write_action_queue
+            write_action_queue(run_id=run_id)
+
+            if finalize_result["gate_result"]["hard_fail"]:
+                msg = (
+                    "Hard gate failure — stopping before execution. "
+                    f"Failures: {len(finalize_result['gate_result']['failures'])}, "
+                    f"Warnings: {len(finalize_result['gate_result']['warnings'])}"
+                )
+                write_run_health("finalize", "blocked", topic=topic, error=msg, started_at=t0)
+                write_workflow_status(
+                    phase="finalize",
+                    phase_status="blocked",
+                    args=run_args,
+                    error=msg,
+                    extra={"gate_result": finalize_result["gate_result"]},
+                )
+                print(f"\n{'─' * 60}")
+                print(f"🚫 {msg}")
+                print(f"{'─' * 60}")
+            elif skip_execute:
                 print(f"\n{'─' * 60}")
                 print("⏭  --skip-execute: research complete — skipping execution pipeline.")
                 print(f"{'─' * 60}")
@@ -945,47 +978,17 @@ def main() -> None:
             print(format_status_text(status))
 
     elif command == "validate":
-        status = build_workflow_status(phase="validate", phase_status="complete")
-        issues = validate_workflow_outputs(status)
-        # Session 2: add gate-level detail
-        ev_path = OUTPUT_DIR / "evidence_package.json"
-        claim_path = OUTPUT_DIR / "claim_graph.json"
-        gate_detail = {"evidence": "ok", "claims": "ok", "gates": []}
-        if ev_path.exists():
-            try:
-                raw = json.loads(ev_path.read_text(encoding="utf-8"))
-                from seo_agents.evidence import validate_evidence_package
-                ev_result = validate_evidence_package(raw.get("evidence", []))
-                gate_detail["evidence"] = ev_result["ok"]
-                gate_detail["gates"].extend([
-                    {"name": g["gate"], "severity": g["severity"], "detail": g["detail"]}
-                    for g in ev_result.get("gates", [])
-                ])
-            except Exception:
-                gate_detail["evidence"] = "error"
-        if claim_path.exists():
-            try:
-                raw = json.loads(claim_path.read_text(encoding="utf-8"))
-                from seo_agents.evidence import validate_claim_graph
-                cl_result = validate_claim_graph(raw.get("claims", []))
-                gate_detail["claims"] = cl_result["ok"]
-                for g in cl_result.get("gates", []):
-                    gate_detail["gates"].append({
-                        "name": g["gate"], "severity": g["severity"], "detail": g["detail"]
-                    })
-            except Exception:
-                gate_detail["claims"] = "error"
         if args.json:
-            print(json.dumps({"ok": not issues, "issues": issues, "status": status, "gates": gate_detail}, indent=2))
+            result = validate_outputs_json()
+            print(json.dumps(result, indent=2))
+            if not result["ok"]:
+                sys.exit(1)
         else:
+            status = build_workflow_status(phase="validate", phase_status="complete")
+            issues = validate_workflow_outputs(status)
             print(format_validation_text(issues))
-            if gate_detail["gates"]:
-                print("\nGate details:")
-                for g in gate_detail["gates"]:
-                    marker = "FAIL" if g["severity"] == "fail" else "WARN"
-                    print(f"  [{marker}] {g['name']}: {g['detail']}")
-        if issues:
-            sys.exit(1)
+            if issues:
+                sys.exit(1)
 
     elif command == "actions":
         queue = write_action_queue()
