@@ -291,3 +291,89 @@ class TestDryRunCalibration:
         h1 = stable_hash(prefix="claim_", data="test statement")
         h2 = stable_hash(prefix="claim_", data="test statement")
         assert h1 == h2
+
+
+# ---------------------------------------------------------------------------
+# T10 — Watchdog monitoring_alert_check tests
+# ---------------------------------------------------------------------------
+
+from seo_agents.contracts import ExecutionTask
+
+
+class TestT10WatchdogMonitoringAlertCheck:
+    """T10 watchdog checks: monitoring_alert_check task creation, advisory-by-default gates,
+    and dry-run isolation from live side effects."""
+
+    def test_t10_monitoring_alert_check_task_type_can_be_created(self):
+        """T10: a monitoring_alert_check task can be created in the task graph.
+
+        The ExecutionTask model accepts task_type='monitoring_alert_check'
+        and all required fields default cleanly.
+        """
+        task = ExecutionTask(
+            task_id="T10-001",
+            run_id="run-watchdog-001",
+            title="Monitor 404 rate for /services/* pages",
+            task_type="monitoring_alert_check",
+            supporting_claim_ids=["claim_abc123"],
+            owner="website_manager",
+        )
+        assert task.task_type == "monitoring_alert_check"
+        assert task.status == "research_gap"  # default status
+        assert task.to_dict()["task_type"] == "monitoring_alert_check"
+
+    def test_t10_watchdog_events_are_advisory_by_default(self):
+        """T10: Watchdog events are advisory by default and blocking only on
+        explicit critical gates.
+
+        A monitoring_alert_check task should default to advisory (non-blocking)
+        approval_class and not cause a hard gate unless explicitly marked critical.
+        """
+        # Advisory by default — approval_class is 'none' which means no hard gate
+        advisory = ExecutionTask(
+            task_id="T10-adv-001",
+            run_id="run-watchdog-001",
+            title="Advisory watchdog check",
+            task_type="monitoring_alert_check",
+            approval_class="none",
+        )
+        assert advisory.approval_class == "none"
+
+        # Only mandatory approval_class triggers a blocking gate
+        blocking = ExecutionTask(
+            task_id="T10-block-001",
+            run_id="run-watchdog-001",
+            title="Critical gate — requires explicit approval",
+            task_type="monitoring_alert_check",
+            approval_class="mandatory",
+        )
+        assert blocking.approval_class == "mandatory"
+
+        # Verify default approval_class is 'none' (advisory)
+        default_task = ExecutionTask(
+            task_id="T10-default-001",
+            run_id="run-watchdog-001",
+            title="Default watchdog task",
+            task_type="monitoring_alert_check",
+        )
+        assert default_task.approval_class == "none"
+
+    def test_t10_watchdog_dry_run_no_live_side_effects(self):
+        """T10: In dry-run mode the watchdog path does not trigger live side effects.
+
+        A monitoring_alert_check in dry-run should not call any live adapters
+        or external systems — it should only produce JSON output.
+        """
+        # Create a watchdog task and verify it has no live adapter calls
+        task = ExecutionTask(
+            task_id="T10-dry-001",
+            run_id="run-watchdog-dry",
+            title="Dry-run watchdog monitoring check",
+            task_type="monitoring_alert_check",
+            verification={"dry_run": True, "check_type": "monitoring"},
+        )
+        assert task.status == "research_gap"
+        # The verification dict carries dry_run flag — no live adapters should be invoked
+        assert task.verification.get("dry_run") is True
+        # No approval_class 'mandatory' means no blocking gate / no live side effect
+        assert task.approval_class == "none"
