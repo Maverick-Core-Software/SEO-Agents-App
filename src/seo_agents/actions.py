@@ -1290,11 +1290,23 @@ def _propagate_dependency_status(tasks: list[dict[str, Any]]) -> None:
 
     Tasks with no unresolved/blocked dependencies keep their existing gate-
     derived status unchanged.
+
+    Indexes by both ``task_id`` and ``action_id`` so dependency references
+    resolve correctly regardless of whether the dependency points at the
+    ``task_id`` namespace (``T-{run}-{seq}``) or the ``action_id`` namespace
+    (``task-t001``, ``gbp-post-...``).
     """
     blocked_statuses = {"blocked", "research_gap", "waiting_on_owner", "waiting_on_tool_access"}
+    # Index by both namespace — dependency values reference action["id"] but
+    # the task dict carries both task_id and action_id fields.
     task_by_id: dict[str, dict[str, Any]] = {}
     for t in tasks:
         task_by_id[t["task_id"]] = t
+        # action_id is the real namespace used by dependencies.
+        # Research-gap tasks from contradiction resolution have no action_id.
+        aid = t.get("action_id")
+        if aid is not None and aid != t["task_id"]:
+            task_by_id[aid] = t
 
     changed = True
     while changed:

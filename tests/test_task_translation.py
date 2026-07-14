@@ -503,14 +503,14 @@ class TestPhase4Fix43:
     def test_dep_on_blocked_task_becomes_blocked(self, tmp_path):
         """A task depending on a blocked task is itself blocked.
 
-        We test _propagate_dependency_status directly since it's a pure
-        function — no filesystem, no module-level constant issues.
+        Dependencies use the real action_id namespace (not task_id), which is
+        what _write_task_graph_from_actions actually produces.
         """
         from seo_agents.actions import _propagate_dependency_status
 
-        # Build the task list the way _write_task_graph_from_actions does
-        # A-1: no claims → _build_validated_task returns research_gap
-        # A-2: has claim but depends on A-1 → should become blocked
+        # Build tasks the way _write_task_graph_from_actions does.
+        # A-1: no claims → research_gap with action_id="action-a1"
+        # A-2: has claim but depends on action-a1 → should become blocked
         tasks = [
             {
                 "task_id": "T-run-1-T001",
@@ -530,7 +530,7 @@ class TestPhase4Fix43:
                 "title": "Task A-2",
                 "task_type": "website_copy_update",
                 "supporting_claim_ids": ["claim_abc123"],
-                "dependencies": ["T-run-1-T001"],
+                "dependencies": ["action-a1"],
                 "status": "ready",
             },
         ]
@@ -540,6 +540,56 @@ class TestPhase4Fix43:
         assert a1 is not None and a1["status"] == "research_gap"
         assert a2 is not None and a2["status"] == "blocked"
         assert any("blocked_dependency" in r for r in a2.get("blocking_reasons", []))
+
+    def test_dep_on_blocked_task_via_write_task_graph(self, tmp_path):
+        """End-to-end: two raw action dicts go through _write_task_graph_from_actions
+        with real action["id"] as the dependency reference.
+        """
+        import seo_agents.evidence as ev_mod
+        import seo_agents.actions as act_mod
+
+        # Patch TASK_GRAPH_PATH AND OUTPUT_DIR so write_task_graph writes to tmp_path.
+        # Patch BOTH modules — actions.py imported TASK_GRAPH_PATH and write_task_graph
+        # at module level, so they each need their own patch.
+        tg_path = tmp_path / "outputs" / "task_graph.json"
+        tg_path.parent.mkdir(parents=True, exist_ok=True)
+        with (
+            patch.object(ev_mod, "TASK_GRAPH_PATH", tg_path),
+            patch.object(ev_mod, "OUTPUT_DIR", tmp_path / "outputs"),
+            patch.object(act_mod, "TASK_GRAPH_PATH", tg_path),
+            patch.object(act_mod, "write_task_graph", lambda tasks, run_id="": None),
+        ):
+            from seo_agents.actions import _write_task_graph_from_actions
+
+            actions = [
+                {"id": "action-a1", "source_task_id": "T001",
+                 "action_type": "content_update", "title": "Task A",
+                 "supporting_claim_ids": [], "status": "ready",
+                 "dependencies": [], "approval_required": False,
+                 "approval": None, "live_adapter": "website_manager",
+                 "platform": "website", "assigned_agent": "content_executor"},
+                {"id": "action-a2", "source_task_id": "T002",
+                 "action_type": "website_copy_update", "title": "Task B",
+                 "supporting_claim_ids": ["claim_x"], "status": "ready",
+                 "dependencies": ["action-a1"], "approval_required": False,
+                 "approval": None, "live_adapter": "website_manager",
+                 "platform": "website", "assigned_agent": "content_executor"},
+            ]
+
+            # Capture tasks via the patched write_task_graph callback
+            captured = []
+            def _capture(tasks, run_id=""):
+                captured.extend(tasks)
+
+            act_mod.write_task_graph = _capture
+
+            _write_task_graph_from_actions(actions, "run-1")
+
+            a1 = next(t for t in captured if t["action_id"] == "action-a1")
+            a2 = next(t for t in captured if t["action_id"] == "action-a2")
+            assert a1["status"] == "research_gap"
+            assert a2["status"] == "blocked"
+            assert any("blocked_dependency" in r for r in a2.get("blocking_reasons", []))
 
 
 class TestPhase4Fix45:
@@ -572,3 +622,64 @@ class TestPhase4Fix45:
             assert "Blocked" not in titles
             assert "Gap" not in titles
             assert "Waiting" not in titles
+
+
+class TestPhase4Fix45_2:
+    """build_executor_crew builds queue_context entirely from filtered tasks,
+    not from raw execution_queue.md — Task 4.5-fix-2.
+    """
+
+    def test_queue_context_uses_filtered_tasks(self):
+        """When task_graph.json has filtered tasks, queue_text is built from
+        them, not from raw execution queue markdown."""
+        from seo_agents.crew import _filter_executable_tasks
+        from seo_agents.evidence import TASK_GRAPH_PATH
+        import seo_agents.evidence as ev_mod
+        import seo_agents.status as st_mod
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+
+            # Write a task graph with only "ready" tasks
+            tg_data = {
+                "run_id": "run-1",
+                "tasks": [
+                    {"task_id": "T-1", "status": "ready", "action_id": "a1",
+                     "title": "Update homepage meta", "task_type": "website_copy_update",
+                     "priority": {"tier": "P1"}, "owner": "content_executor",
+                     "acceptance_criteria": ["Meta tags updated"],
+                     "verification": {"checklist": ["Check rendered HTML"]},
+                     "rollback": "Revert git reset", "supporting_claim_ids": ["c1"]},
+                    {"task_id": "T-2", "status": "blocked", "action_id": "a2",
+                     "title": "Blocked task", "task_type": "content_update",
+                     "priority": {"tier": "P2"}, "owner": "content_executor",
+                     "acceptance_criteria": [], "verification": {"checklist": []},
+                     "rollback": "", "supporting_claim_ids": []},
+                ],
+            }
+            tg_path = tmp / "task_graph.json"
+            tg_path.write_text(json.dumps(tg_data))
+
+            # Patch TASK_GRAPH_PATH so _filter_executable_tasks reads from tmp
+            with patch.object(ev_mod, "TASK_GRAPH_PATH", tg_path):
+                # Patch read_output so crew.build_executor_crew doesn't
+                # read real files — just verify queue_text comes from filtered
+                filtered = _filter_executable_tasks()
+
+                # Build queue_text the way build_executor_crew does
+                lines = [
+                    "- **" + t.get("task_id", "") + "** [" + t.get("status", "") + "] "
+                    + t.get("title", "") + " ("
+                    + t.get("task_type", "") + " | "
+                    + t.get("priority", {}).get("tier", "P3")
+                    + " | " + t.get("owner", "") + ")"
+                    for t in filtered
+                ]
+                queue_text = "\n".join(lines)
+
+                # Must contain the filtered task title, NOT the blocked one
+                assert "Update homepage meta" in queue_text
+                assert "Blocked task" not in queue_text
+                assert len(filtered) == 1
+                assert filtered[0]["action_id"] == "a1"

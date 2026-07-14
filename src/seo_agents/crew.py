@@ -528,24 +528,40 @@ def build_executor_crew() -> Crew:
     structure_path = PROJECT_ROOT / "knowledge" / "website-structure.md"
     website_structure = read_text(structure_path) if structure_path.exists() else "[website-structure.md not found]"
 
-    # Task 4.5-fix: Load task_graph.json and filter to executable tasks only.
+    # Task 4.5-fix-2: Load task_graph.json and filter to executable tasks only.
     # Only include tasks that are: from the current run; not blocked/research_gap/
     # waiting_on_owner/waiting_on_tool_access; free of unresolved gate failures.
     _task_graph_filter = _filter_executable_tasks()
     _filtered_titles = set(t.get("title", "") for t in _task_graph_filter)
     _filtered_ids = set(t.get("action_id") for t in _task_graph_filter)
     _filtered_ids_task = set(t.get("task_id") for t in _task_graph_filter)
-    task_graph_text = ""
+
+    # Build queue text entirely from filtered tasks when they exist.
+    # This excludes blocked/research_gap tasks from what the executor agents see.
+    # When there are zero filtered tasks (legacy runs without a task graph),
+    # fall back to the raw execution queue text so older runs keep working.
+    queue_text = ""
     if _task_graph_filter:
-        task_graph_text = json.dumps(_task_graph_filter, indent=2)
+        # Build one entry per filtered task with key fields
+        lines = [
+            "- **" + t.get("task_id", "") + "** [" + t.get("status", "") + "] "
+            + t.get("title", "") + " ("
+            + t.get("task_type", "") + " | "
+            + t.get("priority", {}).get("tier", "P3")
+            + " | " + t.get("owner", "") + ")"
+            for t in _task_graph_filter
+        ]
+        queue_text = "\n".join(lines)
+    else:
+        # No filtered tasks — legacy run without a task graph; use raw queue
+        queue_text = execution_queue
 
     queue_context = (
         "You are reading the execution queue plus the live website structure reference. "
         "The Grizzly website is a static HTML site (index.html plus /blog/ pages) in a git repo, "
         "deployed by Vercel on every push — there is no WordPress and no CMS. Website changes are "
         "applied by the Website Manager adapter through the action queue.\n\n"
-        f"EXECUTION QUEUE:\n\n{execution_queue}\n\n"
-        f"VALIDATED TASK GRAPH (only executable tasks — blocked/research_gap tasks excluded):\n\n{task_graph_text}\n\n"
+        f"EXECUTION QUEUE (filtered — blocked and research_gap tasks excluded):\n\n{queue_text}\n\n"
         f"LIVE WEBSITE STRUCTURE REFERENCE:\n\n{website_structure}"
     )
 
