@@ -234,6 +234,11 @@ class TestContradictionBlocking:
             "seo_agents.actions._unresolved_contradiction_ids",
             lambda evidence_path=None: [],
         )
+        # Session 4: mock claim graph so claim_ok is recognized
+        monkeypatch.setattr(
+            "seo_agents.actions._load_claim_graph",
+            lambda claim_path=None: ({"claim_ok": {"claim_id": "claim_ok", "status": "confirmed", "run_id": "test-001", "contradiction_ids": []}}, "test-001"),
+        )
         captured = []
         def mock_write(tasks, run_id):
             captured.extend(tasks)
@@ -250,6 +255,11 @@ class TestContradictionBlocking:
         monkeypatch.setattr(
             "seo_agents.actions._unresolved_contradiction_ids",
             lambda evidence_path=None: ["claim_xyz"],
+        )
+        # Session 4: mock claim graph
+        monkeypatch.setattr(
+            "seo_agents.actions._load_claim_graph",
+            lambda claim_path=None: ({}, "test-001"),
         )
         captured = []
         def mock_write(tasks, run_id):

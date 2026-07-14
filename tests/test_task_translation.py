@@ -325,12 +325,16 @@ class TestBlockedByContradiction:
     def test_action_with_blocked_claim_gets_blocked_status(self, monkeypatch, tmp_path):
         """An action whose supporting_claim_ids includes a claim with unresolved contradiction
         should have status 'blocked' in the task graph."""
-        # We'll test _write_task_graph_from_actions by mocking the helper
         from seo_agents.actions import _unresolved_contradiction_ids
 
         monkeypatch.setattr(
             "seo_agents.actions._unresolved_contradiction_ids",
             lambda evidence_path=None: ["claim_blocked"],
+        )
+        # Session 4: mock claim graph so claim_blocked is recognized
+        monkeypatch.setattr(
+            "seo_agents.actions._load_claim_graph",
+            lambda claim_path=None: ({"claim_blocked": {"claim_id": "claim_blocked", "status": "provisional", "run_id": "test-001", "contradiction_ids": ["claim_other"]}}, "test-001"),
         )
 
         # Mock write_task_graph to capture the tasks
@@ -356,6 +360,11 @@ class TestBlockedByContradiction:
             "seo_agents.actions._unresolved_contradiction_ids",
             lambda evidence_path=None: [],
         )
+        # Session 4: mock claim graph so claim_ok is recognized as valid
+        monkeypatch.setattr(
+            "seo_agents.actions._load_claim_graph",
+            lambda claim_path=None: ({"claim_ok": {"claim_id": "claim_ok", "status": "confirmed", "run_id": "test-001", "contradiction_ids": []}}, "test-001"),
+        )
 
         captured = []
         def mock_write(tasks, run_id):
@@ -378,6 +387,11 @@ class TestBlockedByContradiction:
         monkeypatch.setattr(
             "seo_agents.actions._unresolved_contradiction_ids",
             lambda evidence_path=None: ["claim_blocked", "claim_other"],
+        )
+        # Session 4: mock claim graph
+        monkeypatch.setattr(
+            "seo_agents.actions._load_claim_graph",
+            lambda claim_path=None: ({}, "test-001"),
         )
 
         captured = []

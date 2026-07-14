@@ -758,7 +758,6 @@ def _detect_dependency_cycles(actions: list[dict[str, Any]]) -> list[str]:
 
 def _unresolved_contradiction_ids(evidence_path: Path = None) -> list[str]:
     """Session 3: extract claim IDs that have unresolved material contradictions."""
-    # Check evidence_package.json for unresolved contradictions
     if evidence_path is None:
         from seo_agents.evidence import EVIDENCE_PACKAGE_PATH
         evidence_path = EVIDENCE_PACKAGE_PATH
@@ -768,7 +767,6 @@ def _unresolved_contradiction_ids(evidence_path: Path = None) -> list[str]:
         raw = json.loads(evidence_path.read_text(encoding="utf-8"))
         evidence_list = raw.get("evidence", [])
         result = validate_evidence_package(evidence_list)
-        # Find claims with unresolved contradictions
         unres: list[str] = []
         for g in result.get("gates", []):
             if g.get("gate") == "unresolved_contradiction":
@@ -780,62 +778,261 @@ def _unresolved_contradiction_ids(evidence_path: Path = None) -> list[str]:
         return []
 
 
-def write_action_queue(run_id: str = "") -> dict[str, Any]:
-    payload = build_action_queue(run_id)
-    _write_json(ACTION_QUEUE_FILE, payload)
-    # Session 3: write task_graph.json with lineage fields and dependency validation
-    _write_task_graph_from_actions(payload.get("actions", []), run_id)
-    return payload
+# ---------------------------------------------------------------------------
+# Session 4 — Evidence-bound task translation
+# ---------------------------------------------------------------------------
 
 
-def _write_task_graph_from_actions(actions: list[dict[str, Any]], run_id: str) -> None:
-    """Session 3: convert actions to task objects and write task_graph.json."""
-    # Detect cycles and unresolved contradictions
-    cycles = _detect_dependency_cycles(actions)
-    contradict_claims = _unresolved_contradiction_ids()
+def _load_claim_graph(claim_path: Path = None) -> dict[str, Any]:
+    """Load the claim graph JSON and return the claims dict keyed by claim_id.
 
-    # Build task list from actions
-    tasks: list[dict[str, Any]] = []
+    Returns:
+      - claim_map: dict mapping claim_id -> claim dict (or empty dict)
+      - run_id: the run_id from the graph (empty string if unavailable)
+    """
+    if claim_path is None:
+        from seo_agents.evidence import CLAIM_GRAPH_PATH
+        claim_path = CLAIM_GRAPH_PATH
+    if not claim_path.exists():
+        return {}, ""
+    try:
+        raw = json.loads(claim_path.read_text(encoding="utf-8"))
+        claims = raw.get("claims", [])
+        claim_map = {}
+        run_id = raw.get("run_id", "")
+        for claim in claims:
+            cid = claim.get("claim_id", "")
+            if cid:
+                claim_map[cid] = claim
+        return claim_map, run_id
+    except Exception:
+        return {}, ""
+
+
+def _validate_claim_references(
+    action_id: str,
+    supporting_claim_ids: list[str],
+    claim_map: dict[str, dict[str, Any]],
+    claim_run_id: str,
+    action_run_id: str,
+) -> list[dict[str, Any]]:
+    """Validate every supporting_claim_id against the claim graph.
+
+    Returns a list of diagnostics for each problematic reference:
+      - "unknown_claim" — ID not in claim graph
+      - "wrong_run" — ID from another run
+      - "rejected_claim" — claim status is rejected
+      - "unknown_claim_status" — claim status is unknown
+      - "failed_material_gate" — claim has failed material gates
+      - "no_claims" — ordinary executable task with no claim IDs
+    """
+    diags: list[dict[str, Any]] = []
+
+    if not supporting_claim_ids:
+        # Check if this is an ordinary executable task (not research_gap)
+        action_type = None
+        # We need the action type — caller should pass it or we check status
+        # For now, we flag it only if it's not obviously a research_gap
+        # The caller should use this to decide whether to convert to research gap
+        diags.append({
+            "code": "no_claim_ids",
+            "severity": "warn",
+            "action_id": action_id,
+            "detail": f"Action {action_id} has no supporting claims",
+        })
+        return diags
+
+    for claim_id in supporting_claim_ids:
+        if claim_id not in claim_map:
+            diags.append({
+                "code": "unknown_claim",
+                "severity": "fail",
+                "action_id": action_id,
+                "claim_id": claim_id,
+                "detail": f"Claim {claim_id} not found in claim graph",
+            })
+            continue
+
+        claim = claim_map[claim_id]
+        claim_run = claim.get("run_id", "")
+        claim_status = claim.get("status", "unknown")
+
+        # Wrong run check
+        if claim_run and claim_run_id and claim_run != claim_run_id:
+            diags.append({
+                "code": "wrong_run",
+                "severity": "fail",
+                "action_id": action_id,
+                "claim_id": claim_id,
+                "detail": f"Claim {claim_id} belongs to run {claim_run}, not {claim_run_id}",
+            })
+            continue
+
+        # Rejected claim
+        if claim_status == "rejected":
+            diags.append({
+                "code": "rejected_claim",
+                "severity": "fail",
+                "action_id": action_id,
+                "claim_id": claim_id,
+                "detail": f"Claim {claim_id} is rejected",
+            })
+            continue
+
+        # Unknown claim status
+        if claim_status == "unknown":
+            diags.append({
+                "code": "unknown_claim_status",
+                "severity": "warn",
+                "action_id": action_id,
+                "claim_id": claim_id,
+                "detail": f"Claim {claim_id} has unknown status",
+            })
+
+        # Failed material gates — check contradiction_ids and freshness
+        contradictions = claim.get("contradiction_ids", [])
+        if contradictions:
+            diags.append({
+                "code": "failed_material_gate",
+                "severity": "warn",
+                "action_id": action_id,
+                "claim_id": claim_id,
+                "detail": f"Claim {claim_id} has unresolved contradictions: {contradictions}",
+            })
+
+    return diags
+
+
+def _validate_dependencies(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Validate dependency references and detect cycles.
+
+    Returns a list of diagnostics:
+      - "cycle" — task is part of a dependency cycle
+      - "unknown_dep" — task references an unknown task ID
+      - "blocked_dep" — task depends on a blocked/unresolved task
+    """
+    diags: list[dict[str, Any]] = []
+    action_ids = {a.get("id", "") for a in actions}
+    dep_map: dict[str, list[str]] = {}
     for action in actions:
-        # Check if this task is blocked by unresolved contradictions
-        source_claim_ids = action.get("supporting_claim_ids", [])
-        blocked_by_contradiction = False
-        for claim_id in source_claim_ids:
-            if claim_id in contradict_claims:
-                blocked_by_contradiction = True
-                break
+        dep_map[action.get("id", "")] = action.get("dependencies", [])
 
-        # Build status
-        if blocked_by_contradiction:
-            status = "blocked"
-        elif action.get("status") in {"needs_approval", "blocked_access"}:
-            status = "waiting_on_owner" if action["status"] == "needs_approval" else "waiting_on_tool_access"
-        elif action.get("status") == "dry_run_ready":
-            status = "ready"
-        elif action.get("status") == "verified":
-            status = "verified"
-        else:
-            status = "ready"
+    # Cycle detection (reuse existing logic)
+    cycles = _detect_dependency_cycles(actions)
+    for cycle_task in cycles:
+        diags.append({
+            "code": "cycle",
+            "severity": "fail",
+            "task_id": cycle_task,
+            "detail": f"Task {cycle_task} is part of a dependency cycle",
+        })
 
-        # Build dependencies list
-        deps = action.get("dependencies", [])
-        # Add cycle-blocked tasks
-        for cycle_task in cycles:
-            if cycle_task not in deps:
-                deps.append(cycle_task)
+    # Unknown dependency references
+    for action in actions:
+        aid = action.get("id", "")
+        for dep in action.get("dependencies", []):
+            if dep not in action_ids and dep not in cycles:
+                # Research-gap dependencies are allowed to reference tasks not yet created
+                # Check if this dep is referenced by another action
+                is_research_gap_dep = any(
+                    a.get("task_type") == "research_gap" or a.get("status") == "research_gap"
+                    for a in actions
+                )
+                if not is_research_gap_dep:
+                    diags.append({
+                        "code": "unknown_dep",
+                        "severity": "warn",
+                        "task_id": aid,
+                        "dependency": dep,
+                        "detail": f"Task {aid} depends on unknown task {dep}",
+                    })
 
-        # Build task object
-        source_task_id = action.get("source_task_id", "")
+    return diags
+
+
+def _classify_schedule_action(action: dict[str, Any]) -> str:
+    """Session 4: classify scheduled content actions per policy.
+
+    Returns one of:
+      - "claim_bound" — action has valid supporting claim IDs from current run
+      - "policy_exempt" — action is scheduled content with owner approval
+      - "research_gap" — action has empty claim lists and must not be executable
+
+    Policy: scheduled GBP/Facebook posts may either:
+      1. Bind every post to one or more research claims, OR
+      2. Be classified as policy_exempt with mandatory owner approval,
+         OR
+      3. Be marked as research_gap when no claims and no approval
+    """
+    claim_ids = action.get("supporting_claim_ids", [])
+    approval_class = action.get("approval_class", "none")
+
+    if claim_ids:
+        return "claim_bound"
+
+    # No claims — check if this is scheduled content with approval
+    if approval_class == "mandatory":
+        return "policy_exempt"
+
+    return "research_gap"
+
+
+def _build_validated_task(
+    action: dict[str, Any],
+    claim_map: dict[str, dict[str, Any]],
+    claim_run_id: str,
+    cycles: list[str],
+    dep_diags: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Build a validated task from an action, applying all Session 4 gates.
+
+    Returns None if the action cannot be promoted (all references invalid).
+    Otherwise returns the task dict.
+    """
+    action_id = action.get("id", "")
+    source_claim_ids = action.get("supporting_claim_ids", [])
+
+    # Validate claim references (non-prefix, full referential integrity)
+    claim_diags = _validate_claim_references(
+        action_id, source_claim_ids, claim_map, claim_run_id, claim_run_id
+    )
+    has_failures = any(d["severity"] == "fail" for d in claim_diags)
+
+    # Check for blocked claims (rejected, unknown, contradiction)
+    blocked_claims: list[str] = []
+    for cid in source_claim_ids:
+        if cid not in claim_map:
+            continue
+        c = claim_map[cid]
+        c_status = c.get("status", "unknown")
+        if c_status in {"rejected", "unknown"}:
+            blocked_claims.append(cid)
+        if c.get("contradiction_ids"):
+            blocked_claims.append(cid)
+
+    # Determine if this action's claims are all blocked
+    all_blocked = len(source_claim_ids) > 0 and len(blocked_claims) == len(source_claim_ids)
+
+    # Build status based on gates
+    if has_failures or all_blocked:
+        status = "blocked"
+        blocking_reasons: list[str] = []
+        for cd in claim_diags:
+            if cd["severity"] == "fail":
+                blocking_reasons.append(cd["code"])
+        if all_blocked:
+            blocking_reasons.extend(blocked_claims)
         task = {
-            "task_id": f"T-{run_id}-{action.get('source_task_id', '?').replace('-','_')[:10]}",
-            "run_id": run_id,
+            "task_id": f"T-{claim_run_id}-{action.get('source_task_id', '?').replace('-','_')[:10]}",
+            "run_id": claim_run_id,
+            "action_id": action_id,
             "title": action.get("title", ""),
-            "task_type": action.get("action_type", "content_update"),
+            "task_type": action.get("action_type", "manual_followup"),
             "supporting_claim_ids": source_claim_ids,
-            "owner": _owner_for_action(action.get("action_type", ""), action.get("assigned_agent", "")),
-            "priority": action.get("priority", {"tier": "P2", "score": 0.4, "formula_version": "priority-v1"}),
-            "confidence": action.get("confidence", {"label": "medium", "score": 0.5}),
-            "dependencies": deps,
+            "owner": action.get("owner", _owner_for_action(action.get("action_type", ""), action.get("assigned_agent", ""))),
+            "priority": action.get("priority", {"tier": "P3", "score": 0.4, "formula_version": "priority-v1"}),
+            "confidence": action.get("confidence", {"label": "unknown", "score": 0.0}),
+            "dependencies": action.get("dependencies", []),
             "preconditions": action.get("preconditions", []),
             "acceptance_criteria": action.get("acceptance_criteria", []),
             "verification": action.get("verification", {}),
@@ -843,11 +1040,185 @@ def _write_task_graph_from_actions(actions: list[dict[str, Any]], run_id: str) -
             "approval_class": action.get("approval_class", "none"),
             "uncertainty": action.get("uncertainty", {"proxy_metrics_used": [], "gap_reason": None, "blocked_by": []}),
             "idempotency_key": action.get("idempotency_key", ""),
-            "status": status,
+            "status": "blocked",
+            "blocking_reasons": blocking_reasons,
+            "claim_validation": [cd for cd in claim_diags if cd["severity"] in {"fail", "warn"}],
         }
-        tasks.append(task)
+        return task
 
-    # Session 3: create research_gap tasks for unresolved claim contradictions
+    # Check for cycle-blocked
+    is_in_cycle = action_id in cycles
+    # Check for dependency blocks
+    is_dep_blocked = any(
+        d["severity"] == "fail" and d["task_id"] == action_id
+        for d in dep_diags
+    )
+
+    if is_in_cycle or is_dep_blocked:
+        return {
+            "task_id": f"T-{claim_run_id}-{action.get('source_task_id', '?').replace('-','_')[:10]}",
+            "run_id": claim_run_id,
+            "action_id": action_id,
+            "title": action.get("title", ""),
+            "task_type": action.get("action_type", "manual_followup"),
+            "supporting_claim_ids": source_claim_ids,
+            "owner": action.get("owner", _owner_for_action(action.get("action_type", ""), action.get("assigned_agent", ""))),
+            "priority": action.get("priority", {"tier": "P3", "score": 0.4, "formula_version": "priority-v1"}),
+            "confidence": action.get("confidence", {"label": "unknown", "score": 0.0}),
+            "dependencies": action.get("dependencies", []),
+            "preconditions": action.get("preconditions", []),
+            "acceptance_criteria": action.get("acceptance_criteria", []),
+            "verification": action.get("verification", {}),
+            "rollback": action.get("rollback", ""),
+            "approval_class": action.get("approval_class", "none"),
+            "uncertainty": action.get("uncertainty", {"proxy_metrics_used": [], "gap_reason": None, "blocked_by": []}),
+            "idempotency_key": action.get("idempotency_key", ""),
+            "status": "blocked",
+            "blocking_reasons": ["dependency_cycle" if is_in_cycle else "blocked_dependency"] if (is_in_cycle or is_dep_blocked) else [],
+            "claim_validation": [cd for cd in claim_diags if cd["severity"] in {"fail", "warn"}],
+        }
+
+    # All gates pass — determine final status
+    action_status = action.get("status", "ready")
+    if action_status == "dry_run_ready":
+        status = "ready"
+    elif action_status == "verified":
+        status = "verified"
+    elif action_status == "needs_approval":
+        status = "waiting_on_owner"
+    elif action_status == "blocked_access":
+        status = "waiting_on_tool_access"
+    else:
+        status = "ready"
+
+    return {
+        "task_id": f"T-{claim_run_id}-{action.get('source_task_id', '?').replace('-','_')[:10]}",
+        "run_id": claim_run_id,
+        "action_id": action_id,
+        "title": action.get("title", ""),
+        "task_type": action.get("action_type", "manual_followup"),
+        "supporting_claim_ids": source_claim_ids,
+        "owner": action.get("owner", _owner_for_action(action.get("action_type", ""), action.get("assigned_agent", ""))),
+        "priority": action.get("priority", {"tier": "P3", "score": 0.4, "formula_version": "priority-v1"}),
+        "confidence": action.get("confidence", {"label": "unknown", "score": 0.0}),
+        "dependencies": action.get("dependencies", []),
+        "preconditions": action.get("preconditions", []),
+        "acceptance_criteria": action.get("acceptance_criteria", []),
+        "verification": action.get("verification", {}),
+        "rollback": action.get("rollback", ""),
+        "approval_class": action.get("approval_class", "none"),
+        "uncertainty": action.get("uncertainty", {"proxy_metrics_used": [], "gap_reason": None, "blocked_by": []}),
+        "idempotency_key": action.get("idempotency_key", ""),
+        "status": status,
+        "claim_validation": [cd for cd in claim_diags if cd["severity"] == "warn"],
+    }
+
+
+def write_action_queue(run_id: str = "", evidence_path: Path = None, claim_path: Path = None) -> dict[str, Any]:
+    payload = build_action_queue(run_id)
+    _write_json(ACTION_QUEUE_FILE, payload)
+    # Session 4: write task_graph.json with claim-reference validation and dependency gates
+    _write_task_graph_from_actions(payload.get("actions", []), run_id, evidence_path, claim_path)
+    return payload
+
+
+def _write_task_graph_from_actions(
+    actions: list[dict[str, Any]],
+    run_id: str,
+    evidence_path: Path = None,
+    claim_path: Path = None,
+) -> None:
+    """Session 4: convert actions to validated task objects and write task_graph.json.
+
+    Every action is validated against the claim graph before promotion.
+    Tasks with invalid claim references, dependency issues, or gate failures
+    are marked as blocked rather than silently promoted.
+    Scheduled content (GBP/Facebook posts) follows the schedule-action policy:
+      - claim_bound: has valid supporting claims
+      - policy_exempt: scheduled with mandatory owner approval
+      - research_gap: no claims, no approval — non-executable
+    """
+    # Load claim graph for referential integrity
+    claim_map, claim_run_id = _load_claim_graph(claim_path)
+    if not claim_run_id and run_id:
+        claim_run_id = run_id
+
+    # Detect cycles and unresolved contradictions
+    cycles = _detect_dependency_cycles(actions)
+    contradict_claims = _unresolved_contradiction_ids(evidence_path)
+
+    # Validate dependencies
+    dep_diags = _validate_dependencies(actions)
+
+    # Build task list from actions
+    tasks: list[dict[str, Any]] = []
+    for action in actions:
+        source_claim_ids = action.get("supporting_claim_ids", [])
+
+        # Handle scheduled content (GBP/Facebook posts with empty claims)
+        if not source_claim_ids:
+            action_type = action.get("action_type", "")
+            if action_type in {"publish_gbp_post", "publish_facebook_post"}:
+                sched_class = _classify_schedule_action(action)
+                if sched_class == "research_gap":
+                    # Non-executable — mark as blocked research gap
+                    task = {
+                        "task_id": f"T-{run_id}-{action.get('source_task_id', '?').replace('-','_')[:10]}",
+                        "run_id": run_id,
+                        "action_id": action.get("id", ""),
+                        "title": action.get("title", ""),
+                        "task_type": "research_gap",
+                        "supporting_claim_ids": [],
+                        "owner": action.get("owner", "owner_review"),
+                        "priority": {"tier": "P2", "score": 0.4, "formula_version": "priority-v1"},
+                        "confidence": {"label": "unknown", "score": 0.0},
+                        "dependencies": [],
+                        "preconditions": ["Scheduled content requires claim binding or owner approval"],
+                        "acceptance_criteria": ["Post must bind to research claims or be approved as policy-exempt"],
+                        "verification": {"checklist": ["Confirm post has supporting evidence or owner approval"]},
+                        "rollback": "Unpublish or delete the scheduled post.",
+                        "approval_class": action.get("approval_class", "none"),
+                        "uncertainty": {"proxy_metrics_used": ["schedule_action_policy"], "gap_reason": "No supporting claims"},
+                        "idempotency_key": action.get("idempotency_key", ""),
+                        "status": "research_gap",
+                        "blocking_reasons": ["schedule_action_policy_requires_claims"],
+                    }
+                    tasks.append(task)
+                    continue
+                elif sched_class == "policy_exempt":
+                    # Scheduled content with mandatory owner approval
+                    task = {
+                        "task_id": f"T-{run_id}-{action.get('source_task_id', '?').replace('-','_')[:10]}",
+                        "run_id": run_id,
+                        "action_id": action.get("id", ""),
+                        "title": action.get("title", ""),
+                        "task_type": action_type,
+                        "supporting_claim_ids": [],
+                        "owner": action.get("owner", "owner_review"),
+                        "priority": action.get("priority", {"tier": "P1", "score": 0.6, "formula_version": "priority-v1"}),
+                        "confidence": action.get("confidence", {"label": "medium", "score": 0.5}),
+                        "dependencies": action.get("dependencies", []),
+                        "preconditions": action.get("preconditions", []),
+                        "acceptance_criteria": action.get("acceptance_criteria", []),
+                        "verification": action.get("verification", {}),
+                        "rollback": action.get("rollback", ""),
+                        "approval_class": "mandatory",
+                        "uncertainty": action.get("uncertainty", {"proxy_metrics_used": [], "gap_reason": None, "blocked_by": []}),
+                        "idempotency_key": action.get("idempotency_key", ""),
+                        "status": "waiting_on_owner",
+                        "blocking_reasons": ["schedule_action_policy_exempt"],
+                    }
+                    tasks.append(task)
+                    continue
+
+        # Use the Session 4 validated task builder
+        task = _build_validated_task(
+            action, claim_map, claim_run_id, cycles, dep_diags
+        )
+        if task is not None:
+            tasks.append(task)
+
+    # Create research_gap tasks for unresolved contradictions (Session 3+4)
     for claim_id in contradict_claims:
         task = {
             "task_id": f"T-{run_id}-RG-{claim_id[-8:]:0>8}",
