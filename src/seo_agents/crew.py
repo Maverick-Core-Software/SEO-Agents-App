@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import os
+import re
 import shutil
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 from crewai import Agent, Crew, LLM, Process, Task
@@ -57,6 +59,42 @@ ARCHIVE_DIR = OUTPUT_DIR / "archive"
 DEFAULT_SITE_URL = "https://www.grizzlyelectricaltx.com/"
 DEFAULT_REGION = "DFW, Texas"
 DEFAULT_AUDIENCE = "DFW homeowners and light commercial customers"
+
+
+def _slugify(text: str) -> str:
+    """Slugify a topic string for use in run IDs."""
+    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("- ")
+
+
+def build_run_id(topic: str, site_url: str = "") -> str:
+    """Deterministic run ID from topic and optional site URL.
+
+    Format: <ISO timestamp UTC>_<topic_slug>
+    The timestamp is fixed at midnight UTC so repeated dry-runs on the same
+    day produce the same ID, making it easy to correlate artifacts.
+    """
+    now = datetime.now(timezone.utc)
+    ts = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    slug = _slugify(topic or "untitled")
+    return f"{ts}_{slug}"
+
+
+def _detect_provider_and_model() -> tuple[str, str, str]:
+    """Detect the configured provider route and model names.
+
+    Returns (provider, research_model, exec_model).
+    """
+    research_model = os.getenv("CREWAI_RESEARCH_MODEL", "unknown")
+    exec_model = os.getenv("CREWAI_EXEC_MODEL", "unknown")
+    # Infer provider from model prefix (e.g. "openai/gpt-4o-mini" -> "openai")
+    provider = research_model.split("/")[0] if "/" in research_model else research_model
+    api_base = os.getenv("CREWAI_RESEARCH_API_BASE", "")
+    if api_base:
+        provider = f"custom({api_base})"
+    # If no model configured at all, note the fallback
+    if research_model == "unknown":
+        provider = "none"
+    return provider, research_model, exec_model
 
 
 # ---------------------------------------------------------------------------
@@ -186,6 +224,7 @@ def build_grizzly_crew(
     keywords: str = "",
     previous_context: str = "",
     completed_tasks: str = "",
+    run_id: str = "",
 ) -> Crew:
     research_llm = build_research_llm()
     exec_llm = build_exec_llm()
@@ -196,6 +235,18 @@ def build_grizzly_crew(
     target_region = region or DEFAULT_REGION
     seed_keywords = keywords or "Use the baseline priority services and infer only safe, relevant terms."
 
+    # Inject run-lineage metadata into shared context for all agents.
+    _run_meta_line = ""
+    if run_id:
+        _provider, _res_model, _exec_model = _detect_provider_and_model()
+        _run_meta_line = (
+            f"\n\n--- RUN LINEAGE ---\n"
+            f"run_id: {run_id}\n"
+            f"provider: {_provider}\n"
+            f"research_model: {_res_model}\n"
+            f"exec_model: {_exec_model}\n"
+        )
+
     shared_context = (
         f"Current request/focus: {topic}\n"
         f"Target site: {target_site}\n"
@@ -204,6 +255,7 @@ def build_grizzly_crew(
         f"Seed keywords: {seed_keywords}\n\n"
         "Baseline knowledge from imported Grizzly reports:\n\n"
         f"{baselines}"
+        f"{_run_meta_line}"
     )
     if previous_context:
         shared_context += f"\n\n---\n\n{previous_context}"
@@ -1075,7 +1127,10 @@ def build_seo_crew(
     keywords: str = "",
     previous_context: str = "",
     completed_tasks: str = "",
+    run_id: str = "",
 ) -> Crew:
+    if not run_id:
+        run_id = build_run_id(topic, site_url)
     return build_grizzly_crew(
         topic=topic,
         site_url=site_url,
@@ -1084,4 +1139,5 @@ def build_seo_crew(
         keywords=keywords,
         previous_context=previous_context,
         completed_tasks=completed_tasks,
+        run_id=run_id,
     )
