@@ -12,6 +12,8 @@ from __future__ import annotations
 import json
 import os
 import sys
+import tempfile
+from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -25,6 +27,7 @@ from seo_agents.contracts import (
     TaskUncertainty,
 )
 from seo_agents.actions import (
+    _build_validated_task,
     _priority_for_action,
     _confidence_for_action,
     _approval_class_for_action,
@@ -447,3 +450,125 @@ class TestExistingFieldsPreserved:
         }
         for field in new_fields:
             assert field in action, f"Missing additive field: {field}"
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 Correction (Section 9b): Task 4.1, 4.3, 4.5 fixes
+# ---------------------------------------------------------------------------
+
+
+class TestPhase4Fix41:
+    """Ordinary executable actions with no claim IDs become research_gap."""
+
+    def test_content_update_with_empty_claims_becomes_research_gap(self):
+        """A non-schedule action with empty supporting_claim_ids is research_gap."""
+        result = _build_validated_task(
+            {
+                "id": "task-x",
+                "action_type": "content_update",
+                "supporting_claim_ids": [],
+                "title": "test update",
+                "status": "dry_run_ready",
+                "dependencies": [],
+            },
+            {},
+            "run-1",
+            [],
+            [],
+        )
+        assert result["status"] == "research_gap"
+        assert result["task_type"] == "research_gap"
+
+    def test_website_copy_update_with_empty_claims_becomes_research_gap(self):
+        result = _build_validated_task(
+            {
+                "id": "task-y",
+                "action_type": "website_copy_update",
+                "supporting_claim_ids": [],
+                "title": "test",
+                "status": "dry_run_ready",
+                "dependencies": [],
+            },
+            {},
+            "run-1",
+            [],
+            [],
+        )
+        assert result["status"] == "research_gap"
+
+
+class TestPhase4Fix43:
+    """Dependency blocking propagates through the task graph."""
+
+    def test_dep_on_blocked_task_becomes_blocked(self, tmp_path):
+        """A task depending on a blocked task is itself blocked.
+
+        We test _propagate_dependency_status directly since it's a pure
+        function — no filesystem, no module-level constant issues.
+        """
+        from seo_agents.actions import _propagate_dependency_status
+
+        # Build the task list the way _write_task_graph_from_actions does
+        # A-1: no claims → _build_validated_task returns research_gap
+        # A-2: has claim but depends on A-1 → should become blocked
+        tasks = [
+            {
+                "task_id": "T-run-1-T001",
+                "run_id": "run-1",
+                "action_id": "action-a1",
+                "title": "Task A-1",
+                "task_type": "research_gap",
+                "supporting_claim_ids": [],
+                "dependencies": [],
+                "status": "research_gap",
+                "blocking_reasons": ["ordinary_executable_without_claims"],
+            },
+            {
+                "task_id": "T-run-1-T002",
+                "run_id": "run-1",
+                "action_id": "action-a2",
+                "title": "Task A-2",
+                "task_type": "website_copy_update",
+                "supporting_claim_ids": ["claim_abc123"],
+                "dependencies": ["T-run-1-T001"],
+                "status": "ready",
+            },
+        ]
+        _propagate_dependency_status(tasks)
+        a1 = next((t for t in tasks if t["action_id"] == "action-a1"), None)
+        a2 = next((t for t in tasks if t["action_id"] == "action-a2"), None)
+        assert a1 is not None and a1["status"] == "research_gap"
+        assert a2 is not None and a2["status"] == "blocked"
+        assert any("blocked_dependency" in r for r in a2.get("blocking_reasons", []))
+
+
+class TestPhase4Fix45:
+    """Executor crew only receives executable tasks from the validated task graph."""
+
+    def test_executor_filter_excludes_blocked_tasks(self):
+        """Only ready/verified/approved tasks pass through."""
+        from seo_agents.crew import _filter_executable_tasks
+        from seo_agents.evidence import TASK_GRAPH_PATH
+        import json
+
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            tg_data = {
+                "run_id": "run-1",
+                "tasks": [
+                    {"task_id": "T1", "status": "ready", "action_id": "a1", "title": "Ready"},
+                    {"task_id": "T2", "status": "blocked", "action_id": "a2", "title": "Blocked"},
+                    {"task_id": "T3", "status": "research_gap", "action_id": "a3", "title": "Gap"},
+                    {"task_id": "T4", "status": "waiting_on_owner", "action_id": "a4", "title": "Waiting"},
+                ],
+            }
+            (tmp / "task_graph.json").write_text(json.dumps(tg_data))
+            import seo_agents.evidence as ev
+            ev.TASK_GRAPH_PATH = tmp / "task_graph.json"
+
+            filtered = _filter_executable_tasks()
+            titles = [t["title"] for t in filtered]
+            assert "Ready" in titles
+            assert "Blocked" not in titles
+            assert "Gap" not in titles
+            assert "Waiting" not in titles
