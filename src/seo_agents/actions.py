@@ -1327,6 +1327,155 @@ def _mark_gbp_workbook_posted(action: dict[str, Any], post_url: str | None = Non
     _save_gbp_workbook(workbook, workbook_path)
 
 
+# ---------------------------------------------------------------------------
+# Session 4 — review classification and failure-specific recovery
+# ---------------------------------------------------------------------------
+
+def classify_review_failure(action: dict[str, Any]) -> str:
+    """Classify an action failure into a recovery category.
+
+    Returns one of:
+      - "transient_retry"     — adapter timeout / network blip
+      - "evidence_access"     — missing evidence or tool access
+      - "contradiction_stall" — unresolved contradiction blocking task
+      - "confidence_gap"      — low confidence, needs more research
+      - "secrets_quarantine"  — secrets detected in evidence
+      - "unknown"
+    """
+    status = action.get("status", "")
+    last_run = action.get("last_run", {})
+    if isinstance(last_run, dict):
+        cmd_stderr = last_run.get("command_result", {}).get("stderr", "")
+    else:
+        cmd_stderr = ""
+    evidence = action.get("evidence", {})
+    if isinstance(evidence, dict):
+        evidence = evidence.get("evidence_excerpt", "")
+    else:
+        evidence = ""
+    rejection = action.get("rejection_reason", "")
+    confidence = action.get("confidence", {})
+    if isinstance(confidence, dict):
+        conf_label = confidence.get("label", "")
+    else:
+        conf_label = ""
+    blocker = action.get("blocker", "")
+    if isinstance(blocker, str):
+        pass
+    else:
+        blocker = ""
+
+    # Secrets quarantine — highest priority
+    if "secret" in cmd_stderr.lower() or "api_key" in evidence.lower() or "credential" in evidence.lower():
+        return "secrets_quarantine"
+    if "secret" in rejection.lower() or "credential" in rejection.lower():
+        return "secrets_quarantine"
+
+    # Evidence access — missing tool access or evidence
+    if status == "blocked_access" or "access" in blocker.lower() or "tool" in blocker.lower():
+        return "evidence_access"
+    if "access" in cmd_stderr.lower() or "tool" in cmd_stderr.lower():
+        return "evidence_access"
+
+    # Contradiction stall — unresolved material contradiction
+    if status == "blocked" or "contradiction" in blocker.lower() or "contradiction" in rejection.lower():
+        return "contradiction_stall"
+    if "contradiction" in cmd_stderr.lower():
+        return "contradiction_stall"
+
+    # Confidence gap — low confidence needs more research
+    if conf_label in ("low", "unknown") and action.get("task_type") != "research_gap":
+        return "confidence_gap"
+
+    # Transient retry — adapter timeout or network error
+    if "timeout" in cmd_stderr.lower() or "network" in cmd_stderr.lower() or "temporary" in cmd_stderr.lower():
+        return "transient_retry"
+    if status == "failed" and last_run.get("status") == "adapter_failed":
+        return "transient_retry"
+
+    return "unknown"
+
+
+def apply_recovery(action: dict[str, Any], failure_class: str) -> dict[str, Any]:
+    """Apply failure-specific recovery logic and return updated action.
+
+    Each recovery mutates the action dict in place and returns it.
+    """
+    if failure_class == "transient_retry":
+        # Retry once — bump retry count, clear failed status
+        retries = action.get("retries", 0) + 1 if action.get("retries") else 1
+        action["retries"] = retries
+        if action.get("status") == "failed":
+            action["status"] = "ready"  # requeue
+        action.setdefault("recovery_notes", []).append(f"transient_retry #{retries}")
+
+    elif failure_class == "evidence_access":
+        # Escalate — create research_gap task, mark as waiting_on_tool_access
+        action["status"] = "waiting_on_tool_access"
+        action.setdefault("recovery_notes", []).append("evidence_access_escalation")
+
+    elif failure_class == "contradiction_stall":
+        # Escalate — create research_gap task for contradiction resolution
+        action["status"] = "blocked"
+        action.setdefault("recovery_notes", []).append("contradiction_stall_escalation")
+
+    elif failure_class == "confidence_gap":
+        # Create research_gap task for more evidence collection
+        action.setdefault("recovery_notes", []).append("confidence_gap_research_task")
+        # Don't change status — let the queue keep it pending
+
+    elif failure_class == "secrets_quarantine":
+        # Quarantine — remove action from queue, log quarantine
+        action["status"] = "quarantined"
+        action.setdefault("recovery_notes", []).append("secrets_quarantined")
+
+    return action
+
+
+# ---------------------------------------------------------------------------
+# Session 4 — deterministic idempotency enforcement
+# ---------------------------------------------------------------------------
+
+def enforce_idempotency(action: dict[str, Any], live: bool = False) -> dict[str, Any]:
+    """Deterministic idempotency guard for website / GBP / Facebook paths.
+
+    When live=True and the action already has a successful run record with the
+    same idempotency_key, returns early with the prior result instead of
+    re-running the adapter. This prevents duplicate external side effects.
+
+    Returns the run record dict (same shape as run_action returns).
+    """
+    idem_key = action.get("idempotency_key", "")
+    action_id = action.get("id", "unknown")
+
+    if not live:
+        # Dry-run always runs — no dedup in dry mode
+        return run_action(action_id, live=False)
+
+    # Live mode: check for prior successful run with the same idempotency key
+    runs = _load_latest_runs()
+    for record in runs.values():
+        if record.get("action_id") == action_id and record.get("status") == "live_complete":
+            prior_key = record.get("action", {}).get("idempotency_key", "")
+            if prior_key == idem_key:
+                # Already executed this exact action — return prior result
+                return {
+                    "id": f"idem_dedupe_{record['id']}",
+                    "action_id": action_id,
+                    "live": True,
+                    "status": "live_complete",
+                    "message": f"Idempotency hit — already completed at {record.get('created_at', 'unknown')}",
+                    "action": action,
+                    "command_result": record.get("command_result"),
+                    "created_at": record.get("created_at"),
+                    "idempotency_hit": True,
+                    "idempotency_key": idem_key,
+                }
+
+    # No prior successful run with this key — proceed to execute
+    return run_action(action_id, live=True)
+
+
 def format_action_queue_text(queue: dict[str, Any]) -> str:
     summary = queue["summary"]
     lines = [

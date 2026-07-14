@@ -15,12 +15,15 @@ from dotenv import load_dotenv
 
 from seo_agents.actions import (
     approve_action,
+    classify_review_failure,
+    enforce_idempotency,
     format_action_queue_text,
     gbp_adapter_status,
     mark_gbp_dates_approved,
     run_action,
     sync_gbp_schedule_to_workbook,
     write_action_queue,
+    apply_recovery,
 )
 from seo_agents.contracts import RunManifest
 from seo_agents.evidence import (
