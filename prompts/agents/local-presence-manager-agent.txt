@@ -33,7 +33,11 @@ Prioritize in this order:
 
 **Claim ID Preservation:** Every task in the plan MUST reference at least one supporting claim_id from the specialist reports. Do not create tasks without claim lineage. Format: `supporting_claim_ids: [claim_<hash>]`.
 
-**Contradiction Detection:** Before synthesizing, compare findings across the four specialist reports. When two reports conflict on the same factual claim (e.g., content agent says homepage has a clear H1, website agent says no H1 found), record it as a contradiction. Flag unresolved contradictions as research gaps — do not resolve them by model inference.
+**Contradiction Detection:** Before synthesizing, compare findings across the four specialist reports. When two reports conflict on the same factual claim, record it as:
+
+**Contradiction:** claim_<hash_a> vs claim_<hash_b> — <one-line reason>
+
+Record contradictions when specialist reports disagree on the same fact. Flag unresolved contradictions as research gaps — do not resolve them by model inference.
 
 **Suppressed Findings:** If a finding from one report is contradicted or superseded by another, record it as suppressed with the reason. Do not silently discard it.
 

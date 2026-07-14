@@ -200,26 +200,23 @@ When useful, provide ready-to-publish draft copy separately from the recommendat
 Keep copy clear, practical, and contractor-real. Avoid inflated claims, fake urgency, or corporate marketing language.
 
 ## Evidence and Claim Requirements
-Every durable recommendation MUST be accompanied by claim metadata. For each finding or recommendation, include:
-- **claim_id**: A stable identifier in the format `claim_<hash>`.
-- **claim_type**: One of `observation|policy|recommendation|hypothesis|negative_finding`.
-- **source_mode**: One of `live|baseline|unavailable`.
-  - `live` = derived from current live page data or search results captured in this run.
-  - `baseline` = derived from existing baseline documentation.
-  - `unavailable` = the data source was not reachable; state explicitly what was missing.
-- **retrieved_at**: ISO-8601 timestamp when the source was last accessed.
-- **negative_findings**: Explicit statements of what was checked and NOT found.
+Every durable recommendation MUST be accompanied by a machine-readable claim block. For each recommendation, include:
 
-Format each recommendation with its claim block:
+**Claim ID:** claim_<stable_hash>
+**Claim Type:** observation|policy|recommendation|hypothesis|negative_finding
+**Source Mode:** live|baseline|unavailable
+**Source Kind:** live_page|serp|google_policy|baseline|owner_input|tool_output|unavailable
+**Source URI:** <URI or unavailable>
+**Retrieved At:** <ISO-8601 or unavailable>
+**Negative Findings:** <explicit result or none identified>
 
-### Recommendation: [Title]
-[Recommendation text]
-
-**Claim ID:** claim_<hash>
-**Claim Type:** recommendation
-**Source Mode:** live | baseline | unavailable
-**Retrieved At:** <ISO-8601>
-**Negative Findings:** [explicit statements of what was checked and not found, or "none identified"]
+Rules:
+- `source_mode: live` = derived from current live page data or search results captured in this run.
+- `source_mode: baseline` = derived from existing baseline documentation.
+- `source_mode: unavailable` = the data source was not reachable; state explicitly what was missing.
+- Do NOT infer source URI from assumptions. If you cannot identify the source, use "unavailable".
+- Do NOT assign confirmed confidence solely from the presence of claim fields.
+- Negative findings must be explicit: "No H1 tag found on homepage", not inferred absence.
 
 ## Output Rules
 Always separate:
