@@ -214,9 +214,9 @@ def load_previous_run_context(max_runs: int = 2) -> str:
 
 
 def _call_local_llm(prompt: str, max_tokens: int = 2000) -> str:
-    """Call the local llama-server (or configured API base) directly.
+    """Call the configured research LLM directly via OpenAI-compatible API.
 
-    Uses OPENROUTER_API_KEY for auth. Strips Qwen3 <think> blocks automatically.
+    Uses DEEPSEEK_API_KEY for auth. Strips Qwen3 <think> blocks automatically.
     """
     import re
     import urllib.error
@@ -225,9 +225,9 @@ def _call_local_llm(prompt: str, max_tokens: int = 2000) -> str:
     def _strip_think(text: str) -> str:
         return re.sub(r"(?s)<think>.*?</think>", "", text).strip()
 
-    api_base = os.getenv("CREWAI_RESEARCH_API_BASE", "https://openrouter.ai/api/v1").rstrip("/")
-    _raw_model = os.getenv("CREWAI_RESEARCH_MODEL", "openrouter/z-ai/glm-5.2")
-    model = _raw_model.replace("openrouter/", "", 1) if _raw_model.startswith("openrouter/") else _raw_model
+    api_base = os.getenv("CREWAI_RESEARCH_API_BASE", "https://api.deepseek.com/v1").rstrip("/")
+    _raw_model = os.getenv("CREWAI_RESEARCH_MODEL", "deepseek/deepseek-chat")
+    model = _raw_model.split("/", 1)[-1] if "/" in _raw_model else _raw_model
     payload = json.dumps({
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
@@ -235,38 +235,32 @@ def _call_local_llm(prompt: str, max_tokens: int = 2000) -> str:
         "max_tokens": max_tokens,
     }).encode()
 
-    # Call OpenRouter API
-    _or_error = None
+    _api_key = os.getenv("DEEPSEEK_API_KEY", "")
     try:
         req = urllib.request.Request(
             f"{api_base}/chat/completions",
             data=payload,
             headers={
                 "Content-Type": "application/json",
-                "Authorization": f"Bearer {os.getenv('OPENROUTER_API_KEY', '')}",
+                "Authorization": f"Bearer {_api_key}",
             },
         )
         with urllib.request.urlopen(req, timeout=120) as resp:
             data = json.loads(resp.read())
         content = data["choices"][0]["message"]["content"]
         if content is None:
-            # GLM 5.2 reasoning model may return None for content if all tokens went to reasoning
             raise RuntimeError("Model returned null content (try increasing max_tokens)")
         return _strip_think(content)
     except Exception as err:
-        _or_error = err
-
-    # If we get here, the OpenRouter request failed
-    or_key = os.getenv("OPENROUTER_API_KEY", "").strip()
-    if not or_key:
+        if not _api_key:
+            raise RuntimeError(
+                "LLM request failed and DEEPSEEK_API_KEY is not set. "
+                "Add your DeepSeek key to .env before running compact-baselines."
+            )
         raise RuntimeError(
-            "OpenRouter request failed and OPENROUTER_API_KEY is not set. "
-            "Add your OpenRouter key to .env before running compact-baselines."
+            f"LLM request failed: {err}. "
+            f"Check DEEPSEEK_API_KEY and network connectivity."
         )
-    raise RuntimeError(
-        f"OpenRouter request failed: {_or_error}. "
-        f"Check OPENROUTER_API_KEY and network connectivity."
-    )
 
 
 def generate_blog_post(topic: str, keywords: str = "", status: str = "draft") -> dict:
