@@ -60,6 +60,7 @@ def _make_event(
         "timestamp": now_iso(),
         "producer": producer,
         "event_type": event_type,
+        "schema_version": OBS_EVENT_VERSION,
         "version": OBS_EVENT_VERSION,
         "fields": fields or {},
     }
@@ -72,6 +73,10 @@ def write_observability_event(event: dict[str, Any]) -> None:
     event["run_id"] = event.get("run_id", "unknown")
     if "timestamp" not in event or not event["timestamp"]:
         event["timestamp"] = now_iso()
+    if "schema_version" not in event:
+        event["schema_version"] = OBS_EVENT_VERSION
+    if "version" not in event:
+        event["version"] = event["schema_version"]
 
     target = OUTPUT_DIR / "observability.jsonl"
     tmp = OUTPUT_DIR / f"observability.jsonl.tmp-{uuid.uuid4().hex[:8]}"
@@ -101,13 +106,23 @@ def emit_research_complete(run_id: str, outputs: list[str], duration_s: float) -
             "dry_run": True,
             "outputs": outputs,
             "duration_s": round(duration_s, 2),
+            "outcome": "complete",
+            "blocking_reason": "",
+            "proposed": True,
             "_metric": "research_duration_s",
             "_proposed": True,
         },
     ))
 
 
-def emit_synthesis_gate(run_id: str, gate_name: str, passed: bool, duration_s: float) -> None:
+def emit_synthesis_gate(
+    run_id: str,
+    gate_name: str,
+    passed: bool,
+    duration_s: float,
+    blocking_reason: str = "",
+    advisory: bool = False,
+) -> None:
     """Synthesis boundary — emitted after each synthesis/validation gate."""
     write_observability_event(_make_event(
         producer="synthesis_gate",
@@ -119,6 +134,10 @@ def emit_synthesis_gate(run_id: str, gate_name: str, passed: bool, duration_s: f
             "gate_name": gate_name,
             "passed": passed,
             "duration_s": round(duration_s, 2),
+            "outcome": "passed" if passed else "blocked",
+            "blocking_reason": blocking_reason,
+            "advisory": advisory,
+            "proposed": False,
             "_proposed": True,
         },
     ))
@@ -136,6 +155,9 @@ def emit_queue_built(run_id: str, total: int, needs_approval: int, approved: int
             "needs_approval": needs_approval,
             "approved": approved,
             "verified": verified,
+            "outcome": "built",
+            "blocking_reason": "",
+            "proposed": True,
             "_proposed": True,
         },
     ))
@@ -151,6 +173,9 @@ def emit_approval(run_id: str, action_id: str, approved_by: str) -> None:
         fields={
             "action_id": action_id,
             "approved_by": approved_by,
+            "outcome": "approved",
+            "blocking_reason": "",
+            "proposed": True,
             "_proposed": True,
         },
     ))
@@ -168,6 +193,9 @@ def emit_adapter_run(run_id: str, adapter: str, action_id: str, exit_code: int, 
             "exit_code": exit_code,
             "success": success,
             "duration_s": round(duration_s, 2),
+            "outcome": "success" if success else "failed",
+            "blocking_reason": "" if success else f"exit_code_{exit_code}",
+            "proposed": True,
             "_proposed": True,
         },
     ))
@@ -184,7 +212,97 @@ def emit_verification(run_id: str, action_id: str, verified: bool, duration_s: f
             "action_id": action_id,
             "verified": verified,
             "duration_s": round(duration_s, 2),
+            "outcome": "verified" if verified else "unverified",
+            "blocking_reason": "" if verified else "verification_failed",
+            "proposed": True,
             "_proposed": True,
+        },
+    ))
+
+
+def emit_dispatch_gate(
+    run_id: str,
+    action_id: str,
+    gate_id: str,
+    passed: bool,
+    blocking_reasons: list[str],
+    duration_s: float,
+) -> None:
+    """Dispatch boundary — emitted immediately before adapter execution decisions."""
+    blocking_reason = "; ".join(blocking_reasons)
+    write_observability_event(_make_event(
+        producer="dispatch_gate",
+        event_type="gate_result",
+        run_id=run_id,
+        task_id=action_id,
+        gate_id=gate_id,
+        fields={
+            "action_id": action_id,
+            "passed": passed,
+            "blocking_reasons": blocking_reasons,
+            "duration_s": round(duration_s, 2),
+            "outcome": "passed" if passed else "blocked",
+            "blocking_reason": blocking_reason,
+            "advisory": False,
+            "proposed": False,
+            "_proposed": False,
+        },
+    ))
+
+
+def emit_failure_classification(
+    run_id: str,
+    action_id: str,
+    failure_class: str,
+    recovery_action: str,
+    gate_id: str,
+    event_type: str = "failure_classified",
+) -> None:
+    """Failure/recovery boundary — emitted after classification and recovery."""
+    write_observability_event(_make_event(
+        producer="failure_recovery",
+        event_type=event_type,
+        run_id=run_id,
+        task_id=action_id,
+        gate_id=gate_id,
+        fields={
+            "action_id": action_id,
+            "failure_class": failure_class,
+            "recovery_action": recovery_action,
+            "outcome": recovery_action if event_type == "recovery_applied" else failure_class,
+            "blocking_reason": failure_class if failure_class not in {"", "none", "unknown"} else "",
+            "event_type": event_type,
+            "proposed": False,
+            "_proposed": False,
+        },
+    ))
+
+
+def emit_finalization_complete(
+    run_id: str,
+    hard_fail: bool,
+    extraction_empty: bool,
+    extraction_justified: bool,
+    failure_count: int,
+    warning_count: int,
+    duration_s: float,
+) -> None:
+    """Finalization boundary — emitted after gate evaluation completes."""
+    write_observability_event(_make_event(
+        producer="run_finalizer",
+        event_type="finalization_complete",
+        run_id=run_id,
+        fields={
+            "hard_fail": hard_fail,
+            "extraction_empty": extraction_empty,
+            "extraction_justified": extraction_justified,
+            "failure_count": failure_count,
+            "warning_count": warning_count,
+            "duration_s": round(duration_s, 2),
+            "outcome": "blocked" if hard_fail else "complete",
+            "blocking_reason": "hard_fail" if hard_fail else "",
+            "proposed": False,
+            "_proposed": False,
         },
     ))
 

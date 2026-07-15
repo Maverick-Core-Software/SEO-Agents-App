@@ -6,6 +6,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -13,6 +14,14 @@ from typing import Any
 
 from seo_agents.crew import OUTPUT_DIR
 from seo_agents.website import WEBSITE_ACTION_TYPES, run_website_action, website_adapter_status
+from seo_agents.observability import (
+    emit_adapter_run,
+    emit_approval,
+    emit_dispatch_gate,
+    emit_failure_classification,
+    emit_queue_built,
+    emit_verification,
+)
 
 # Session 3: imports for lineage/claim fields on action objects
 from seo_agents.contracts import ExecutionTask, stable_hash
@@ -711,6 +720,7 @@ def build_action_queue(run_id: str = "") -> dict[str, Any]:
         "high_risk": sum(1 for action in actions if action["risk"] == "high"),
     }
     return {
+        "run_id": run_id,
         "version": "1.0.0",
         "generated_at": _now_iso(),
         "workflow_id": "grizzly-seo",
@@ -1149,6 +1159,14 @@ def write_action_queue(run_id: str = "", evidence_path: Path = None, claim_path:
     _write_json(ACTION_QUEUE_FILE, payload)
     # Session 4: write task_graph.json with claim-reference validation and dependency gates
     _write_task_graph_from_actions(payload.get("actions", []), run_id, evidence_path, claim_path)
+    summary = payload.get("summary", {})
+    emit_queue_built(
+        run_id=payload.get("run_id", run_id),
+        total=int(summary.get("total", 0)),
+        needs_approval=int(summary.get("needs_approval", 0)),
+        approved=int(summary.get("approved", 0)),
+        verified=int(summary.get("verified", 0)),
+    )
     return payload
 
 
@@ -1357,7 +1375,9 @@ def approve_action(action_id: str, approved_by: str = "owner", note: str = "") -
     if action.get("live_adapter") == "google_business_profile":
         sync_gbp_schedule_to_workbook(dry_run=False)
         _mark_gbp_workbook_status(action, "Approved")
-    return write_action_queue()
+    updated_queue = write_action_queue()
+    emit_approval(updated_queue.get("run_id", queue.get("run_id", "")), action_id, approved_by)
+    return updated_queue
 
 
 def run_action(action_id: str, live: bool = False, run_id: str = "") -> dict[str, Any]:
@@ -1365,6 +1385,7 @@ def run_action(action_id: str, live: bool = False, run_id: str = "") -> dict[str
     action = next((item for item in queue["actions"] if item["id"] == action_id), None)
     if not action:
         raise ValueError(f"Unknown action id: {action_id}")
+    run_started = time.monotonic()
 
     # Run dispatch gate before any adapter invocation (Session 5)
     # Load claim graph and task graph for gate evaluation
@@ -1392,114 +1413,139 @@ def run_action(action_id: str, live: bool = False, run_id: str = "") -> dict[str
             else:
                 gate_result["passed"] = True
 
+    emit_dispatch_gate(
+        run_id or "unknown",
+        action_id,
+        gate_result.get("gate_id", ""),
+        gate_result["passed"],
+        gate_result.get("blocking_reasons", []),
+        time.monotonic() - run_started,
+    )
+
     if not gate_result["passed"]:
         # Gate failed — record the failure, do NOT invoke any adapter
         result_status = "gate_blocked"
         message = f"Dispatch gate failed: {', '.join(gate_result['blocking_reasons'])}"
         command_result = None
-        run_timestamp = _now_iso()
-        run_record = {
-            "id": f"run-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}-{action_id}",
-            "action_id": action_id,
-            "idempotency_key": action.get("idempotency_key", ""),
-            "live": live,
-            "status": result_status,
-            "message": message,
-            "action": action,
-            "command_result": command_result,
-            "gate_result": gate_result,
-            "adapter_type": action.get("live_adapter") or action.get("action_type", ""),
-            "exit_code": None,
-            "failure_class": "unknown",
-            "recovery_notes": [],
-            "recovery_action": "none",
-            "recovery_action_taken": "none",
-            "classification_basis": "dispatch_gate",
-            "auto_retry_permitted": False,
-            "created_at": run_timestamp,
-            "completed_at": run_timestamp,
-        }
-        ACTION_RUN_DIR.mkdir(exist_ok=True)
-        _write_json(ACTION_RUN_DIR / f"{run_record['id']}.json", run_record)
-        return run_record
-
-    # Gate passed — proceed with approval check and adapter invocation
-    if live and action.get("approval_required") and not action.get("approval"):
-        result_status = "blocked_approval"
-        message = "Live execution requires approval first."
-        command_result = None
-    elif action.get("action_type") == "gbp_profile_update":
-        command_result = _run_gbp_profile_adapter(action, live=live)
-        driver_result = _last_json_line(command_result.get("stdout", ""))
-        command_result["driver_result"] = driver_result or None
-        if command_result["exit_code"] == 0 and not live:
-            result_status = "dry_run_complete"
-            message = "GBP profile update dry run completed."
-        elif command_result["exit_code"] == 0:
-            result_status = "live_complete"
-            message = f"GBP profile updated: {', '.join(driver_result.get('updates_requested', []))}"
-        else:
-            result_status = "adapter_failed"
-            message = "GBP profile adapter failed."
-    elif action.get("live_adapter") == "google_business_profile":
-        command_result = _run_gbp_poster(action, live=live)
-        driver_result = _last_json_line(command_result.get("stdout", ""))
-        command_result["driver_result"] = driver_result or None
-        if command_result["exit_code"] == 0 and not live:
-            result_status = "dry_run_complete"
-            message = "GBP poster dry run completed."
-        elif command_result["exit_code"] == 0 and driver_result.get("verified"):
-            result_status = "live_complete"
-            message = "GBP post published and verified in the Posts list."
-            try:
-                _mark_gbp_workbook_posted(action, post_url=driver_result.get("postUrl"))
-            except Exception as error:
-                # The post IS live; never lose that fact over a workbook write issue.
-                message = f"GBP post published and verified, but the workbook could not be updated: {error}"
-        elif command_result["exit_code"] == 3 or (command_result["exit_code"] == 0 and driver_result.get("result") == "posted"):
-            # Submitted but unverified: do NOT mark posted and do NOT auto-retry —
-            # a blind retry can publish a duplicate.
-            result_status = "live_unverified"
-            message = "GBP post was submitted but could not be verified. Check the profile manually before retrying."
-        else:
-            result_status = "adapter_failed"
-            message = "GBP poster adapter failed."
-    elif action.get("live_adapter") == "facebook_page":
-        command_result = _run_facebook_poster(action, live=live)
-        driver_result = _last_json_line(command_result.get("stdout", ""))
-        command_result["driver_result"] = driver_result or None
-        if command_result["exit_code"] == 0 and not live:
-            result_status = "dry_run_complete"
-            message = "Facebook poster dry run completed."
-        elif command_result["exit_code"] == 0 and driver_result.get("status") == "success":
-            result_status = "live_complete"
-            message = f"Facebook post published. Post ID: {driver_result.get('post_id')}"
-        else:
-            result_status = "adapter_failed"
-            message = f"Facebook poster adapter failed: {driver_result.get('message', command_result.get('stderr', ''))}"
-    elif action.get("live_adapter") == "website_manager":
-        command_result = run_website_action(action, live=live)
-        adapter_status_value = command_result.get("status", "")
-        if adapter_status_value == "pushed":
-            result_status = "live_complete"
-            message = f"Website change committed and pushed ({command_result.get('commit')}). Vercel deploy triggered."
-        elif adapter_status_value == "preview":
-            result_status = "dry_run_complete"
-            message = f"Website edit preview written to {command_result.get('preview_dir')}. No live change made."
-        elif adapter_status_value == "push_failed":
-            result_status = "live_unverified"
-            message = "Website change committed locally but git push failed. Push manually, then verify the deploy."
-        else:
-            result_status = "adapter_failed"
-            message = command_result.get("message") or "Website adapter failed."
-    elif live:
-        result_status = "blocked_adapter"
-        message = f"No live adapter configured for {action['platform']} yet."
-        command_result = None
     else:
-        result_status = "dry_run_complete"
-        message = "Dry run generated execution payload only. No live system was changed."
-        command_result = None
+        # Gate passed — proceed with approval check and adapter invocation
+        adapter_started = 0.0
+        adapter_name = ""
+        adapter_success = False
+        verification_verified = False
+
+        if live and action.get("approval_required") and not action.get("approval"):
+            result_status = "blocked_approval"
+            message = "Live execution requires approval first."
+            command_result = None
+        elif action.get("action_type") == "gbp_profile_update":
+            adapter_name = "gbp_profile"
+            adapter_started = time.monotonic()
+            command_result = _run_gbp_profile_adapter(action, live=live)
+            adapter_duration = time.monotonic() - adapter_started
+            driver_result = _last_json_line(command_result.get("stdout", ""))
+            command_result["driver_result"] = driver_result or None
+            if command_result["exit_code"] == 0 and not live:
+                result_status = "dry_run_complete"
+                message = "GBP profile update dry run completed."
+            elif command_result["exit_code"] == 0:
+                result_status = "live_complete"
+                message = f"GBP profile updated: {', '.join(driver_result.get('updates_requested', []))}"
+            else:
+                result_status = "adapter_failed"
+                message = "GBP profile adapter failed."
+            adapter_success = result_status in {"live_complete", "dry_run_complete"}
+            verification_verified = result_status == "live_complete"
+        elif action.get("live_adapter") == "google_business_profile":
+            adapter_name = "google_business_profile"
+            adapter_started = time.monotonic()
+            command_result = _run_gbp_poster(action, live=live)
+            adapter_duration = time.monotonic() - adapter_started
+            driver_result = _last_json_line(command_result.get("stdout", ""))
+            command_result["driver_result"] = driver_result or None
+            if command_result["exit_code"] == 0 and not live:
+                result_status = "dry_run_complete"
+                message = "GBP poster dry run completed."
+            elif command_result["exit_code"] == 0 and driver_result.get("verified"):
+                result_status = "live_complete"
+                message = "GBP post published and verified in the Posts list."
+                try:
+                    _mark_gbp_workbook_posted(action, post_url=driver_result.get("postUrl"))
+                except Exception as error:
+                    # The post IS live; never lose that fact over a workbook write issue.
+                    message = f"GBP post published and verified, but the workbook could not be updated: {error}"
+            elif command_result["exit_code"] == 3 or (command_result["exit_code"] == 0 and driver_result.get("result") == "posted"):
+                # Submitted but unverified: do NOT mark posted and do NOT auto-retry —
+                # a blind retry can publish a duplicate.
+                result_status = "live_unverified"
+                message = "GBP post was submitted but could not be verified. Check the profile manually before retrying."
+            else:
+                result_status = "adapter_failed"
+                message = "GBP poster adapter failed."
+            adapter_success = result_status in {"live_complete", "dry_run_complete"}
+            verification_verified = result_status == "live_complete"
+        elif action.get("live_adapter") == "facebook_page":
+            adapter_name = "facebook_page"
+            adapter_started = time.monotonic()
+            command_result = _run_facebook_poster(action, live=live)
+            adapter_duration = time.monotonic() - adapter_started
+            driver_result = _last_json_line(command_result.get("stdout", ""))
+            command_result["driver_result"] = driver_result or None
+            if command_result["exit_code"] == 0 and not live:
+                result_status = "dry_run_complete"
+                message = "Facebook poster dry run completed."
+            elif command_result["exit_code"] == 0 and driver_result.get("status") == "success":
+                result_status = "live_complete"
+                message = f"Facebook post published. Post ID: {driver_result.get('post_id')}"
+            else:
+                result_status = "adapter_failed"
+                message = f"Facebook poster adapter failed: {driver_result.get('message', command_result.get('stderr', ''))}"
+            adapter_success = result_status in {"live_complete", "dry_run_complete"}
+            verification_verified = result_status == "live_complete"
+        elif action.get("live_adapter") == "website_manager":
+            adapter_name = "website_manager"
+            adapter_started = time.monotonic()
+            command_result = run_website_action(action, live=live)
+            adapter_duration = time.monotonic() - adapter_started
+            adapter_status_value = command_result.get("status", "")
+            if adapter_status_value == "pushed":
+                result_status = "live_complete"
+                message = f"Website change committed and pushed ({command_result.get('commit')}). Vercel deploy triggered."
+            elif adapter_status_value == "preview":
+                result_status = "dry_run_complete"
+                message = f"Website edit preview written to {command_result.get('preview_dir')}. No live change made."
+            elif adapter_status_value == "push_failed":
+                result_status = "live_unverified"
+                message = "Website change committed locally but git push failed. Push manually, then verify the deploy."
+            else:
+                result_status = "adapter_failed"
+                message = command_result.get("message") or "Website adapter failed."
+            adapter_success = result_status in {"live_complete", "dry_run_complete"}
+            verification_verified = result_status == "live_complete"
+        elif live:
+            result_status = "blocked_adapter"
+            message = f"No live adapter configured for {action['platform']} yet."
+            command_result = None
+        else:
+            result_status = "dry_run_complete"
+            message = "Dry run generated execution payload only. No live system was changed."
+            command_result = None
+
+        if adapter_name and isinstance(command_result, dict):
+            emit_adapter_run(
+                run_id or "unknown",
+                adapter_name,
+                action_id,
+                int(command_result.get("exit_code") or 0),
+                adapter_success,
+                adapter_duration,
+            )
+            emit_verification(
+                run_id or "unknown",
+                action_id,
+                verification_verified,
+                max(time.monotonic() - (adapter_started or run_started), 0.0),
+            )
 
     # Session 5: classify failures and apply recovery for the actual adapter result
     failure_class = "none"
@@ -1539,6 +1585,24 @@ def run_action(action_id: str, live: bool = False, run_id: str = "") -> dict[str
         else:
             recovery_action = "none"
             recovery_notes = []
+
+        emit_failure_classification(
+            run_id or "unknown",
+            action_id,
+            failure_class,
+            recovery_action,
+            gate_result.get("gate_id", ""),
+            event_type="failure_classified",
+        )
+        if recovery_action != "none":
+            emit_failure_classification(
+                run_id or "unknown",
+                action_id,
+                failure_class,
+                recovery_action,
+                gate_result.get("gate_id", ""),
+                event_type="recovery_applied",
+            )
 
     # Build run record with full failure/recovery context (Session 5)
     run_timestamp = _now_iso()

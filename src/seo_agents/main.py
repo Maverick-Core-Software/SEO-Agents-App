@@ -64,6 +64,7 @@ from seo_agents.status import (
     write_workflow_status,
 )
 from seo_agents.website import apply_edit, website_adapter_status
+from seo_agents.observability import emit_research_complete
 
 
 RESEARCH_OUTPUTS = [
@@ -835,6 +836,7 @@ def main() -> None:
         t0 = time.monotonic()
         try:
             result = crew.kickoff()
+            emit_research_complete(run_id, RESEARCH_OUTPUTS, time.monotonic() - t0)
             print(result)
             run_dir = archive_research_run(topic, run_args)
             print(f"\n📁 Research outputs archived to: {run_dir}")

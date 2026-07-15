@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -20,9 +21,8 @@ from seo_agents.evidence import (
     validate_evidence_package,
     write_claim_graph,
     write_evidence_package,
-    write_observability_event,
 )
-from seo_agents.observability import _make_event
+from seo_agents.observability import emit_finalization_complete, emit_synthesis_gate
 
 
 # Tool names that produce the four specialist reports.  If *all* of these are
@@ -188,50 +188,6 @@ def _write_extraction_diagnostics(
     return path
 
 
-def _emit_gate_events(run_id: str, gate_result: dict[str, Any]) -> None:
-    """Emit observability events for finalization and each hard gate."""
-    write_observability_event(_make_event(
-        producer="run_finalizer",
-        event_type="finalization_complete",
-        run_id=run_id,
-        fields={
-            "hard_fail": gate_result["hard_fail"],
-            "extraction_empty": gate_result["extraction_empty"],
-            "extraction_justified": gate_result["extraction_justified"],
-            "failure_count": len(gate_result["failures"]),
-            "warning_count": len(gate_result["warnings"]),
-        },
-    ))
-    for failure in gate_result["failures"]:
-        write_observability_event(_make_event(
-            producer="run_finalizer",
-            event_type="gate_result",
-            run_id=run_id,
-            gate_id=failure.get("gate", "unknown"),
-            fields={
-                "passed": False,
-                "severity": "fail",
-                "detail": failure.get("detail", ""),
-                "claim_id": failure.get("claim_id", ""),
-                "report": failure.get("report", ""),
-            },
-        ))
-    for warning in gate_result["warnings"]:
-        write_observability_event(_make_event(
-            producer="run_finalizer",
-            event_type="gate_result",
-            run_id=run_id,
-            gate_id=warning.get("gate", "unknown"),
-            fields={
-                "passed": True,
-                "severity": "warning",
-                "detail": warning.get("detail", ""),
-                "claim_id": warning.get("claim_id", ""),
-                "report": warning.get("report", ""),
-            },
-        ))
-
-
 def finalize_run(
     ctx: "RunContext",
     report_dir: Path,
@@ -249,6 +205,7 @@ def finalize_run(
     """
     run_id = ctx.run_id
     invocation_id = ctx.invocation_id
+    started_at = time.monotonic()
 
     # 1. Snapshot reports into the isolated run archive.
     snapshot = snapshot_reports(report_dir, ctx.archive_dir)
@@ -309,7 +266,33 @@ def finalize_run(
     artifact_paths["extraction_diagnostics"] = str(_write_extraction_diagnostics(output_dir, diagnostics_payload))
 
     # 7. Emit gate events.
-    _emit_gate_events(run_id, gate_result)
+    emit_finalization_complete(
+        run_id=run_id,
+        hard_fail=gate_result["hard_fail"],
+        extraction_empty=gate_result["extraction_empty"],
+        extraction_justified=gate_result["extraction_justified"],
+        failure_count=len(gate_result["failures"]),
+        warning_count=len(gate_result["warnings"]),
+        duration_s=time.monotonic() - started_at,
+    )
+    for failure in gate_result["failures"]:
+        emit_synthesis_gate(
+            run_id=run_id,
+            gate_name=failure.get("gate", "unknown"),
+            passed=False,
+            duration_s=time.monotonic() - started_at,
+            blocking_reason=failure.get("detail", ""),
+            advisory=False,
+        )
+    for warning in gate_result["warnings"]:
+        emit_synthesis_gate(
+            run_id=run_id,
+            gate_name=warning.get("gate", "unknown"),
+            passed=True,
+            duration_s=time.monotonic() - started_at,
+            blocking_reason=warning.get("detail", ""),
+            advisory=True,
+        )
 
     return {
         "run_id": run_id,
