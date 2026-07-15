@@ -178,17 +178,20 @@ def agent_backstory(prompt_file: str) -> str:
 # ---------------------------------------------------------------------------
 
 def _llm_kwargs(tier: str) -> dict:
-    """Optional per-tier routing to a local OpenAI-compatible server.
+    """Optional per-tier routing to an OpenAI-compatible server (local or remote).
 
-    Set CREWAI_<TIER>_API_BASE (e.g. http://127.0.0.1:8080/v1) to route that
-    tier to local llama-server; the model name still comes from
-    CREWAI_<TIER>_MODEL (use the openai/ prefix, e.g. openai/qwen3.6-35b-a3b).
+    Set CREWAI_<TIER>_API_BASE (e.g. http://127.0.0.1:8080/v1 for llama-server or
+    https://api.venice.ai/api/v1 for Venice) to route that tier; set
+    CREWAI_<TIER>_PROVIDER to tell CrewAI which provider to use (default: openai).
+    When an API base override is active the model name must be the plain id
+    (no provider prefix), e.g. zai-org-glm-5-2.
     """
     kwargs: dict = {}
     api_base = os.getenv(f"CREWAI_{tier}_API_BASE")
     if api_base:
         kwargs["base_url"] = api_base
         kwargs["api_key"] = os.getenv(f"CREWAI_{tier}_API_KEY", "local")
+        kwargs["provider"] = os.getenv(f"CREWAI_{tier}_PROVIDER", "openai")
     max_tokens = os.getenv(f"CREWAI_{tier}_MAX_TOKENS")
     if max_tokens:
         kwargs["max_tokens"] = int(max_tokens)
