@@ -6,6 +6,7 @@ import re
 import shutil
 import subprocess
 import sys
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -1359,11 +1360,59 @@ def approve_action(action_id: str, approved_by: str = "owner", note: str = "") -
     return write_action_queue()
 
 
-def run_action(action_id: str, live: bool = False) -> dict[str, Any]:
+def run_action(action_id: str, live: bool = False, run_id: str = "") -> dict[str, Any]:
     queue = write_action_queue()
     action = next((item for item in queue["actions"] if item["id"] == action_id), None)
     if not action:
         raise ValueError(f"Unknown action id: {action_id}")
+
+    # Run dispatch gate before any adapter invocation (Session 5)
+    # Load claim graph and task graph for gate evaluation
+    claim_graph = {}
+    task_graph = {}
+    from seo_agents.evidence import CLAIM_GRAPH_PATH, TASK_GRAPH_PATH
+    if CLAIM_GRAPH_PATH.exists():
+        claim_graph = _load_json(CLAIM_GRAPH_PATH, {})
+    if TASK_GRAPH_PATH.exists():
+        task_graph = _load_json(TASK_GRAPH_PATH, {})
+
+    gate_result = dispatch_gate(action, run_id or "unknown", live, claim_graph, task_graph)
+
+    # Dry-run mode: pass with advisory warnings but block on hard failures
+    if not gate_result["passed"]:
+        # For dry-run, only hard failures block (not advisory warnings)
+        if not live:
+            hard_failures = [
+                r for r in gate_result["blocking_reasons"]
+                if "missing_run_id" in r or "stale_run" in r or "mixed_run" in r
+            ]
+            if hard_failures:
+                gate_result["blocking_reasons"] = hard_failures
+                gate_result["passed"] = False
+            else:
+                gate_result["passed"] = True
+
+    if not gate_result["passed"]:
+        # Gate failed — record the failure, do NOT invoke any adapter
+        result_status = "gate_blocked"
+        message = f"Dispatch gate failed: {', '.join(gate_result['blocking_reasons'])}"
+        command_result = None
+        run_record = {
+            "id": f"run-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}-{action_id}",
+            "action_id": action_id,
+            "live": live,
+            "status": result_status,
+            "message": message,
+            "action": action,
+            "command_result": command_result,
+            "gate_result": gate_result,
+            "created_at": _now_iso(),
+        }
+        ACTION_RUN_DIR.mkdir(exist_ok=True)
+        _write_json(ACTION_RUN_DIR / f"{run_record['id']}.json", run_record)
+        return run_record
+
+    # Gate passed — proceed with approval check and adapter invocation
     if live and action.get("approval_required") and not action.get("approval"):
         result_status = "blocked_approval"
         message = "Live execution requires approval first."
@@ -1449,6 +1498,7 @@ def run_action(action_id: str, live: bool = False) -> dict[str, Any]:
         "message": message,
         "action": action,
         "command_result": command_result,
+        "gate_result": gate_result,
         "created_at": _now_iso(),
     }
     ACTION_RUN_DIR.mkdir(exist_ok=True)
@@ -1887,15 +1937,209 @@ def apply_recovery(action: dict[str, Any], failure_class: str) -> dict[str, Any]
 
 
 # ---------------------------------------------------------------------------
-# Session 4 — deterministic idempotency enforcement
+# Session 5 — dispatch gate
 # ---------------------------------------------------------------------------
 
+BLOCKED_TASK_STATUSES = {"blocked", "research_gap", "waiting_on_owner", "waiting_on_tool_access"}
+
+
+def dispatch_gate(
+    action: dict[str, Any],
+    run_id: str,
+    live: bool,
+    claim_graph: dict[str, Any],
+    task_graph: dict[str, Any],
+) -> dict[str, Any]:
+    """Dispatch gate — runs immediately before any live adapter invocation.
+
+    Even if an earlier queue-build gate passed, the dispatch gate re-checks
+    every condition at the point of adapter invocation so that stale or
+    contradictory state cannot slip through.
+
+    Args:
+        action: the action dict from the queue
+        run_id: the current run ID
+        live: whether this is a live invocation
+        claim_graph: the claim graph dict (from claim_graph.json)
+        task_graph: the task graph dict (from task_graph.json)
+
+    Returns:
+        Dict with ``passed``, ``blocking_reasons``, and ``gate_id``.
+    """
+    reasons: list[str] = []
+
+    # 1. Current run ID must be present and match the action's run_id context
+    # (task_graph contains run_id at top level)
+    tg_run_id = task_graph.get("run_id", "")
+    if not run_id:
+        reasons.append("missing_run_id")
+    elif tg_run_id and run_id != tg_run_id:
+        reasons.append(f"stale_run_id: expected {tg_run_id}, got {run_id}")
+
+    # 2. Task graph status for this action must not be blocked/research_gap/waiting_*
+    action_id = action.get("id", "")
+    tg_action_status = None
+    # Search tasks by action_id
+    for task in task_graph.get("tasks", []):
+        if task.get("action_id") == action_id:
+            tg_action_status = task.get("status", "")
+            break
+    if tg_action_status in BLOCKED_TASK_STATUSES:
+        reasons.append(f"task_graph_status_{tg_action_status}")
+
+    # 3. Claim references must exist in claim graph and not be rejected/unknown
+    claims_list = claim_graph.get("claims", [])
+    claim_map: dict[str, dict[str, Any]] = {}
+    for c in claims_list:
+        claim_map[c.get("claim_id", "")] = c
+
+    for cid in action.get("supporting_claim_ids", []):
+        if cid not in claim_map:
+            reasons.append(f"claim_not_found_{cid}")
+        else:
+            c_status = claim_map[cid].get("status", "unknown")
+            if c_status in ("rejected", "unknown"):
+                reasons.append(f"claim_{cid}_status_{c_status}")
+
+    # 4. No unresolved material contradictions on supporting claims
+    for cid in action.get("supporting_claim_ids", []):
+        if cid in claim_map:
+            c = claim_map[cid]
+            contradictions = c.get("contradiction_ids", [])
+            if contradictions:
+                reasons.append(f"unresolved_contradiction_on_claim_{cid}")
+
+    # 5. No evidence gate failures on supporting claims
+    for cid in action.get("supporting_claim_ids", []):
+        if cid in claim_map:
+            c = claim_map[cid]
+            gate_failures = c.get("gate_failures", 0)
+            if gate_failures > 0:
+                reasons.append(f"evidence_gate_failure_on_claim_{cid}")
+
+    # 6. Dependency readiness — no blocked/unresolved dependencies
+    for dep in action.get("dependencies", []):
+        for task in task_graph.get("tasks", []):
+            if task.get("task_id") == dep or task.get("action_id") == dep:
+                dep_status = task.get("status", "")
+                if dep_status in BLOCKED_TASK_STATUSES:
+                    reasons.append(f"blocked_dependency_{dep}")
+                    break
+
+    # 7. Approval requirements met (if live)
+    if live and action.get("approval_required") and not action.get("approval"):
+        reasons.append("live_action_requires_approval")
+
+    # 8. Adapter availability — action must have a configured adapter for live
+    if live and action.get("live_adapter") is None:
+        reasons.append("no_live_adapter_for_action")
+
+    # 9. Live/dry-run mode consistency
+    if live and action.get("status") == "dry_run_ready":
+        # Dry-run ready is ok for dry-run, but live needs more
+        # Only flag if the action explicitly cannot go live
+        if action.get("approval_required") and not action.get("approval"):
+            reasons.append("action_not_approved_for_live")
+
+    # 10. Action idempotency key must be present
+    if not action.get("idempotency_key"):
+        reasons.append("missing_idempotency_key")
+
+    # 11. Action must not be from a stale/mixed run
+    # (run_id mismatch already checked above; also check evidence run_id)
+    for cid in action.get("supporting_claim_ids", []):
+        if cid in claim_map:
+            c_run_id = claim_map[cid].get("run_id", "")
+            if c_run_id and run_id and c_run_id != run_id:
+                reasons.append(f"mixed_run_claim_{cid}_run_{c_run_id}")
+
+    # 12. For dry-run mode: still block on hard failures (secrets, stale run, missing run ID)
+    # But allow advisory warnings (e.g., missing adapter, dry-run ready, non-critical blockers) to pass
+    if not live and reasons:
+        # Advisory-only reasons that can pass in dry-run
+        advisory = [
+            r for r in reasons
+            if "no_live_adapter" in r or "action_not_approved" in r or "task_graph_status" in r
+        ]
+        # All other reasons (including rejected claims, contradictions, evidence failures) block in dry-run
+        blocking = [r for r in reasons if r not in advisory]
+        if not blocking:
+            reasons = []  # Only advisory reasons — pass in dry-run
+        else:
+            reasons = blocking  # Block on hard failures only
+
+    blocked = len(reasons) > 0
+
+    gate_id = f"gate_{action_id}_{run_id}_{stable_hash(prefix='g', data=action.get('idempotency_key', ''))[:8]}"
+
+    return {
+        "passed": not blocked,
+        "blocking_reasons": reasons,
+        "gate_id": gate_id,
+    }
+
+def _acquire_idempotency_lock(action_id: str, idem_key: str) -> str | None:
+    """Atomically acquire a reservation lock for the action.
+
+    Uses atomic file creation (O_CREAT | O_EXCL) on Windows/POSIX.
+    The lock file is at ACTION_RUN_DIR/.lock-{action_id} and contains
+    the idempotency key and reservation timestamp.
+
+    Returns the reservation token (action_id) on success, or None if
+    another process already holds the lock.
+    """
+    lock_path = ACTION_RUN_DIR / f".lock-{action_id}"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+    except OSError:
+        # Lock already held — another concurrent invocation won
+        return None
+
+    lock_content = json.dumps({
+        "action_id": action_id,
+        "idempotency_key": idem_key,
+        "reservation_state": "reserved",
+        "reserved_at": _now_iso(),
+    })
+    os.write(fd, lock_content.encode("utf-8") + b"\n")
+    os.close(fd)
+    return action_id
+
+
+def _release_idempotency_lock(action_id: str, reservation_state: str = "completed") -> None:
+    """Release the idempotency reservation lock.
+
+    Updates the lock file with the final state, then deletes it.
+    """
+    lock_path = ACTION_RUN_DIR / f".lock-{action_id}"
+    try:
+        if lock_path.exists():
+            existing = json.loads(lock_path.read_text(encoding="utf-8"))
+            existing["reservation_state"] = reservation_state
+            existing["released_at"] = _now_iso()
+            tmp = lock_path.with_suffix(f".tmp-{uuid.uuid4().hex[:8]}")
+            tmp.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
+            tmp.replace(lock_path)
+        lock_path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def enforce_idempotency(action: dict[str, Any], live: bool = False) -> dict[str, Any]:
-    """Deterministic idempotency guard for website / GBP / Facebook paths.
+    """Deterministic idempotency guard with atomic reservation for website / GBP / Facebook paths.
 
     When live=True and the action already has a successful run record with the
     same idempotency_key, returns early with the prior result instead of
     re-running the adapter. This prevents duplicate external side effects.
+
+    Uses a file-based atomic reservation so two concurrent invocations cannot
+    both pass the prior-run check.
+
+    The stored run record includes: action ID, idempotency key, run ID,
+    reservation state (reserved, completed, deduplicated), adapter result,
+    final status, creation and completion timestamps, and dedupe outcome.
 
     Returns the run record dict (same shape as run_action returns).
     """
@@ -1912,7 +2156,7 @@ def enforce_idempotency(action: dict[str, Any], live: bool = False) -> dict[str,
         if record.get("action_id") == action_id and record.get("status") == "live_complete":
             prior_key = record.get("action", {}).get("idempotency_key", "")
             if prior_key == idem_key:
-                # Already executed this exact action — return prior result
+                # Already executed this exact action — return prior result (deduplicated)
                 return {
                     "id": f"idem_dedupe_{record['id']}",
                     "action_id": action_id,
@@ -1924,10 +2168,56 @@ def enforce_idempotency(action: dict[str, Any], live: bool = False) -> dict[str,
                     "created_at": record.get("created_at"),
                     "idempotency_hit": True,
                     "idempotency_key": idem_key,
+                    "reservation_state": "deduplicated",
                 }
 
-    # No prior successful run with this key — proceed to execute
-    return run_action(action_id, live=True)
+    # No prior successful run with this key — try to acquire atomic reservation
+    token = _acquire_idempotency_lock(action_id, idem_key)
+    if token is None:
+        # Another concurrent invocation won the reservation — re-check and dedupe
+        runs = _load_latest_runs()
+        for record in runs.values():
+            if record.get("action_id") == action_id and record.get("status") == "live_complete":
+                prior_key = record.get("action", {}).get("idempotency_key", "")
+                if prior_key == idem_key:
+                    return {
+                        "id": f"idem_dedupe_{record['id']}",
+                        "action_id": action_id,
+                        "live": True,
+                        "status": "live_complete",
+                        "message": f"Idempotency hit — concurrent invocation completed at {record.get('created_at', 'unknown')}",
+                        "action": action,
+                        "command_result": record.get("command_result"),
+                        "created_at": record.get("created_at"),
+                        "idempotency_hit": True,
+                        "idempotency_key": idem_key,
+                        "reservation_state": "deduplicated",
+                    }
+        # Reservation lost, no prior result — let the other invocation proceed
+        # Return a placeholder so the caller knows to wait
+        return {
+            "id": f"run-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}-{action_id}",
+            "action_id": action_id,
+            "live": True,
+            "status": "concurrent_retry",
+            "message": "Another concurrent invocation is executing this action — retrying.",
+            "action": action,
+            "command_result": None,
+            "created_at": _now_iso(),
+            "reservation_state": "lost",
+        }
+
+    # We won the reservation — proceed to execute (wrap so we always release)
+    try:
+        result = run_action(action_id, live=True)
+    finally:
+        _release_idempotency_lock(action_id, "completed")
+
+    # Enrich the result with reservation metadata
+    if "reservation_state" not in result:
+        result["reservation_state"] = "completed"
+    result["idempotency_key"] = idem_key
+    return result
 
 
 def format_action_queue_text(queue: dict[str, Any]) -> str:

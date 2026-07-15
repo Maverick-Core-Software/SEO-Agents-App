@@ -24,6 +24,7 @@ from seo_agents.actions import (
     sync_gbp_schedule_to_workbook,
     write_action_queue,
     apply_recovery,
+    enforce_idempotency,
 )
 from seo_agents.contracts import RunManifest
 from seo_agents.evidence import (
@@ -1003,7 +1004,12 @@ def main() -> None:
         print(f"Approved {action['id']}: {action['title']}")
 
     elif command == "run-action":
-        result = run_action(args.action_id, live=args.live)
+        queue = write_action_queue()
+        action = next((a for a in queue["actions"] if a["id"] == args.action_id), None)
+        if action:
+            result = enforce_idempotency(action, live=args.live)
+        else:
+            result = {"error": f"Unknown action id: {args.action_id}"}
         print(json.dumps(result, indent=2))
 
     elif command == "sync-gbp-schedule":

@@ -93,6 +93,8 @@ class TestEnforceIdempotency:
     def test_first_execution_passes_through(self, action, monkeypatch):
         """When no prior successful run exists, the action executes normally."""
         monkeypatch.setattr(actions, "_load_latest_runs", lambda: {})
+        monkeypatch.setattr(actions, "_acquire_idempotency_lock", lambda action_id, idem_key: action_id)
+        monkeypatch.setattr(actions, "_release_idempotency_lock", MagicMock())
         mock_run = MagicMock(return_value={"status": "live_complete"})
         monkeypatch.setattr(actions, "run_action", mock_run)
 
@@ -110,6 +112,8 @@ class TestEnforceIdempotency:
             "action": {"idempotency_key": prior_key},
         }
         monkeypatch.setattr(actions, "_load_latest_runs", lambda: {"run-prior": prior_run})
+        monkeypatch.setattr(actions, "_acquire_idempotency_lock", lambda action_id, idem_key: action_id)
+        monkeypatch.setattr(actions, "_release_idempotency_lock", MagicMock())
         mock_run = MagicMock(return_value={"status": "live_complete"})
         monkeypatch.setattr(actions, "run_action", mock_run)
 
@@ -136,6 +140,8 @@ class TestEnforceIdempotency:
             "action": {"idempotency_key": action["idempotency_key"]},
         }
         monkeypatch.setattr(actions, "_load_latest_runs", lambda: {"run-20260101000000-task-t001": prior_run})
+        monkeypatch.setattr(actions, "_acquire_idempotency_lock", lambda action_id, idem_key: action_id)
+        monkeypatch.setattr(actions, "_release_idempotency_lock", MagicMock())
         mock_run = MagicMock(return_value={"status": "live_complete"})
         monkeypatch.setattr(actions, "run_action", mock_run)
 
