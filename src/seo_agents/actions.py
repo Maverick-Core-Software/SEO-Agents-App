@@ -1397,16 +1397,27 @@ def run_action(action_id: str, live: bool = False, run_id: str = "") -> dict[str
         result_status = "gate_blocked"
         message = f"Dispatch gate failed: {', '.join(gate_result['blocking_reasons'])}"
         command_result = None
+        run_timestamp = _now_iso()
         run_record = {
             "id": f"run-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}-{action_id}",
             "action_id": action_id,
+            "idempotency_key": action.get("idempotency_key", ""),
             "live": live,
             "status": result_status,
             "message": message,
             "action": action,
             "command_result": command_result,
             "gate_result": gate_result,
-            "created_at": _now_iso(),
+            "adapter_type": action.get("live_adapter") or action.get("action_type", ""),
+            "exit_code": None,
+            "failure_class": "unknown",
+            "recovery_notes": [],
+            "recovery_action": "none",
+            "recovery_action_taken": "none",
+            "classification_basis": "dispatch_gate",
+            "auto_retry_permitted": False,
+            "created_at": run_timestamp,
+            "completed_at": run_timestamp,
         }
         ACTION_RUN_DIR.mkdir(exist_ok=True)
         _write_json(ACTION_RUN_DIR / f"{run_record['id']}.json", run_record)
@@ -1490,16 +1501,67 @@ def run_action(action_id: str, live: bool = False, run_id: str = "") -> dict[str
         message = "Dry run generated execution payload only. No live system was changed."
         command_result = None
 
+    # Session 5: classify failures and apply recovery for the actual adapter result
+    failure_class = "none"
+    recovery_notes = []
+    recovery_action = "none"
+    classification_basis = "none"
+    auto_retry_permitted = False
+
+    # Only classify on actual failures (not dry_run_complete, live_complete, etc.)
+    if result_status in {"adapter_failed", "live_unverified", "gate_blocked", "blocked_approval", "blocked_adapter"}:
+        driver_result = command_result.get("driver_result") if isinstance(command_result, dict) else None
+        classification_context = {
+            "action": {**action, "status": result_status},
+            "command_result": command_result,
+            "driver_result": driver_result,
+            "gate_result": gate_result,
+            "adapter_type": action.get("live_adapter") or action.get("action_type", ""),
+            "exit_code": command_result.get("exit_code") if isinstance(command_result, dict) else None,
+            "result_status": result_status,
+            "live": live,
+        }
+        classification_basis = "adapter_result"
+        if result_status == "gate_blocked":
+            classification_basis = "dispatch_gate"
+        elif result_status in {"blocked_approval", "blocked_adapter"}:
+            classification_basis = "live_preflight"
+
+        failure_class = classify_review_failure(classification_context)
+
+        if failure_class in {"secrets_quarantine", "quarantine", "transient_retry", "evidence_access", "contradiction_stall", "confidence_gap"}:
+            action_with_status = {**action, "status": result_status}
+            recovery_notes = apply_recovery(action_with_status, failure_class).get("recovery_notes", [])
+            recovery_action = recovery_notes[-1] if recovery_notes else "none"
+        elif failure_class == "needs_verification":
+            recovery_action = "none"
+            recovery_notes = []
+        else:
+            recovery_action = "none"
+            recovery_notes = []
+
+    # Build run record with full failure/recovery context (Session 5)
+    run_timestamp = _now_iso()
     run_record = {
         "id": f"run-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}-{action_id}",
         "action_id": action_id,
+        "idempotency_key": action.get("idempotency_key", ""),
         "live": live,
         "status": result_status,
         "message": message,
         "action": action,
         "command_result": command_result,
         "gate_result": gate_result,
-        "created_at": _now_iso(),
+        "adapter_type": action.get("live_adapter") or action.get("action_type", ""),
+        "exit_code": command_result.get("exit_code") if isinstance(command_result, dict) else None,
+        "failure_class": failure_class,
+        "recovery_notes": recovery_notes,
+        "recovery_action": recovery_action,
+        "recovery_action_taken": recovery_action,
+        "classification_basis": classification_basis,
+        "auto_retry_permitted": auto_retry_permitted,
+        "created_at": run_timestamp,
+        "completed_at": run_timestamp,
     }
     ACTION_RUN_DIR.mkdir(exist_ok=True)
     _write_json(ACTION_RUN_DIR / f"{run_record['id']}.json", run_record)
@@ -1832,11 +1894,19 @@ def _mark_gbp_workbook_posted(action: dict[str, Any], post_url: str | None = Non
 
 
 # ---------------------------------------------------------------------------
-# Session 4 — review classification and failure-specific recovery
+# Session 5 — failure classification and recovery
 # ---------------------------------------------------------------------------
 
-def classify_review_failure(action: dict[str, Any]) -> str:
-    """Classify an action failure into a recovery category.
+def classify_review_failure(
+    action: dict[str, Any],
+    command_result: dict[str, Any] | None = None,
+    driver_result: dict[str, Any] | None = None,
+    gate_result: dict[str, Any] | None = None,
+) -> str:
+    """Classify an action failure into a recovery category using the actual adapter result.
+
+    Accepts the actual adapter result, driver result, and dispatch gate result
+    instead of relying on stale action state.
 
     Returns one of:
       - "transient_retry"     — adapter timeout / network blip
@@ -1844,57 +1914,100 @@ def classify_review_failure(action: dict[str, Any]) -> str:
       - "contradiction_stall" — unresolved contradiction blocking task
       - "confidence_gap"      — low confidence, needs more research
       - "secrets_quarantine"  — secrets detected in evidence
+      - "needs_verification" — GBP live_unverified (never transient_retry)
       - "unknown"
     """
-    status = action.get("status", "")
-    last_run = action.get("last_run", {})
-    if isinstance(last_run, dict):
-        cmd_stderr = last_run.get("command_result", {}).get("stderr", "")
+    context_mode = (
+        isinstance(action, dict)
+        and command_result is None
+        and driver_result is None
+        and gate_result is None
+        and any(key in action for key in ("command_result", "driver_result", "gate_result", "result_status", "adapter_type", "exit_code"))
+    )
+    if context_mode:
+        context = action
+        action = context.get("action", action)
+        if not isinstance(action, dict):
+            action = {}
+        command_result = context.get("command_result") if command_result is None else command_result
+        driver_result = context.get("driver_result") if driver_result is None else driver_result
+        gate_result = context.get("gate_result") if gate_result is None else gate_result
+        result_status = str(context.get("result_status") or action.get("status", ""))
+        adapter_type = str(context.get("adapter_type") or action.get("live_adapter") or action.get("action_type") or "")
+        exit_code = context.get("exit_code")
     else:
-        cmd_stderr = ""
-    evidence = action.get("evidence", {})
-    if isinstance(evidence, dict):
-        evidence = evidence.get("evidence_excerpt", "")
-    else:
-        evidence = ""
-    rejection = action.get("rejection_reason", "")
+        result_status = str(action.get("status", ""))
+        adapter_type = str(action.get("live_adapter") or action.get("action_type") or "")
+        exit_code = command_result.get("exit_code") if isinstance(command_result, dict) else None
+
+    cmd_stdout = ""
+    cmd_stderr = ""
+    cmd_status = ""
+    cmd_result = ""
+    driver_message = ""
+    driver_status = ""
+    driver_result_value = ""
+    driver_verified = False
+
+    if isinstance(command_result, dict):
+        cmd_stdout = str(command_result.get("stdout", "") or "")
+        cmd_stderr = str(command_result.get("stderr", "") or "")
+        cmd_status = str(command_result.get("status", "") or "")
+        cmd_result = str(command_result.get("result", "") or "")
+        if exit_code is None:
+            exit_code = command_result.get("exit_code")
+    if isinstance(driver_result, dict):
+        driver_message = str(driver_result.get("message", "") or "")
+        driver_status = str(driver_result.get("status", "") or "")
+        driver_result_value = str(driver_result.get("result", "") or "")
+        driver_verified = bool(driver_result.get("verified", False))
+
+    gate_reasons = []
+    if isinstance(gate_result, dict):
+        gate_reasons = [str(reason) for reason in gate_result.get("blocking_reasons", [])]
+
+    text_blob = " ".join(
+        part
+        for part in (
+            result_status,
+            adapter_type,
+            str(exit_code) if exit_code is not None else "",
+            cmd_stdout,
+            cmd_stderr,
+            cmd_status,
+            cmd_result,
+            driver_message,
+            driver_status,
+            driver_result_value,
+            " ".join(gate_reasons),
+        )
+        if part
+    ).lower()
+
+    if any(token in text_blob for token in ("secret", "api_key", "credential")):
+        return "secrets_quarantine"
+
+    if (
+        result_status == "live_unverified"
+        or cmd_status == "push_failed"
+        or cmd_result == "posted"
+        or (driver_status == "unverified")
+        or (adapter_type == "google_business_profile" and driver_verified is False and result_status == "live_unverified")
+    ):
+        return "needs_verification"
+
+    if "access" in text_blob or "tool" in text_blob or any("access" in reason or "tool" in reason for reason in gate_reasons):
+        return "evidence_access"
+
+    if "contradiction" in text_blob or any("contradiction" in reason for reason in gate_reasons):
+        return "contradiction_stall"
+
     confidence = action.get("confidence", {})
-    if isinstance(confidence, dict):
-        conf_label = confidence.get("label", "")
-    else:
-        conf_label = ""
-    blocker = action.get("blocker", "")
-    if isinstance(blocker, str):
-        pass
-    else:
-        blocker = ""
-
-    # Secrets quarantine — highest priority
-    if "secret" in cmd_stderr.lower() or "api_key" in evidence.lower() or "credential" in evidence.lower():
-        return "secrets_quarantine"
-    if "secret" in rejection.lower() or "credential" in rejection.lower():
-        return "secrets_quarantine"
-
-    # Evidence access — missing tool access or evidence
-    if status == "blocked_access" or "access" in blocker.lower() or "tool" in blocker.lower():
-        return "evidence_access"
-    if "access" in cmd_stderr.lower() or "tool" in cmd_stderr.lower():
-        return "evidence_access"
-
-    # Contradiction stall — unresolved material contradiction
-    if status == "blocked" or "contradiction" in blocker.lower() or "contradiction" in rejection.lower():
-        return "contradiction_stall"
-    if "contradiction" in cmd_stderr.lower():
-        return "contradiction_stall"
-
-    # Confidence gap — low confidence needs more research
+    conf_label = confidence.get("label", "") if isinstance(confidence, dict) else ""
     if conf_label in ("low", "unknown") and action.get("task_type") != "research_gap":
         return "confidence_gap"
 
-    # Transient retry — adapter timeout or network error
-    if "timeout" in cmd_stderr.lower() or "network" in cmd_stderr.lower() or "temporary" in cmd_stderr.lower():
-        return "transient_retry"
-    if status == "failed" and last_run.get("status") == "adapter_failed":
+    if any(token in text_blob for token in ("timeout", "network", "temporary", "timed out")):
         return "transient_retry"
 
     return "unknown"
@@ -1905,6 +2018,9 @@ def apply_recovery(action: dict[str, Any], failure_class: str) -> dict[str, Any]
 
     Each recovery mutates the action dict in place and returns it.
     """
+    if failure_class == "quarantine":
+        failure_class = "secrets_quarantine"
+
     if failure_class == "transient_retry":
         # Retry once — bump retry count, clear failed status
         retries = action.get("retries", 0) + 1 if action.get("retries") else 1

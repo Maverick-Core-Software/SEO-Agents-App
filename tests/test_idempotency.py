@@ -159,25 +159,17 @@ class TestClassifyFailure:
 
     def test_timeout_routes_to_transient_retry(self, action):
         """Adapter timeout stderr maps to transient_retry."""
-        action["last_run"] = {
-            "command_result": {"stderr": "Adapter timeout after 300s."},
-        }
-        result = classify_review_failure(action)
+        result = classify_review_failure(action, command_result={"stderr": "Adapter timeout after 300s."})
         assert result == "transient_retry"
 
     def test_network_error_routes_to_transient_retry(self, action):
         """Network error maps to transient_retry."""
-        action["last_run"] = {
-            "command_result": {"stderr": "Network error: connection refused"},
-        }
-        result = classify_review_failure(action)
+        result = classify_review_failure(action, command_result={"stderr": "Network error: connection refused"})
         assert result == "transient_retry"
 
     def test_failed_adapter_status_is_transient_retry(self, action):
-        """Failed status with adapter_failed maps to transient_retry."""
-        action["status"] = "failed"
-        action["last_run"] = {"status": "adapter_failed"}
-        result = classify_review_failure(action)
+        """Failed adapter with timeout stderr maps to transient_retry."""
+        result = classify_review_failure(action, command_result={"exit_code": 1, "stderr": "Adapter timeout after 300s"})
         assert result == "transient_retry"
 
     def test_unknown_class_returns_unknown(self, action):
