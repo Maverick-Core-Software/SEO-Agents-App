@@ -10,11 +10,12 @@
  * Usage:
  *   node xai-video-generator.mjs --prompt "text" --output /path/to/out.mp4 \
  *     [--aspect-ratio 9:16] [--duration 8] [--dry-run]
+ *     [--image /path/to/image.jpg] [--seed 42] [--negative-prompt "text"]
  *
  * Env:
  *   XAI_API_KEY              - required (falls back to GROK_API_KEY)
- *   GROK_VIDEO_MODEL         - default 'grok-imagine-video-1.5'
- *   GROK_VIDEO_RESOLUTION    - default '720p'
+ *   GROK_VIDEO_MODEL         - default 'grok-imagine-video' (T2V) or 'grok-imagine-video-1.5' (I2V)
+ *   GROK_VIDEO_RESOLUTION    - default '1080p' (Facebook Reels recommends 1080×1920 minimum)
  */
 
 import fs from 'node:fs';
@@ -31,23 +32,38 @@ if (fs.existsSync(envPath)) {
 }
 
 const XAI_API_KEY = process.env.XAI_API_KEY || process.env.GROK_API_KEY || '';
-// grok-imagine-video-1.5 is image-to-video ONLY (HTTP 400 "Text-to-video is
-// not supported for this model"). Text-to-video requires grok-imagine-video.
-const XAI_VIDEO_MODEL = process.env.GROK_VIDEO_MODEL || 'grok-imagine-video';
-const XAI_VIDEO_RESOLUTION = process.env.GROK_VIDEO_RESOLUTION || '720p';
+// T2V model: grok-imagine-video (text-to-video)
+// I2V model: grok-imagine-video-1.5 (image-to-video, requires image_url)
+// Model is selected automatically based on whether --image is provided.
+const XAI_VIDEO_MODEL_T2V = process.env.GROK_VIDEO_MODEL || 'grok-imagine-video';
+const XAI_VIDEO_MODEL_I2V = 'grok-imagine-video-1.5';
+// Facebook Reels recommends 1080×1920 minimum for optimal quality.
+const XAI_VIDEO_RESOLUTION = process.env.GROK_VIDEO_RESOLUTION || '1080p';
 const POLL_INTERVAL_MS = 5000;
 // xAI typically returns in 1-3 min; leave headroom for queue depth on the
 // preview model. 144 polls x 5s = 720s (12 min), matching the parent timeout.
 const MAX_POLL_ATTEMPTS = 144;
 
 function parseArgs(argv) {
-  const args = { prompt: '', output: '', dryRun: false, aspectRatio: '9:16', durationSeconds: 8 };
+  const args = {
+    prompt: '',
+    output: '',
+    dryRun: false,
+    aspectRatio: '9:16',
+    durationSeconds: 8,
+    image: '',
+    seed: null,
+    negativePrompt: '',
+  };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--prompt') args.prompt = argv[++i] || '';
     else if (argv[i] === '--output') args.output = argv[++i] || '';
     else if (argv[i] === '--dry-run') args.dryRun = true;
     else if (argv[i] === '--aspect-ratio') args.aspectRatio = argv[++i] || '9:16';
     else if (argv[i] === '--duration') args.durationSeconds = parseInt(argv[++i] || '8');
+    else if (argv[i] === '--image') args.image = argv[++i] || '';
+    else if (argv[i] === '--seed') args.seed = parseInt(argv[++i] || '0') || null;
+    else if (argv[i] === '--negative-prompt') args.negativePrompt = argv[++i] || '';
   }
   return args;
 }
@@ -76,15 +92,46 @@ function httpsRequest(url, options, body, _redirects = 0) {
   });
 }
 
-async function submitJob(prompt, aspectRatio, durationSeconds) {
-  const body = JSON.stringify({
-    model: XAI_VIDEO_MODEL,
+async function submitJob(prompt, aspectRatio, durationSeconds, options = {}) {
+  const { image, seed, negativePrompt } = options;
+  const isI2V = !!image;
+
+  // Select model: I2V uses grok-imagine-video-1.5, T2V uses grok-imagine-video
+  const model = isI2V ? XAI_VIDEO_MODEL_I2V : XAI_VIDEO_MODEL_T2V;
+  const mode = isI2V ? 'I2V' : 'T2V';
+  console.error(`Mode: ${mode} | Model: ${model} | Resolution: ${XAI_VIDEO_RESOLUTION} | Aspect: ${aspectRatio} | Duration: ${durationSeconds}s`);
+
+  const bodyObj = {
+    model,
     prompt,
     duration: durationSeconds,
     aspect_ratio: aspectRatio,
     resolution: XAI_VIDEO_RESOLUTION,
-  });
-  console.error(`Submitting xAI video job (${XAI_VIDEO_MODEL}, ${aspectRatio}, ${durationSeconds}s, ${XAI_VIDEO_RESOLUTION})...`);
+  };
+
+  // I2V: include image as base64 data URL
+  if (isI2V) {
+    const imageBuffer = fs.readFileSync(image);
+    const ext = path.extname(image).toLowerCase().slice(1);
+    const mimeType = ext === 'png' ? 'image/png'
+      : ext === 'webp' ? 'image/webp'
+      : 'image/jpeg';
+    bodyObj.image_url = `data:${mimeType};base64,${imageBuffer.toString('base64')}`;
+  }
+
+  // Optional seed for reproducibility
+  if (seed !== null && !isNaN(seed)) {
+    bodyObj.seed = seed;
+  }
+
+  // Optional negative prompt
+  if (negativePrompt) {
+    bodyObj.negative_prompt = negativePrompt;
+  }
+
+  const body = JSON.stringify(bodyObj);
+  console.error(`Submitting xAI video job (${mode}, ${model}, ${aspectRatio}, ${durationSeconds}s, ${XAI_VIDEO_RESOLUTION})...`);
+
   const res = await httpsRequest('https://api.x.ai/v1/videos/generations', {
     method: 'POST',
     headers: {
@@ -138,14 +185,37 @@ async function main() {
     process.exit(2);
   }
 
+  // Determine mode (T2V vs I2V)
+  const isI2V = !!args.image;
+  const mode = isI2V ? 'I2V' : 'T2V';
+  const activeModel = isI2V ? XAI_VIDEO_MODEL_I2V : XAI_VIDEO_MODEL_T2V;
+
+  // Warn if aspect ratio is not 9:16 (Facebook Reels standard)
+  if (args.aspectRatio !== '9:16') {
+    console.error(`WARNING: aspect-ratio is ${args.aspectRatio}, but 9:16 is the Facebook Reels standard.`);
+  }
+
+  // Validate image file exists if I2V
+  if (isI2V && !args.dryRun) {
+    if (!fs.existsSync(args.image)) {
+      console.error(JSON.stringify({ status: 'error', message: `Image file not found: ${args.image}` }));
+      process.exit(2);
+    }
+  }
+
   if (args.dryRun) {
     console.log(JSON.stringify({
       status: 'dry_run',
       backend: 'xai',
-      model: XAI_VIDEO_MODEL,
+      mode,
+      model: activeModel,
       prompt: args.prompt,
       aspect_ratio: args.aspectRatio,
       duration_seconds: args.durationSeconds,
+      resolution: XAI_VIDEO_RESOLUTION,
+      image: args.image || null,
+      seed: args.seed,
+      negative_prompt: args.negativePrompt || null,
       output: args.output || '(not set)',
       message: 'Dry run — no API call made',
     }));
@@ -164,7 +234,11 @@ async function main() {
   fs.mkdirSync(path.dirname(path.resolve(args.output)), { recursive: true });
 
   try {
-    const requestId = await submitJob(args.prompt, args.aspectRatio, args.durationSeconds);
+    const requestId = await submitJob(args.prompt, args.aspectRatio, args.durationSeconds, {
+      image: args.image,
+      seed: args.seed,
+      negativePrompt: args.negativePrompt,
+    });
     console.error(`Job submitted: ${requestId}`);
     const videoUrl = await pollUntilDone(requestId);
     await downloadTo(videoUrl, args.output);
@@ -173,12 +247,17 @@ async function main() {
     console.log(JSON.stringify({
       status: 'success',
       backend: 'xai',
-      model: XAI_VIDEO_MODEL,
+      mode,
+      model: activeModel,
       output: args.output,
       size_bytes: stats.size,
       prompt: args.prompt,
       aspect_ratio: args.aspectRatio,
       duration_seconds: args.durationSeconds,
+      resolution: XAI_VIDEO_RESOLUTION,
+      seed: args.seed,
+      negative_prompt: args.negativePrompt || null,
+      image: args.image || null,
     }));
   } catch (e) {
     console.error(JSON.stringify({ status: 'error', message: e.message || String(e) }));
