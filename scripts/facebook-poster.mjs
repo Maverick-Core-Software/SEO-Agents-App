@@ -46,6 +46,7 @@ import process from 'node:process';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { normalizePhotoFile } from './lib/schedule-text.mjs';
+import { postProcessVideo, enhanceVideo } from './video-postprocess.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -522,12 +523,21 @@ function sanitizeVideoPrompt(prompt) {
     .trim();
 }
 
-function generateVideoViaBackend(prompt, outputPath, { brand = true } = {}) {
+function generateVideoViaBackend(prompt, outputPath, { brand = true, referenceImage = null } = {}) {
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
   const rawPath = brand ? outputPath.replace(/\.mp4$/, '-raw.mp4') : outputPath;
   const cleanPrompt = sanitizeVideoPrompt(prompt);
   hopLog('facebook-poster→' + VIDEO_BACKEND, 'info', `Video prompt (sanitized, ${cleanPrompt.length} chars): ${cleanPrompt.slice(0, 100)}...`);
-  const out = execFileSync('node', [VIDEO_GEN_SCRIPT, '--prompt', cleanPrompt, '--output', rawPath], {
+
+  const backendArgs = ['--prompt', cleanPrompt, '--output', rawPath];
+  if (referenceImage && fs.existsSync(referenceImage)) {
+    backendArgs.push('--image', referenceImage);
+    hopLog('facebook-poster→' + VIDEO_BACKEND, 'info', `Using image-to-video mode with reference: ${path.basename(referenceImage)}`);
+  }
+  // Pass aspect-ratio and duration explicitly (Facebook Reels standard)
+  backendArgs.push('--aspect-ratio', '9:16', '--duration', '8');
+
+  const out = execFileSync('node', [VIDEO_GEN_SCRIPT, ...backendArgs], {
     timeout: VIDEO_GEN_TIMEOUT_MS,
     encoding: 'utf8',
   });
@@ -536,8 +546,20 @@ function generateVideoViaBackend(prompt, outputPath, { brand = true } = {}) {
   const result = JSON.parse(lastLine);
   if (result.status !== 'success') throw new Error(`Video gen failed (${VIDEO_BACKEND}): ${result.message}`);
   if (brand) {
-    hopLog('facebook-poster→ffmpeg', 'info', 'Adding branded end card with phone overlay...');
-    addBrandedEndCard(rawPath, outputPath);
+    hopLog('facebook-poster→ffmpeg', 'info', 'Post-processing: enhance + branded end card with fade...');
+    try {
+      postProcessVideo(rawPath, outputPath, {
+        cardPath: ENDCARD_PATH,
+        overlays: { brandName: BRAND_NAME, brandPhone: BRAND_PHONE, fontPath: ENDCARD_FONT },
+        trim: true,
+        denoise: true,
+        sharpen: true,
+        grain: true,
+      });
+    } catch (e) {
+      hopLog('facebook-poster→ffmpeg', 'warn', `post-processing failed (${e.message.slice(0, 120)}) — falling back to legacy end card`);
+      addBrandedEndCard(rawPath, outputPath);
+    }
   }
   return outputPath;
 }
@@ -546,11 +568,64 @@ function generateVideoViaBackend(prompt, outputPath, { brand = true } = {}) {
 // selection now lives inside generateVideoViaBackend.
 const generateGeminiVideo = generateVideoViaBackend;
 
+/**
+ * Validate a generated video's resolution, duration, and file size.
+ * Returns { ok, ...details } — does NOT throw; callers decide how to handle.
+ */
+function validateVideo(videoPath) {
+  if (!fs.existsSync(videoPath)) return { ok: false, reason: 'file missing' };
+  const stats = fs.statSync(videoPath);
+  if (stats.size < 100_000) return { ok: false, reason: `file too small (${stats.size} bytes)` };
+  try {
+    const probe = execFileSync('ffprobe', [
+      '-v', 'error', '-select_streams', 'v:0',
+      '-show_entries', 'stream=width,height,duration',
+      '-of', 'json', videoPath,
+    ], { encoding: 'utf8', timeout: 15000 });
+    const s = JSON.parse(probe).streams?.[0] || {};
+    const width = parseInt(s.width) || 0;
+    const height = parseInt(s.height) || 0;
+    const duration = parseFloat(s.duration) || 0;
+    if (width < 720 || height < 1280) return { ok: false, reason: `low resolution ${width}x${height}` };
+    if (duration < 5) return { ok: false, reason: `too short (${duration}s)` };
+    return { ok: true, width, height, duration, sizeBytes: stats.size };
+  } catch (e) {
+    return { ok: false, reason: `ffprobe failed: ${e.message}` };
+  }
+}
+
+/**
+ * Map a post's service type to a reference image file for I2V generation.
+ * Looks in assets/reference-images/ (or GRIZZLY_REFERENCE_IMAGES env var).
+ * Returns the first matching file path, or null if none found.
+ */
+const REFERENCE_IMAGE_DIR = process.env.GRIZZLY_REFERENCE_IMAGES
+  || path.join(PROJECT_ROOT, 'assets', 'reference-images');
+
+function resolveReferenceImage(post) {
+  if (!fs.existsSync(REFERENCE_IMAGE_DIR)) return null;
+  const slug = (post.service || '').toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '');
+  if (!slug) return null;
+  const candidates = [
+    path.join(REFERENCE_IMAGE_DIR, `${slug}.jpg`),
+    path.join(REFERENCE_IMAGE_DIR, `${slug}.png`),
+  ];
+  if (post.date) {
+    candidates.push(path.join(REFERENCE_IMAGE_DIR, `${post.date}.jpg`));
+  }
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
+  }
+  return null;
+}
+
 export async function generateCinematicPrompt(post) {
   // The schedule's VIDEO_PROMPT (written by the weekly crew) is used as a
   // scene idea, never verbatim — those prompts are tame single-shot
-  // descriptions and often name the brand. The director rewrite below is what
-  // makes the clip Reels-worthy.
+  // descriptions and often name the brand. The director rewrite below
+  // enforces the research-backed single-shot, static-camera formula.
   if (!XAI_API_KEY) {
     hopLog('facebook-poster→xai', 'warn', 'No XAI_API_KEY — falling back to schedule prompt as-is.');
     return post.video_prompt || null;
@@ -560,10 +635,38 @@ export async function generateCinematicPrompt(post) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${XAI_API_KEY}` },
     body: JSON.stringify({
-      model: 'grok-4.20-0309-non-reasoning', max_tokens: 320,
+      model: 'grok-4.20-0309-non-reasoning', max_tokens: 280,
       messages: [
-        { role: 'system', content: `You are a video director writing generation prompts for short vertical Facebook Reels (9:16, ~8 seconds) for a licensed residential and commercial electrician in DFW, Texas. These compete in a Reels feed — the viewer decides in the FIRST SECOND whether to keep watching. Slow establishing shots and a guy calmly looking at a panel are failures.\n\nWrite a single vivid, cinematic prompt (100-140 words) that:\n- OPENS ON THE DRAMA — the spark, the arc flash, the plunge into darkness, the lightning strike, the smoking outlet — in the very first moment, not after a build-up\n- Packs 3-4 fast cuts into 8 seconds: e.g. crash zoom on a sparking outlet → lights die across the whole house → worried faces lit by phone flashlight → electrician's boots striding in, tool bag swinging\n- Uses dynamic camera energy: whip pans, crash zooms, hard push-ins, handheld urgency — never a static tripod shot\n- Includes real spectacle scaled to the topic: arcing breakers, a breaker panel erupting in sparks, smoke curling from a scorched socket, a Texas storm hammering a dark neighborhood, an EV charger snapping to life with a glow\n- Shows human stakes (a family plunged into dark, a homeowner flinching from a popping outlet) and ends on the electrician arriving or the power surging triumphantly back on — lights blazing room by room\n- Matches the service and caption topic provided\n- Calls for punchy diegetic AUDIO (electrical crackle, thunder, breaker thunk, the hum of power returning) but no dialogue\n\nSTRICT — the finished video must contain NO readable text of any kind:\n- Do NOT name the business, its owner, its city, or its phone number in the prompt\n- Do NOT ask for logos on shirts, polos, vans, hats, patches, signs, storefronts, or paperwork\n- Do NOT ask for on-screen captions, subtitles, lower thirds, chyrons, or phone numbers\n- Wardrobe should be a plain solid-color work polo with no visible writing or emblem\n- Any incidental signs/labels in the scene must be unreadable or out of focus\n\nEnds with: Photorealistic, cinematic, 4K, high-energy fast-cut editing, dramatic atmosphere, plain unbranded wardrobe, absolutely no visible text or numbers anywhere in frame.\n\nOutput the prompt only. No explanation, no quotes, no title.` },
-        { role: 'user', content: `Service: ${post.service}\nHook: ${post.hook}\nCaption:\n${caption}${post.video_prompt ? `\n\nScene idea from the content planner (rewrite it to be far more exciting — do not copy it):\n${post.video_prompt}` : ''}` },
+        { role: 'system', content: `You are a video director writing generation prompts for short vertical Facebook Reels (9:16, ~8 seconds) for a licensed residential and commercial electrician in DFW, Texas.
+
+Write a single vivid prompt (80-120 words) using the five-part formula:
+[Cinematography] + [Subject] + [Action] + [Context] + [Style & Ambiance]
+
+CRITICAL RULES for AI video quality:
+- SINGLE SHOT ONLY: one continuous take, no cuts, no scene changes
+- STATIC or SLOW camera: "static shot", "slow dolly-in", "slow pan" only
+- NEVER use: whip pan, crash zoom, hard push-in, handheld, rapid cuts
+- SHOW THE WORK, NOT THE FACE: focus on hands, tools, panels, installations
+- Avoid faces — they cause uncanny valley artifacts
+- Describe spatial relationships explicitly to prevent morphing
+- Keep the scene simple: fewer objects = fewer artifacts
+- Specify "consistent lighting" and "smooth continuous motion"
+- Describe diegetic AUDIO (electrical hum, breaker thunk, tools) but no dialogue
+
+DRAMA through the problem, not editing:
+- Show a sparking outlet, a scorched wire, a tripped breaker — in ONE sustained shot
+- The drama comes from what's IN the frame, not from cutting between frames
+
+STRICT — NO readable text of any kind in the video:
+- Do NOT name the business, owner, city, or phone number
+- Do NOT ask for logos, signs, captions, or on-screen text
+- Wardrobe: plain solid-color work polo, no visible writing
+- Any incidental signs must be unreadable or out of focus
+
+Ends with: Photorealistic, cinematic, 4K, consistent lighting, smooth continuous motion, plain unbranded wardrobe, absolutely no visible text or numbers anywhere in frame.
+
+Output the prompt only. No explanation, no quotes, no title.` },
+        { role: 'user', content: `Service: ${post.service}\nHook: ${post.hook}\nCaption:\n${caption}${post.video_prompt ? `\n\nScene idea from the content planner (rewrite it — do not copy it):\n${post.video_prompt}` : ''}` },
       ],
     }),
   });
@@ -575,7 +678,7 @@ export async function generateCinematicPrompt(post) {
   let prompt = json.choices?.[0]?.message?.content?.trim() || post.video_prompt || null;
   // The model sometimes drops the required style/no-text tail — enforce it ourselves.
   if (prompt && !/no visible text/i.test(prompt)) {
-    prompt += ' Photorealistic, cinematic, 4K, high-energy fast-cut editing, dramatic atmosphere, plain unbranded wardrobe, absolutely no visible text or numbers anywhere in frame.';
+    prompt += ' Photorealistic, cinematic, 4K, consistent lighting, smooth continuous motion, plain unbranded wardrobe, absolutely no visible text or numbers anywhere in frame.';
   }
   return prompt;
 }
@@ -621,7 +724,18 @@ async function generateAllVideos(posts) {
         hopLog('facebook-poster', 'warn', `Day ${post.day}: no video prompt — will post without video`);
         continue;
       }
-      generateGeminiVideo(prompt, videoPath);
+      const referenceImage = resolveReferenceImage(post);
+      generateGeminiVideo(prompt, videoPath, { referenceImage });
+
+      // Quality validation — log results but don't block (fallback chain handles it)
+      const validation = validateVideo(videoPath);
+      if (validation.ok) {
+        hopLog('facebook-poster', 'info',
+          `Day ${post.day}: video validated OK — ${validation.width}x${validation.height}, ${validation.duration.toFixed(1)}s, ${(validation.sizeBytes / 1e6).toFixed(1)} MB`);
+      } else {
+        hopLog('facebook-poster', 'warn', `Day ${post.day}: video validation FAILED — ${validation.reason}`);
+      }
+
       hopLog('facebook-poster', 'info', `Day ${post.day}: saved ${path.basename(videoPath)}`);
     } catch (e) {
       const errText = (e.stderr ? e.stderr.toString() : '') + e.message;
@@ -920,7 +1034,8 @@ async function runSinglePayload(args) {
       if (!prompt) throw new Error('video_prompt or video_file required for video posts (no XAI_API_KEY to generate one)');
       hopLog('facebook-poster', 'info', `Generating video via ${VIDEO_BACKEND}: ${prompt.slice(0, 80)}...`);
       try {
-        generateGeminiVideo(prompt, videoPath);
+        const referenceImage = resolveReferenceImage(post);
+        generateGeminiVideo(prompt, videoPath, { referenceImage });
       } catch (e) {
         hopLog('facebook-poster→gemini', 'warn', `video generation failed (${e.message.slice(0, 120)}) — will fall back to photo/text`);
         videoPath = null;
