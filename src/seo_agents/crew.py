@@ -859,12 +859,11 @@ DAY_TOPIC_BINDING_RULE = (
     "DAY→TOPIC BINDING (MANDATORY — this is what keeps Google Business Profile and "
     "Facebook in sync):\n"
     "Use the '## RECOMMENDED POST TOPIC QUEUE' in the GBP REPORT as the single source "
-    "of truth for which topic goes on which day. Assign strictly in rank order:\n"
-    "  Day 1 = RANK 1 topic, Day 2 = RANK 2, Day 3 = RANK 3, ... Day 7 = RANK 7.\n"
-    "Do NOT reorder, swap, re-rank, or skip topics. The topic/SERVICE on a given day "
-    "number MUST be identical to the same day number on the other platform. Only the "
-    "post FORMAT (video/photo/text) and the copy may differ per platform — the topic "
-    "must not.\n"
+    "of truth for which topic goes on which day.\n"
+    "Facebook posts 4 days/week: assign RANK 1→Day 1, RANK 3→Day 3, RANK 5→Day 5, RANK 6→Day 6.\n"
+    "The topic/SERVICE on each posted day MUST match the same rank's topic on GBP.\n"
+    "Do NOT reorder, swap, re-rank, or skip topics. Only the post FORMAT "
+    "(video/photo/text) and the copy may differ per platform — the topic must not.\n"
 )
 
 
@@ -1102,7 +1101,7 @@ def build_facebook_crew(
             "Use the following format for each post (one per day, separated by ---):\n\n"
             "DAY: [number]\n"
             "DATE: [YYYY-MM-DD]\n"
-            "TYPE: [video|photo|text|carousel]\n"
+            "TYPE: [video|photo|text|carousel|poll|skip]\n"
             "SERVICE: [service area this post covers]\n"
             "POST_GOAL: [engagement|education|social_proof|entertainment]\n"
             "HOOK: [first line — the scroll-stopper]\n"
