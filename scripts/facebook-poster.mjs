@@ -145,13 +145,49 @@ try {
 // Shared helpers
 // ---------------------------------------------------------------------------
 
+function hasPhoneNumber(text) {
+  return /\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/.test(text);
+}
+
+/**
+ * Classify a CTA string into its engagement type so the analytics pipeline
+ * can correlate CTA type with engagement outcomes.
+ * Returns: 'comment' | 'save' | 'tag' | 'vote' | 'share' | 'call' | 'other'
+ */
+function classifyCta(ctaText) {
+  const t = (ctaText || '').toLowerCase();
+  if (/\b(comment|tell us|drop a|what('s| is)|ask|answer|reply)\b/.test(t)) return 'comment';
+  if (/\b(save|bookmark)\b/.test(t)) return 'save';
+  if (/\b(tag|share with)\b/.test(t)) return 'tag';
+  if (/\b(vote|poll|choose|pick|this or that|which would|which one|👍)\b/.test(t)) return 'vote';
+  if (/\b(share|send to|forward)\b/.test(t)) return 'share';
+  if (/\b(call|phone|☎|📞)\b/.test(t)) return 'call';
+  return 'other';
+}
+
+/**
+ * Log initial post engagement tracking data.
+ * Facebook Insights data isn't available immediately after publishing;
+ * we log the post ID and goal for later analysis. The analytics feedback
+ * pipeline handles the delayed read-back.
+ */
+function trackPostEngagement(postId, postGoal, postDay) {
+  hopLog('facebook-poster', 'info',
+    `Post ${postId} (day ${postDay}) published — goal: ${postGoal || 'unspecified'}`);
+  return { postId, postGoal, tracked: true };
+}
+
 export function buildCaption(post) {
-  return [
-    post.hook ? `${post.hook}\n\n` : '',
-    post.body || post.headline || '',
-    post.hashtags ? `\n\n${post.hashtags}` : '',
-    post.cta ? `\n\n${post.cta}` : '',
-  ].join('').trim();
+  const parts = [];
+  if (post.hook) parts.push(post.hook);
+  if (post.body || post.headline) parts.push(`\n${post.body || post.headline}`);
+  if (post.hashtags) parts.push(`\n\n${post.hashtags}`);
+  // CTA: only include if it's an ENGAGEMENT CTA (no phone numbers).
+  // Phone-number CTAs are stripped because Facebook's algorithm suppresses
+  // posts with sales-style phone CTAs in the caption. Contact info goes in
+  // the first comment instead (see postFirstComment below).
+  if (post.cta && !hasPhoneNumber(post.cta)) parts.push(`\n\n${post.cta}`);
+  return parts.join('').trim();
 }
 
 function stripMd(str) {
@@ -169,20 +205,28 @@ export function parseScheduleText(text) {
       const m = block.match(new RegExp(`^\\*{0,2}${key}:\\s*(.*?)\\s*$`, 'm'));
       return m ? stripMd(m[1]) : '';
     };
+    const type = get('TYPE').toLowerCase();
     return {
       day: parseInt(get('DAY')) || 0,
       date: get('DATE'),
-      type: get('TYPE').toLowerCase(),
+      type,
       service: get('SERVICE'),
+      post_goal: get('POST_GOAL') || '',
       hook: get('HOOK'),
       body: get('BODY'),
       cta: get('CTA'),
       hashtags: get('HASHTAGS'),
+      contact: get('CONTACT') || '',
       photo_file: normalizePhotoFile(get('PHOTO_FILE')),
       video_prompt: get('VIDEO_PROMPT'),
+      on_screen_text: get('ON_SCREEN_TEXT') || '',
+      boost: get('BOOST') || '',
+      boost_amount: get('BOOST_AMOUNT') || '',
+      boost_duration: get('BOOST_DURATION') || '',
+      boost_targeting: get('BOOST_TARGETING') || '',
       status: get('STATUS'),
     };
-  }).filter(p => p.day > 0).sort((a, b) => a.day - b.day);
+  }).filter(p => p.day > 0 && p.type !== 'skip').sort((a, b) => a.day - b.day);
 }
 
 const GBP_CURATED_FOLDER = process.env.GBP_CURATED_FOLDER || 'E:\\Media\\Grizzly\\Curated';
@@ -412,6 +456,29 @@ async function graphDispatch(post, caption, videoPath, scheduleUnix) {
     if (post.photo_file) hopLog('facebook-poster→graph', 'warn', `Photo not found: ${post.photo_file} — posting as text`);
     return { id: await graphPostText(caption, scheduleUnix), media: 'text', fallback };
   });
+}
+
+// Post business contact info as the first comment on a published post.
+// Facebook's algorithm suppresses sales-style phone CTAs in captions;
+// posting contact in the first comment avoids that penalty while still
+// making it easy for viewers to find the phone number.
+async function postFirstComment(postId, contactText) {
+  if (!contactText) return;
+  const body = new URLSearchParams({
+    message: contactText,
+    access_token: FB_PAGE_ACCESS_TOKEN,
+  });
+  const res = await fetch(
+    `https://graph.facebook.com/${GRAPH_API_VERSION}/${postId}/comments`,
+    { method: 'POST', body }
+  );
+  const json = await res.json();
+  if (json.error) {
+    hopLog('facebook-poster→graph', 'warn', `First comment failed: ${json.error.message}`, { code: json.error.code });
+    return null;
+  }
+  hopLog('facebook-poster→graph', 'info', `Contact posted as first comment on ${postId}`);
+  return json.id;
 }
 
 // ---------------------------------------------------------------------------
@@ -1061,7 +1128,17 @@ async function runSinglePayload(args) {
     }
     ({ id: postId, fallback: postFallback } = await graphDispatch(post, caption, videoPath, null));
     if (postFallback) hopLog('facebook-poster→graph', 'warn', `FALLBACK: ${postFallback}`);
+    if (postId && post.contact) {
+      await postFirstComment(postId, post.contact).catch(e =>
+        hopLog('facebook-poster→graph', 'warn', `First comment failed: ${e.message}`)
+      );
+    }
+    if (postId) trackPostEngagement(postId, post.post_goal, post.day);
   }
+
+  // Log CTA type for analytics
+  const ctaType = classifyCta(post.cta || '');
+  hopLog('facebook-poster', 'info', `Single payload CTA type = ${ctaType}, goal = ${post.post_goal || 'unspecified'}`);
 
   return {
     status: 'success', adapter: 'facebook-poster', via, action_id: action.id || null, post_type: type,
@@ -1083,8 +1160,10 @@ async function runWeek(args) {
   if (!posts.length) throw new Error('No posts found in schedule file.');
 
   hopLog('facebook-poster', 'info', `Loaded ${posts.length} posts from schedule (starting day ${args.startDay})`);
-  if (posts.length < 7) {
-    hopLog('facebook-poster', 'warn', `Schedule has only ${posts.length} days (expected 7) — some days may be missing`);
+  // Log CTA types for analytics correlation
+  for (const post of posts) {
+    const ctaType = classifyCta(post.cta || '');
+    hopLog('facebook-poster', 'info', `Day ${post.day}: CTA type = ${ctaType}, goal = ${post.post_goal || 'unspecified'}`);
   }
   if (posts.length === 0) {
     hopLog('facebook-poster', 'error', 'No posts found in schedule — aborting');
@@ -1147,9 +1226,15 @@ async function runWeek(args) {
       const scheduleUnix = isLive ? null : rawScheduleUnix;
       try {
         const { id, media, fallback } = await graphDispatch(post, caption, post._videoPath || null, scheduleUnix);
+        if (id && post.contact) {
+          await postFirstComment(id, post.contact).catch(e =>
+            hopLog('facebook-poster→graph', 'warn', `First comment failed: ${e.message}`)
+          );
+        }
         if (isLive) {
           results.push({ day: post.day, date: post.date, status: 'posted', type: post.type, media, id, fallback });
           hopLog('facebook-poster→graph', 'info', `Day ${post.day} posted live (id: ${id}, media: ${media})`);
+          trackPostEngagement(id, post.post_goal, post.day);
         } else {
           results.push({ day: post.day, date: post.date, status: 'scheduled', scheduled_time: `${post.date} ${args.postTime}`, type: post.type, media, id, fallback });
           hopLog('facebook-poster→graph', 'info', `Day ${post.day} scheduled for ${post.date} ${args.postTime} (id: ${id}, media: ${media})`);
