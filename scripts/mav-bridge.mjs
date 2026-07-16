@@ -161,6 +161,14 @@ const runPhase = makeRunPhase({ log, hopError, projectRoot: PROJECT_ROOT });
 // Video prompt helpers
 // ─────────────────────────────────────────────
 
+/**
+ * @deprecated Since the video-quality overhaul, facebook-poster.mjs's
+ * generateCinematicPrompt() handles ALL video days (1, 4, 7) with a
+ * stronger system prompt (single-shot, static camera, five-part formula).
+ * Calling this function creates a double-rewrite for Day 1 and mutates
+ * the schedule file. Kept for reference only — do NOT call from
+ * executeApprovedRun() or any other code path.
+ */
 async function generateDay1VideoPrompt(scheduleFile) {
   const text = fs.readFileSync(scheduleFile, 'utf8');
   const blocks = text.split(/\n\s*---\s*\n/).filter(b => b.includes('DAY:'));
@@ -242,33 +250,6 @@ async function executeApprovedRun(run) {
     }
   } catch (e) {
     await hopError(runId, 'facebook', 'mav-bridge→graph', 'Facebook token check failed', e);
-  }
-
-  // ── Step 0: Generate Day 1 video prompt, surface for approval (5-min window) ──
-  const scheduleFile = path.join(PROJECT_ROOT, 'outputs', 'facebook_posting_schedule.md');
-  if (fs.existsSync(scheduleFile)) {
-    try {
-      await log(runId, 'bridge', 'info', 'Generating Day 1 video prompt via GPT-4o-mini...');
-      const prompt = await generateDay1VideoPrompt(scheduleFile);
-      if (prompt) {
-        writePendingPrompt(runId, prompt);
-        await supabase.from('seo_runs').update({ status: 'awaiting_prompt' }).eq('id', runId);
-        await log(runId, 'bridge', 'info', 'Video prompt ready — waiting up to 5 minutes for approval in dashboard...');
-        const approvedPrompt = await waitForPromptApproval(runId);
-        const finalPrompt = approvedPrompt || prompt;
-        const text = fs.readFileSync(scheduleFile, 'utf8');
-        const updated = text.replace(/^(\*{0,2}VIDEO_PROMPT:\*{0,2})\s*.*?$/m, `VIDEO_PROMPT: ${finalPrompt}`);
-        fs.writeFileSync(scheduleFile, updated, 'utf8');
-        if (approvedPrompt) {
-          await log(runId, 'bridge', 'info', 'Approved prompt written to schedule.');
-        } else {
-          await log(runId, 'bridge', 'warn', 'Approval timed out — using generated prompt and proceeding.');
-        }
-        clearPendingPrompt();
-      }
-    } catch (e) {
-      await log(runId, 'bridge', 'warn', `Video prompt generation failed (${e.message.slice(0, 120)}) — continuing without it.`);
-    }
   }
 
   // Mark as executing
@@ -784,7 +765,7 @@ async function handleHttpRequest(req, res) {
   if (method === 'GET' && url.pathname === '/seo/status') {
     const [runsRes, postsRes] = await Promise.all([
       supabase.from('seo_runs').select('*').order('created_at', { ascending: false }).limit(20),
-      supabase.from('weekly_posts').select('run_id,platform,status,post_date,error').order('created_at', { ascending: false }).limit(200),
+      supabase.from('weekly_posts').select('id,run_id,platform,status,post_date,error,updated_at').order('created_at', { ascending: false }).limit(200),
     ]);
     const runs = runsRes.data || [];
     const posts = postsRes.data || [];
@@ -826,10 +807,26 @@ async function handleHttpRequest(req, res) {
     }
 
     // Faults: only current post-level errors, not the frozen run-level error field.
-    const errorPosts = posts.filter(p => ['error', 'needs_verification'].includes(p.status));
-    const faults = errorPosts.slice(0, 3).map(p =>
-      `${p.platform} post ${p.post_date} failed: ${(p.error || 'unknown error').slice(0, 120)}`
-    );
+        // Prefer recent rows (24h) so historical noise does not stick on the dashboard forever.
+        const faultRecencyCutoff = Date.now() - FAULT_RECENCY_MS;
+        let errorPosts = posts.filter(p => {
+          if (!['error', 'needs_verification'].includes(p.status)) return false;
+          // posts query may not include updated_at — fall back to post_date day window
+          if (p.updated_at) {
+            const t = new Date(p.updated_at).getTime();
+            if (Number.isFinite(t) && t < faultRecencyCutoff) return false;
+          }
+          return true;
+        });
+        // Honor dashboard acks from clear-fault (suppress string faults without lying about DB)
+        let faultAcks = {};
+        try {
+          faultAcks = JSON.parse(fs.readFileSync(path.join(PROJECT_ROOT, 'state', 'fault-acks.json'), 'utf8'));
+        } catch { faultAcks = {}; }
+        errorPosts = errorPosts.filter(p => !faultAcks[p.id]);
+        const faults = errorPosts.slice(0, 3).map(p =>
+          `${p.platform} post ${p.post_date} failed: ${(p.error || 'unknown error').slice(0, 120)}`
+        );
 
     const pendingPosts = posts.filter(p => p.status === 'pending_approval');
     const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
@@ -993,53 +990,258 @@ async function handleHttpRequest(req, res) {
   }
 
   // ── POST /seo/actions/dismiss ────────────────
-  if (method === 'POST' && url.pathname === '/seo/actions/dismiss') {
-    const { actionId } = await readBody(req);
-    if (!actionId) { sendJsonHttp(res, 400, { error: 'actionId required' }); return; }
+    if (method === 'POST' && url.pathname === '/seo/actions/dismiss') {
+      const { actionId } = await readBody(req);
+      if (!actionId) { sendJsonHttp(res, 400, { error: 'actionId required' }); return; }
 
-    const { data: task, error: taskErr } = await supabase.from('website_tasks')
-      .update({ status: 'skipped' })
-      .eq('id', actionId)
-      .in('status', ['pending_approval', 'error'])
-      .select().maybeSingle();
-    if (taskErr) { sendJsonHttp(res, 500, { error: taskErr.message }); return; }
-    if (task) { sendJsonHttp(res, 200, { ok: true, type: 'website_task', id: task.id, message: 'Task skipped.' }); return; }
+      const dismissible = ['pending_approval', 'error', 'needs_verification'];
 
-    const { data: post, error: postErr } = await supabase.from('weekly_posts')
-      .update({ status: 'skipped' })
-      .eq('id', actionId)
-      .in('status', ['pending_approval', 'error'])
-      .select().maybeSingle();
-    if (postErr) { sendJsonHttp(res, 500, { error: postErr.message }); return; }
-    if (post) { sendJsonHttp(res, 200, { ok: true, type: 'weekly_post', id: post.id, message: 'Post skipped.' }); return; }
+      const { data: task, error: taskErr } = await supabase.from('website_tasks')
+        .update({ status: 'skipped', error: null })
+        .eq('id', actionId)
+        .in('status', dismissible)
+        .select().maybeSingle();
+      if (taskErr) { sendJsonHttp(res, 500, { error: taskErr.message }); return; }
+      if (task) {
+        alertStore.clearFault(task.run_id || task.id, task.id, 'failed');
+        alertStore.clearFault(task.run_id || task.id, task.id, 'stuck');
+        sendJsonHttp(res, 200, { ok: true, type: 'website_task', id: task.id, message: 'Task skipped.' });
+        return;
+      }
 
-    sendJsonHttp(res, 404, { error: 'Action not found or cannot be dismissed' });
-    return;
-  }
+      const { data: post, error: postErr } = await supabase.from('weekly_posts')
+        .update({ status: 'skipped', error: null })
+        .eq('id', actionId)
+        .in('status', dismissible)
+        .select().maybeSingle();
+      if (postErr) { sendJsonHttp(res, 500, { error: postErr.message }); return; }
+      if (post) {
+        alertStore.clearFault(post.run_id || post.id, post.id, 'failed');
+        alertStore.clearFault(post.run_id || post.id, post.id, 'stuck');
+        sendJsonHttp(res, 200, { ok: true, type: 'weekly_post', id: post.id, message: 'Post skipped.' });
+        return;
+      }
 
-  // ── POST /seo/actions/run ────────────────────
-  if (method === 'POST' && url.pathname === '/seo/actions/run') {
-    const { actionId, live } = await readBody(req);
-    if (!live) {
-      sendJsonHttp(res, 200, { ok: true, mode: 'dry_run', message: 'Dry run — no changes made.' });
+      sendJsonHttp(res, 404, { error: 'Action not found or cannot be dismissed' });
       return;
     }
-    const { data: run } = await supabase.from('seo_runs')
-      .update({ status: 'approved' })
-      .eq('id', actionId)
-      .eq('status', 'pending_approval')
-      .select().maybeSingle();
 
-    if (!run) { sendJsonHttp(res, 404, { error: 'Run not found or already executed' }); return; }
+    // ── POST /seo/actions/retry ──────────────────
+    // Re-queue a failed/stuck action so the bridge poll picks it up again.
+    // scope: 'action' (default) | 'run_fb_only' | 'run_all'
+    if (method === 'POST' && url.pathname === '/seo/actions/retry') {
+      const { actionId, scope = 'action' } = await readBody(req);
+      if (!actionId) { sendJsonHttp(res, 400, { error: 'actionId required' }); return; }
 
-    // Also approve associated weekly_posts
-    await supabase.from('weekly_posts')
-      .update({ status: 'approved' })
-      .eq('run_id', run.id)
-      .eq('status', 'pending_approval');
-    sendJsonHttp(res, 200, { ok: true, mode: 'live', runId: run.id, message: 'Approved — bridge will execute on next poll.' });
-    return;
-  }
+      const retriablePost = ['error', 'needs_verification', 'skipped', 'posting'];
+      const retriableTask = ['error', 'needs_verification', 'skipped', 'executing'];
+      const retriableRun = ['error', 'executing', 'done'];
+
+      // website_task
+      {
+        const { data: task, error: taskErr } = await supabase.from('website_tasks')
+          .update({ status: 'approved', error: null, updated_at: new Date().toISOString() })
+          .eq('id', actionId)
+          .in('status', retriableTask)
+          .select().maybeSingle();
+        if (taskErr) { sendJsonHttp(res, 500, { error: taskErr.message }); return; }
+        if (task) {
+          alertStore.clearFault(task.run_id || task.id, task.id, 'failed');
+          alertStore.clearFault(task.run_id || task.id, task.id, 'stuck');
+          sendJsonHttp(res, 200, {
+            ok: true, type: 'website_task', id: task.id, new_status: 'approved',
+            message: 'Task re-queued for execution.',
+          });
+          return;
+        }
+      }
+
+      // weekly_post — FB → approved (poster re-runs); GBP → scheduled (daily cron)
+      {
+        const { data: existing } = await supabase.from('weekly_posts')
+          .select('id,run_id,platform,status')
+          .eq('id', actionId)
+          .maybeSingle();
+        if (existing && retriablePost.includes(existing.status)) {
+          const nextStatus = existing.platform === 'gbp' ? 'scheduled' : 'approved';
+          const { data: post, error: postErr } = await supabase.from('weekly_posts')
+            .update({ status: nextStatus, error: null, updated_at: new Date().toISOString() })
+            .eq('id', actionId)
+            .select().maybeSingle();
+          if (postErr) { sendJsonHttp(res, 500, { error: postErr.message }); return; }
+          if (post) {
+            alertStore.clearFault(post.run_id || post.id, post.id, 'failed');
+            alertStore.clearFault(post.run_id || post.id, post.id, 'stuck');
+            // Nudge parent run out of error so liveRunStatus can recover
+            if (post.run_id) {
+              await supabase.from('seo_runs')
+                .update({ status: 'approved', error: null, updated_at: new Date().toISOString() })
+                .eq('id', post.run_id)
+                .in('status', ['error', 'done']);
+            }
+            sendJsonHttp(res, 200, {
+              ok: true, type: 'weekly_post', id: post.id, new_status: nextStatus,
+              message: `Post re-queued as ${nextStatus}.`,
+            });
+            return;
+          }
+        }
+      }
+
+      // seo_run — re-approve run + cascade errored posts
+      {
+        const { data: run, error: runErr } = await supabase.from('seo_runs')
+          .select('id,status')
+          .eq('id', actionId)
+          .maybeSingle();
+        if (runErr) { sendJsonHttp(res, 500, { error: runErr.message }); return; }
+        if (run && (retriableRun.includes(run.status) || run.status === 'pending_approval' || run.status === 'approved')) {
+          await supabase.from('seo_runs')
+            .update({ status: 'approved', error: null, updated_at: new Date().toISOString() })
+            .eq('id', run.id);
+
+          let postFilter = supabase.from('weekly_posts')
+            .update({ status: 'approved', error: null, updated_at: new Date().toISOString() })
+            .eq('run_id', run.id)
+            .in('status', retriablePost);
+          if (scope === 'run_fb_only') {
+            postFilter = postFilter.eq('platform', 'facebook');
+          }
+          const { data: cascaded, error: casErr } = await postFilter.select('id,platform,status');
+          if (casErr) { sendJsonHttp(res, 500, { error: casErr.message }); return; }
+
+          alertStore.clearFault(run.id, run.id, 'failed');
+          alertStore.clearFault(run.id, run.id, 'stuck');
+          for (const p of (cascaded || [])) {
+            alertStore.clearFault(run.id, p.id, 'failed');
+            alertStore.clearFault(run.id, p.id, 'stuck');
+          }
+
+          // GBP posts that were errored should go to scheduled, not approved
+          if (scope !== 'run_fb_only') {
+            await supabase.from('weekly_posts')
+              .update({ status: 'scheduled', error: null, updated_at: new Date().toISOString() })
+              .eq('run_id', run.id)
+              .eq('platform', 'gbp')
+              .eq('status', 'approved')
+              .in('id', (cascaded || []).filter(p => p.platform === 'gbp').map(p => p.id));
+          }
+
+          sendJsonHttp(res, 200, {
+            ok: true, type: 'seo_run', id: run.id, new_status: 'approved',
+            cascaded: (cascaded || []).map(p => p.id),
+            message: `Run re-queued; ${(cascaded || []).length} post(s) reset.`,
+          });
+          return;
+        }
+      }
+
+      sendJsonHttp(res, 404, { error: 'Action not found or not retriable in current status' });
+      return;
+    }
+
+    // ── POST /seo/actions/clear-fault ────────────
+    // mode=ack: leave row status; clear push-alert dedup keys + optional dashboard ack file
+    // mode=dismiss: same as dismiss (skip) for posts/tasks
+    if (method === 'POST' && url.pathname === '/seo/actions/clear-fault') {
+      const { actionId, mode = 'ack', faultKey } = await readBody(req);
+      if (!actionId && mode !== 'ack_all') {
+        sendJsonHttp(res, 400, { error: 'actionId required' });
+        return;
+      }
+
+      if (mode === 'dismiss' && actionId) {
+        // Reuse dismiss path semantics inline
+        const dismissible = ['pending_approval', 'error', 'needs_verification'];
+        for (const [table, type] of [['website_tasks', 'website_task'], ['weekly_posts', 'weekly_post']]) {
+          const { data: row, error } = await supabase.from(table)
+            .update({ status: 'skipped', error: null })
+            .eq('id', actionId)
+            .in('status', dismissible)
+            .select().maybeSingle();
+          if (error) { sendJsonHttp(res, 500, { error: error.message }); return; }
+          if (row) {
+            alertStore.clearFault(row.run_id || row.id, row.id, 'failed');
+            alertStore.clearFault(row.run_id || row.id, row.id, 'stuck');
+            sendJsonHttp(res, 200, { ok: true, type, id: row.id, mode: 'dismiss', message: 'Fault dismissed (skipped).' });
+            return;
+          }
+        }
+        sendJsonHttp(res, 404, { error: 'Action not found or cannot be dismissed' });
+        return;
+      }
+
+      // ack: clear alert keys for this action (and optional faultKey stuck|failed)
+      const runIdGuess = actionId;
+      const types = faultKey ? [faultKey] : ['failed', 'stuck'];
+      for (const ft of types) {
+        alertStore.clearFault(runIdGuess, actionId, ft);
+      }
+      // Also try looking up run_id from tables so keys match poller format
+      for (const table of ['weekly_posts', 'website_tasks', 'seo_runs']) {
+        const { data: row } = await supabase.from(table).select('id,run_id').eq('id', actionId).maybeSingle();
+        if (row) {
+          const rid = row.run_id || row.id;
+          for (const ft of types) alertStore.clearFault(rid, row.id, ft);
+          break;
+        }
+      }
+
+      // Persist dashboard-level acks so /seo/status can suppress string faults briefly
+      const ackPath = path.join(PROJECT_ROOT, 'state', 'fault-acks.json');
+      let acks = {};
+      try { acks = JSON.parse(fs.readFileSync(ackPath, 'utf8')); } catch { acks = {}; }
+      acks[actionId] = { at: Date.now(), mode: 'ack' };
+      // Drop acks older than 7 days
+      const week = 7 * 24 * 60 * 60 * 1000;
+      for (const [k, v] of Object.entries(acks)) {
+        if (!v?.at || Date.now() - v.at > week) delete acks[k];
+      }
+      try { fs.writeFileSync(ackPath, JSON.stringify(acks)); } catch {}
+
+      sendJsonHttp(res, 200, { ok: true, id: actionId, mode: 'ack', message: 'Fault acknowledged.' });
+      return;
+    }
+
+    // ── POST /seo/ops/clear-lock ─────────────────
+    if (method === 'POST' && url.pathname === '/seo/ops/clear-lock') {
+      const lockPath = path.join(PROJECT_ROOT, 'outputs', 'lock.lock.json');
+      const alt = path.join(PROJECT_ROOT, 'outputs', 'lock.json');
+      let cleared = false;
+      for (const p of [lockPath, alt]) {
+        if (fs.existsSync(p)) {
+          try { fs.unlinkSync(p); cleared = true; } catch (e) {
+            sendJsonHttp(res, 500, { error: e.message }); return;
+          }
+        }
+      }
+      sendJsonHttp(res, 200, { ok: true, cleared, message: cleared ? 'Lock file removed.' : 'No lock file present.' });
+      return;
+    }
+
+    // ── POST /seo/actions/run ────────────────────
+    if (method === 'POST' && url.pathname === '/seo/actions/run') {
+      const { actionId, live } = await readBody(req);
+      if (!live) {
+        sendJsonHttp(res, 200, { ok: true, mode: 'dry_run', message: 'Dry run — no changes made.' });
+        return;
+      }
+      const { data: run } = await supabase.from('seo_runs')
+        .update({ status: 'approved' })
+        .eq('id', actionId)
+        .eq('status', 'pending_approval')
+        .select().maybeSingle();
+
+      if (!run) { sendJsonHttp(res, 404, { error: 'Run not found or already executed' }); return; }
+
+      // Also approve associated weekly_posts
+      await supabase.from('weekly_posts')
+        .update({ status: 'approved' })
+        .eq('run_id', run.id)
+        .eq('status', 'pending_approval');
+      sendJsonHttp(res, 200, { ok: true, mode: 'live', runId: run.id, message: 'Approved — bridge will execute on next poll.' });
+      return;
+    }
 
   // ── GET /seo/facebook/pending-prompt ────────
   if (method === 'GET' && url.pathname === '/seo/facebook/pending-prompt') {
