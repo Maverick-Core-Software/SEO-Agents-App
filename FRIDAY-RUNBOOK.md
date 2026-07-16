@@ -58,7 +58,7 @@ Interpretation:
 |---|---|---|
 | `LastRunTime` blank/old, no `weekly-runner-health.json` for today | Task never fired (reboot / logged-on-only) | re-run `setup-scheduled-tasks.ps1` |
 | `weekly-runner-health.json` shows `failed`, log says "seo-agents not found" | crew not installed where task's Python can see it | `.\.venv\Scripts\Activate.ps1; pip install -e .` |
-| `run_health.json` research = `failed` | crew ran and errored (API key, network) | read its `error`; check OPENAI_API_KEY in `.env` |
+| `run_health.json` research = `failed` | crew ran and errored (API key, network) | read its `error`; check DEEPSEEK_API_KEY and ANTHROPIC_API_KEY in `.env` |
 | `pm2 ls` empty after reboot | PM2 didn't resurrect | `pm2 resurrect` (or `setup-pm2-boot.ps1` for next time) |
 
 ## What the monitor now catches
@@ -71,3 +71,45 @@ Interpretation:
   stopped), it runs `pm2 resurrect` once before falling back to `pm2 restart`.
 
 Tunables (in `.env`): `SEO_NO_SHOW_DEADLINE` (HH:mm), `SEO_RUN_DOW` (0=Sun…5=Fri).
+
+## Facebook Engagement Pipeline (new — July 2026)
+
+The Facebook schedule now generates **4 posts/week** (Mon, Wed, Fri, Sat) instead of 7. Every post uses engagement-focused CTAs (save, tag, vote, comment) instead of phone numbers. Phone numbers are posted as the **first comment** to avoid algorithm suppression.
+
+### Key changes in the schedule format
+
+| Field | Purpose |
+|---|---|
+| `POST_GOAL` | `education`, `social_proof`, `engagement`, or `entertainment` |
+| `CTA` | Engagement invitation only — no phone numbers |
+| `CONTACT` | Phone number (posted as first comment, not in caption) |
+| `ON_SCREEN_TEXT` | Text overlays for video Reels |
+| `BOOST` | `yes:$N`, `maybe`, or `no` |
+| `BOOST_AMOUNT` | Daily budget for this post ($N) |
+| `BOOST_DURATION` | Days to run boost (2, 3, 5, or 7) |
+| `BOOST_TARGETING` | Targeting hint (e.g. "15mi Rowlett, homeowners 28-65") |
+
+### Boost strategy ($50/week)
+
+The CrewAI agent distributes $50/week across 1-3 posts. The schedule includes a **BOOST BUDGET SUMMARY** section at the bottom with allocation details. To boost:
+
+1. Find posts with `BOOST: yes:$N` in the schedule
+2. Open Facebook Page → Boost Post
+3. Set daily budget to `BOOST_AMOUNT`, duration to `BOOST_DURATION`
+4. Targeting: 15mi radius Rowlett, homeowners 28-65, home improvement/DIY/real estate interests. EXCLUDE "electrician" interest (that's competitors). Use Advantage+ Audience.
+
+### Analytics feedback loop
+
+`facebook-insights-collector.mjs` reads post performance and writes `facebook_engagement_report.md`. Run it manually before the Friday crew to feed last week's data into the content generator:
+
+```bash
+node scripts/facebook-insights-collector.mjs --days 7 --output outputs/facebook_engagement_report.md
+```
+
+### Manual organic reach tactics
+
+These are NOT automated — do them yourself or delegate:
+- Join 10-15 DFW community Facebook Groups as your Page
+- Create a 5-10 person "seed network" (staff, family, past customers) who like+comment within the first hour of posting
+- Reply to every comment within 15 minutes
+- Post 1-2 Stories/day with interactive stickers (polls, questions)
