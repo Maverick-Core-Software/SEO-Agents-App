@@ -102,7 +102,15 @@ const ENDCARD_PATH = process.env.GRIZZLY_ENDCARD_PATH || path.join(PROJECT_ROOT,
 // shirts or signs inside the clip.
 const BRAND_NAME = process.env.GRIZZLY_BRAND_NAME || 'Grizzly Electrical Solutions';
 const BRAND_PHONE = process.env.GRIZZLY_BRAND_PHONE || '(469) 863-9804';
+const BRAND_TEXT_LINE = process.env.GRIZZLY_TEXT_LINE || '(469) 896-3862';
 const BRAND_LOCATION = process.env.GRIZZLY_BRAND_LOCATION || 'Rowlett, TX';
+// First comment posted under every FB post. Fixed copy here (not the schedule's
+// CONTACT text) so the LLM can never garble a public-facing phone number.
+// (469) 896-3862 is the customer-chat Twilio text line (canonical:
+// Hermes-Supervisor hermes-config/operational-facts.yaml); the schedule's
+// CONTACT field now only gates whether the comment is posted.
+const FIRST_COMMENT = process.env.FB_FIRST_COMMENT
+  || '📲 Text us at (469) 896-3862 to get a free instant quote — calls welcome too!';
 const ENDCARD_FONT = process.env.GRIZZLY_ENDCARD_FONT
   || (process.platform === 'win32'
     ? String.raw`C\:/Windows/Fonts/arialbd.ttf`
@@ -515,16 +523,20 @@ export function addBrandedEndCard(rawPath, finalPath) {
     const [fpsN, fpsD] = (stream.r_frame_rate || '24/1').split('/').map(Number);
     const fps = Math.round(fpsN / fpsD) || 24;
 
-    // Overlay brand + phone on the end card via drawtext so every reel ends
-    // with the correct name and number, even if the video model garbled a
-    // shirt logo mid-clip. Font path is configurable (GRIZZLY_ENDCARD_FONT).
+    // Overlay brand + both phone lines on the end card via drawtext so every
+    // reel ends with the correct name and numbers, even if the video model
+    // garbled a shirt logo mid-clip. Font path is configurable (GRIZZLY_ENDCARD_FONT).
     const fontExists = fs.existsSync(ENDCARD_FONT.replace(/\\:/g, ':'));
     const phoneFontSize = Math.max(28, Math.round(H / 22));
     const nameFontSize = Math.max(22, Math.round(H / 30));
+    // Longest line ("Text ... for a free quote") gets its own smaller size so it
+    // keeps a side margin at 720px width instead of running edge-to-edge.
+    const textLineFontSize = Math.max(20, Math.round(H / 36));
     const shadow = 'shadowcolor=black@0.9:shadowx=3:shadowy=3';
     const textFilter = fontExists
-      ? `,drawtext=fontfile='${ENDCARD_FONT}':text='${ffmpegEscape(BRAND_NAME)}':fontcolor=white:fontsize=${nameFontSize}:x=(w-text_w)/2:y=h*0.72:${shadow}`
-        + `,drawtext=fontfile='${ENDCARD_FONT}':text='${ffmpegEscape(BRAND_PHONE)}':fontcolor=white:fontsize=${phoneFontSize}:x=(w-text_w)/2:y=h*0.80:${shadow}`
+      ? `,drawtext=fontfile='${ENDCARD_FONT}':text='${ffmpegEscape(BRAND_NAME)}':fontcolor=white:fontsize=${nameFontSize}:x=(w-text_w)/2:y=h*0.70:${shadow}`
+        + `,drawtext=fontfile='${ENDCARD_FONT}':text='${ffmpegEscape(`Call ${BRAND_PHONE}`)}':fontcolor=white:fontsize=${phoneFontSize}:x=(w-text_w)/2:y=h*0.78:${shadow}`
+        + `,drawtext=fontfile='${ENDCARD_FONT}':text='${ffmpegEscape(`Text ${BRAND_TEXT_LINE} for a free quote`)}':fontcolor=white:fontsize=${textLineFontSize}:x=(w-text_w)/2:y=h*0.86:${shadow}`
       : '';
 
     // Detect whether the raw video has an audio track. Grok Imagine and Veo 3
@@ -617,7 +629,7 @@ function generateVideoViaBackend(prompt, outputPath, { brand = true, referenceIm
     try {
       postProcessVideo(rawPath, outputPath, {
         cardPath: ENDCARD_PATH,
-        overlays: { brandName: BRAND_NAME, brandPhone: BRAND_PHONE, fontPath: ENDCARD_FONT },
+        overlays: { brandName: BRAND_NAME, brandPhone: BRAND_PHONE, textLine: BRAND_TEXT_LINE, fontPath: ENDCARD_FONT },
         trim: true,
         denoise: true,
         sharpen: true,
@@ -1129,7 +1141,7 @@ async function runSinglePayload(args) {
     ({ id: postId, fallback: postFallback } = await graphDispatch(post, caption, videoPath, null));
     if (postFallback) hopLog('facebook-poster→graph', 'warn', `FALLBACK: ${postFallback}`);
     if (postId && post.contact) {
-      await postFirstComment(postId, post.contact).catch(e =>
+      await postFirstComment(postId, FIRST_COMMENT).catch(e =>
         hopLog('facebook-poster→graph', 'warn', `First comment failed: ${e.message}`)
       );
     }
@@ -1227,7 +1239,7 @@ async function runWeek(args) {
       try {
         const { id, media, fallback } = await graphDispatch(post, caption, post._videoPath || null, scheduleUnix);
         if (id && post.contact) {
-          await postFirstComment(id, post.contact).catch(e =>
+          await postFirstComment(id, FIRST_COMMENT).catch(e =>
             hopLog('facebook-poster→graph', 'warn', `First comment failed: ${e.message}`)
           );
         }
