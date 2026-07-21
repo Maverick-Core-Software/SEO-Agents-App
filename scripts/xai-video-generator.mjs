@@ -15,7 +15,7 @@
  * Env:
  *   XAI_API_KEY              - required (falls back to GROK_API_KEY)
  *   GROK_VIDEO_MODEL         - default 'grok-imagine-video' (T2V) or 'grok-imagine-video-1.5' (I2V)
- *   GROK_VIDEO_RESOLUTION    - default '1080p' (Facebook Reels recommends 1080×1920 minimum)
+ *   GROK_VIDEO_RESOLUTION    - default '720p' (1080p is rejected by grok-imagine-video — HTTP 400)
  */
 
 import fs from 'node:fs';
@@ -37,8 +37,10 @@ const XAI_API_KEY = process.env.XAI_API_KEY || process.env.GROK_API_KEY || '';
 // Model is selected automatically based on whether --image is provided.
 const XAI_VIDEO_MODEL_T2V = process.env.GROK_VIDEO_MODEL || 'grok-imagine-video';
 const XAI_VIDEO_MODEL_I2V = 'grok-imagine-video-1.5';
-// Facebook Reels recommends 1080×1920 minimum for optimal quality.
-const XAI_VIDEO_RESOLUTION = process.env.GROK_VIDEO_RESOLUTION || '1080p';
+// 720p, NOT 1080p: grok-imagine-video rejects 1080p with HTTP 400
+// ("1080p video resolution is not available for this model") — this killed both
+// renders on the 2026-07-20 run. Facebook re-encodes uploads anyway.
+const XAI_VIDEO_RESOLUTION = process.env.GROK_VIDEO_RESOLUTION || '720p';
 const POLL_INTERVAL_MS = 5000;
 // xAI typically returns in 1-3 min; leave headroom for queue depth on the
 // preview model. 144 polls x 5s = 720s (12 min), matching the parent timeout.

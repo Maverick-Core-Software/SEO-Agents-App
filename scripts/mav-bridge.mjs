@@ -279,6 +279,7 @@ async function executeApprovedRun(run) {
   // overwrite PHOTO_FILE with the same-date curated photo whose slug matches the
   // post's SERVICE; if none, switch the day to text-only so no off-topic image ships.
   const FB_REWRITE_PATH = path.join(PROJECT_ROOT, 'scripts', 'fb-photo-rewrite.mjs');
+  const scheduleFile = path.join(PROJECT_ROOT, 'outputs', 'facebook_posting_schedule.md');
   if (fs.existsSync(FB_REWRITE_PATH) && fs.existsSync(scheduleFile)) {
     const rw = await runPhase(runId, 'fb-photo-rewrite', 'node', [FB_REWRITE_PATH], PROJECT_ROOT, { timeoutMs: 30 * 1000 });
     if (!rw.ok) await log(runId, 'facebook', 'warn', `fb-photo-rewrite failed: ${rw.error}`);
@@ -520,6 +521,25 @@ async function executeApprovedRun(run) {
     `Run ${runId} complete — ${allOk ? 'all phases succeeded' : 'some phases failed'}`);
 }
 
+// A crash inside executeApprovedRun must not strand the run in 'executing':
+// the poller only re-picks 'approved', so an unmarked crash means the week
+// silently never posts (2026-07-17 scheduleFile ReferenceError). Mark it
+// 'error' so it shows in MCC and stays retriable via /seo/actions/retry.
+async function executeApprovedRunSafe(run) {
+  try {
+    await executeApprovedRun(run);
+  } catch (e) {
+    console.error(`[mav-bridge][bridge][error] run ${run.id} crashed mid-execution: ${e.stack || e.message}`);
+    try {
+      await log(run.id, 'bridge', 'error', `Run crashed mid-execution: ${e.message}`);
+    } catch { /* logging must not mask the status update below */ }
+    await supabase.from('seo_runs').update({
+      status: 'error',
+      error: `Crashed mid-execution: ${e.message}`,
+    }).eq('id', run.id);
+  }
+}
+
 // ─────────────────────────────────────────────
 // Poll loop
 // ─────────────────────────────────────────────
@@ -547,7 +567,7 @@ async function poll() {
     }
 
     if (runs?.length) {
-      await executeApprovedRun(runs[0]);
+      await executeApprovedRunSafe(runs[0]);
     }
 
     // Also pick up awaiting_prompt runs if user already approved the prompt
@@ -562,7 +582,7 @@ async function poll() {
       const state = readPendingPrompt();
       if (state?.runId === waitingRuns[0].id && state?.approved) {
         // Prompt was approved externally — continue the run
-        await executeApprovedRun(waitingRuns[0]);
+        await executeApprovedRunSafe(waitingRuns[0]);
       }
     }
 
