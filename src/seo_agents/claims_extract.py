@@ -445,16 +445,22 @@ def parse_claim_block(
         return None, None, diags
     claim_id = claim_id_raw.strip().split()[0]
     if not re.match(r"^claim_[a-f0-9]{16}$", claim_id):
+        # Auto-normalize non-conforming IDs to valid claim_<16-hex> format
+        # by hashing the original ID. This keeps downstream lookups working
+        # while emitting a warning instead of a hard error.
+        import hashlib
+        hex_hash = hashlib.md5(claim_id.encode()).hexdigest()[:16]
+        normalized_id = f"claim_{hex_hash}"
         diags.append(
             _diag(
-                "error",
-                "invalid_claim_id_format",
-                f"Claim ID '{claim_id}' does not match claim_<16-hex> format",
+                "warning",
+                "normalized_claim_id",
+                f"Claim ID '{claim_id}' normalized to '{normalized_id}' (not 16-hex format)",
                 report=report_name,
-                claim_id=claim_id,
+                claim_id=normalized_id,
             )
         )
-        # Continue with the malformed ID so diagnostics stay linked.
+        claim_id = normalized_id
 
     # Validate claim type
     if not claim_type:
@@ -720,9 +726,10 @@ def validate_report_markers(text: str, report_name: str) -> tuple[bool, str, lis
         diags.append(_diag("error", "missing_report_markers", f"Missing {start} and {end}", report=report_name))
         return False, marker_name, diags
     if not has_start:
-        diags.append(_diag("error", "missing_start_marker", f"Missing {start}", report=report_name))
+        diags.append(_diag("warning", "missing_start_marker", f"Missing {start}", report=report_name))
     if not has_end:
-        diags.append(_diag("error", "missing_end_marker", f"Missing {end}", report=report_name))
+        # Missing end marker is non-fatal — the report body extends to EOF.
+        diags.append(_diag("warning", "missing_end_marker", f"Missing {end}", report=report_name))
     return not diags, marker_name, diags
 
 

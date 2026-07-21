@@ -238,7 +238,7 @@ High (70-100): professional electrical work — panels, wiring, conduit, EV char
 Medium (40-69): electrical work but partially obscured, cluttered, or poorly lit.
 Low (0-39): not electrical work, has faces/PII, screenshot, receipt, personal photo, unrelated.
 
-Set "service_type" to ONE of: "panel", "ev-charger", "lighting", "wiring", "outlet", "other"
+Set "service_type" to ONE of: "panel", "ev-charger", "lighting", "wiring", "outlet", "generator", "other"
 
 Tags — pick all that apply:
   panel-upgrade, panel-replacement, main-panel, subpanel, breaker-box, breaker-replacement,
@@ -246,6 +246,7 @@ Tags — pick all that apply:
   lighting-fixture, recessed-lighting, outdoor-lighting, ceiling-fan, light-switch, dimmer,
   wiring, wire-run, conduit, romex, junction-box,
   outlet-installation, gfci-outlet, usb-outlet, dedicated-circuit,
+  generator, generator-installation, generator-inlet, transfer-switch, standby-generator,
   electrical-safety, smoke-detector, whole-home, service-upgrade
 
 Reply ONLY with JSON: {"score":<0-100>,"service_type":"<type>","tags":["tag1"],"reject_reason":"<blank if score>=60>"}`,
@@ -274,6 +275,7 @@ const SERVICE_TYPE_KEYWORDS = {
   lighting: ['light', 'fixture', 'recessed', 'ceiling fan', 'dimmer', 'lamp', 'led', 'illuminat'],
   wiring: ['wiring', 'wire', 'conduit', 'romex', 'junction', 'rewir'],
   outlet: ['outlet', 'gfci', 'receptacle', 'plug', 'usb', 'circuit'],
+  generator: ['generator', 'standby', 'backup power', 'transfer switch', 'inlet box', 'interlock', 'whole-home generator'],
 };
 
 function derivePostServiceType(post) {

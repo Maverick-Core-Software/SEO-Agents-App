@@ -13,7 +13,7 @@ import sys
 from datetime import date
 from pathlib import Path
 
-# Load .env before anything else so OPENAI_API_KEY etc. are available to the crew
+# Load .env before anything else so DEEPSEEK_API_KEY, ANTHROPIC_API_KEY etc. are available to the crew
 PROJECT_ROOT = Path(__file__).parent.parent
 env_file = PROJECT_ROOT / ".env"
 if env_file.exists():
@@ -218,8 +218,9 @@ def main() -> None:
     # Pass our env (which now includes the parsed .env) explicitly, and make sure the
     # package is importable when we fall back to `-m seo_agents.main`.
     child_env = os.environ.copy()
-    src_path = str(PROJECT_ROOT / "src")
-    child_env["PYTHONPATH"] = src_path + os.pathsep + child_env.get("PYTHONPATH", "")
+    # Clear PYTHONPATH to prevent module pollution from system env.
+    # The package is installed editable (pip install -e .) so no path needed.
+    child_env["PYTHONPATH"] = ""
 
     try:
         result = subprocess.run(cmd, cwd=str(PROJECT_ROOT), env=child_env)

@@ -231,12 +231,12 @@ Use the Owner Approval Needed section to flag anything that should be confirmed 
 ## Evidence and Claim Requirements
 Every durable recommendation MUST be accompanied by a machine-readable claim block. For each recommendation, include:
 
-**Claim ID:** claim_<stable_hash>
+**Claim ID:** claim_<16-char-lowercase-hex> (e.g. claim_a1b2c3d4e5f67890)
 **Claim Type:** observation|policy|recommendation|hypothesis|negative_finding
 **Source Mode:** live|baseline|unavailable
 **Source Kind:** live_page|serp|google_policy|baseline|owner_input|tool_output|unavailable
 **Source URI:** <URI or unavailable>
-**Retrieved At:** <ISO-8601 or unavailable>
+**Retrieved At:** <ISO-8601 UTC, e.g. 2026-07-15T12:00:00Z, or unavailable>
 **Negative Findings:** <explicit result or none identified>
 
 Rules:
@@ -252,12 +252,12 @@ Format each recommendation with its claim block:
 ### Recommendation: [Title]
 [Recommendation text]
 
-**Claim ID:** claim_<stable_hash>
+**Claim ID:** claim_<16-char-lowercase-hex> (e.g. claim_a1b2c3d4e5f67890)
 **Claim Type:** observation|policy|recommendation|hypothesis|negative_finding
 **Source Mode:** live|baseline|unavailable
 **Source Kind:** live_page|serp|google_policy|baseline|owner_input|tool_output|unavailable
 **Source URI:** <URI or unavailable>
-**Retrieved At:** <ISO-8601 or unavailable>
+**Retrieved At:** <ISO-8601 UTC, e.g. 2026-07-15T12:00:00Z, or unavailable>
 **Negative Findings:** <explicit result or none identified>
 
 ## Report Format

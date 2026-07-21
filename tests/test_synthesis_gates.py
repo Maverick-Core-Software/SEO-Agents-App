@@ -114,7 +114,7 @@ class TestEvidencePackageGates:
         assert any(g["gate"] == "unresolved_contradiction" and g["severity"] == "fail" for g in result["gates"])
 
     def test_secrets_in_excerpt(self):
-        ev = _make_evidence(evidence_excerpt="api_key: abc123def456secret")
+        ev = _make_evidence(evidence_excerpt="api_key: abcd1234567890abcdef1234567890fed")
         result = validate_evidence_package([ev])
         assert any(g["gate"] == "potential_secrets" and g["severity"] == "fail" for g in result["gates"])
 

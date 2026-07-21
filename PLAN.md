@@ -1,17 +1,23 @@
-# PLAN.md: Video Quality Improvement for Facebook Posts
+# PLAN.md: Facebook Engagement Optimization for Grizzly Electrical Solutions
 
-**Run ID:** video-quality-run-20260715  
-**Date:** 2026-07-15  
-**Pipeline Depth:** Research + Plan (awaiting approval)  
-**Research Package:** `artifacts/video-quality-run-20260715/research-package.md`
+**Run ID:** fb-engagement-20260716
+**Date:** 2026-07-16
+**Pipeline Depth:** Research + Plan (awaiting approval)
+**Research Package:** Three research reports at `C:\Workspace\Active\pi-agents\`
 
 ---
 
 ## Executive Summary
 
-The current video pipeline uses xAI Grok Imagine (correct choice — #1 on benchmarks) but suffers from AI slop due to: (1) prompt instructions that demand 3-4 fast cuts in 8 seconds (the #1 cause of temporal artifacts), (2) 720p resolution instead of 1080p, (3) no image-to-video path despite Grok Imagine being #1 at I2V, (4) minimal post-processing, and (5) no quality validation. The plan addresses all five issues plus content topic improvements — **no new subscription required**.
+Grizzly Electrical's Facebook page (187 followers) gets **zero engagement** across all posts. The root cause is NOT content quality — the copy is good. The problem is a convergence of:
 
-**6 sessions across 3 waves. All use existing API keys (xAI + Google).**
+1. **7 posts/week with 187 followers** — algorithm sees high volume + zero engagement = low-quality page, suppresses everything
+2. **Uniform hook→story→"Call us at 555-XXXX" format** — Facebook's 2026 algorithm penalizes repetitive broadcast content and suppresses posts with phone-number sales CTAs
+3. **No conversation triggers** — followers have nothing to comment on, save, or share
+4. **Page organic reach is 2-6%** — 4-11 people see each post. Facebook Groups deliver 30-60% reach
+5. **No seed engagement network** — no initial likes/comments to signal to the algorithm that content is worth distributing
+
+**This plan addresses all five root causes with 6 sessions across 3 waves. No new subscriptions required — all changes are to existing CrewAI prompts and Node.js scripts. Boost budget locked at $50/week — the CrewAI agent decides how to distribute it across posts.**
 
 ---
 
@@ -21,166 +27,158 @@ The current video pipeline uses xAI Grok Imagine (correct choice — #1 on bench
 
 | File | Lines | Role |
 |------|-------|------|
-| `scripts/facebook-poster.mjs` | ~1099 | Main poster: video gen, prompt rewrite, FFmpeg end card, FB Graph API upload |
-| `scripts/xai-video-generator.mjs` | ~192 | xAI Grok Imagine backend (text-to-video) |
-| `scripts/gemini-video-generator.mjs` | ~215 | Google Veo 3.1 backend (text-to-video) |
-| `scripts/mav-bridge.mjs` | ~2000+ | Pipeline orchestrator: Day 1 prompt gen, phase execution |
-| `src/seo_agents/crew.py` | ~1208 | CrewAI schedule generation: Facebook content, VIDEO_PROMPT field |
-| `outputs/facebook_posting_schedule.md` | ~147 | 7-day schedule with VIDEO_PROMPT, HOOK, BODY, CTA |
-| `.env` | ~200 | API keys and config |
+| `src/seo_agents/crew.py` | ~1230 | **PRIMARY TARGET** — `build_facebook_crew()` generates schedule with content instructions |
+| `scripts/facebook-poster.mjs` | ~1214 | Facebook posting: prompt rewrite, video gen, Graph API upload, `buildCaption()` |
+| `scripts/mav-bridge.mjs` | ~1350 | Pipeline orchestrator: Supabase bridge, executes approved runs |
+| `outputs/facebook_posting_schedule.md` | ~147 | Intermediate format between generator and executor |
+| `src/seo_agents/main.py` | ~1380 | Weekly runner, orchestrates research → schedule generation |
 
 ### Architecture Flow
 
 ```
-crew.py (CrewAI/GPT-4o) → facebook_posting_schedule.md (with VIDEO_PROMPT)
+crew.py (CrewAI/GPT-4o) → facebook_posting_schedule.md (7 posts)
     ↓
-mav-bridge.mjs → generateDay1VideoPrompt() [Day 1 only, Grok rewrite]
+mav-bridge.mjs → Supabase poll → pick up approved items
     ↓
-facebook-poster.mjs → generateCinematicPrompt() [ALL video days, Grok rewrite]
+facebook-poster.mjs → parseSchedule() → buildCaption() → graphDispatch()
     ↓
-sanitizeVideoPrompt() → strip brand/phone
-    ↓
-xai-video-generator.mjs OR gemini-video-generator.mjs → raw MP4
-    ↓
-addBrandedEndCard() → FFmpeg concat video + 3s static image with drawtext
-    ↓
-Facebook Graph API upload (scheduled or immediate)
+Facebook Graph API (/{page-id}/feed, /{page-id}/photos, /{page-id}/videos)
 ```
 
 ### Conventions
-- Node.js ESM (`.mjs`) for scripts, Python for CrewAI agents
+- Node.js ESM (`.mjs`) for scripts, Python (CrewAI) for content generation
 - `hopLog()` for structured logging in facebook-poster.mjs
-- Env vars loaded from `.env` with force-override (PM2 stale key fix)
-- `execFileSync` for spawning child processes
-- 2-space indentation for JS, 4-space for Python
+- `buildCaption(post)` assembles final caption from hook + body + hashtags + CTA
+- `parseSchedule()` reads markdown schedule, returns array of post objects
+- `graphDispatch()` routes `post.type` → correct Graph API endpoint
+- CrewAI uses OpenAI GPT-4o via `build_exec_llm()`
+- `DAY_TOPIC_BINDING_RULE` keeps Facebook and GBP on the same daily topic
+
+### Current Caption Assembly (facebook-poster.mjs, ~line 260)
+
+```javascript
+function buildCaption(post) {
+  const parts = [];
+  if (post.hook) parts.push(post.hook);
+  if (post.body) parts.push(`\n${post.body}`);
+  if (post.hashtags) parts.push(`\n\n${post.hashtags}`);
+  if (post.cta) parts.push(`\n\n${post.cta}`);
+  return parts.join('').trim();
+}
+```
+
+The CTA (e.g. "Call us today at (469) 863-9804") is included inline in EVERY post's caption — this is what Facebook suppresses.
 
 ---
 
-## Wave 1: Foundation (3 Parallel Sessions)
+## Wave 1: Foundation — Content Strategy Overhaul (3 Parallel Sessions)
 
-### Session 1: Upgrade xAI Video Backend
+All three sessions touch different files and have no inter-session dependencies. They can run in parallel.
 
-**File:** `scripts/xai-video-generator.mjs`  
-**Executor:** Claude Code (bridge) — complex changes to existing CLI  
-**Context estimate:** ~15k tokens
+### Session 1: Overhaul crew.py Facebook Content Instructions
 
-#### Tasks
+**File:** `src/seo_agents/crew.py` — `build_facebook_crew()` function (lines 970–1110)
+**Executor:** Claude Code (bridge) — nuanced prompt engineering
+**Context estimate:** ~25k tokens
 
-1. **Change default resolution from 720p to 1080p**
-   - Line 37: `const XAI_VIDEO_RESOLUTION = process.env.GROK_VIDEO_RESOLUTION || '1080p';`
-   - Add comment explaining Facebook Reels recommends 1080×1920 minimum
+#### Background
 
-2. **Add image-to-video (I2V) support**
-   - New CLI arg: `--image <path>` — path to a reference image
-   - When `--image` is provided, use `grok-imagine-video-1.5` model (I2V)
-   - When `--image` is absent, keep `grok-imagine-video` (T2V, current behavior)
-   - I2V API body: add `image_url` field with base64-encoded image data
-   - Read the image file, convert to base64 data URL format
-   - Log which mode (T2V vs I2V) is being used
-
-3. **Add seed logging**
-   - New CLI arg: `--seed <int>` — optional seed value
-   - Pass `seed` in API request body
-   - Log the seed in the success JSON output for reproducibility
-
-4. **Add negative prompt support**
-   - New CLI arg: `--negative-prompt <text>` — optional
-   - Pass as `negative_prompt` in API request body
-   - Default: empty string (no negative prompt)
-
-5. **Pass aspect-ratio and duration from parent**
-   - Already supported via CLI args — no change needed in this file
-   - But add validation: if aspect-ratio is not 9:16, log a warning (Facebook Reels standard)
-
-#### Verification
-
-```bash
-# Dry run T2V (should show 1080p)
-node scripts/xai-video-generator.mjs --prompt "test" --output /tmp/test.mp4 --dry-run
-
-# Dry run I2V
-node scripts/xai-video-generator.mjs --prompt "test" --output /tmp/test.mp4 --image /path/to/image.jpg --dry-run
-
-# Verify no syntax errors
-node -c scripts/xai-video-generator.mjs
-```
-
-#### Commit Message
-```
-feat: upgrade xAI video backend — 1080p default, I2V support, seed logging, negative prompts
-```
-
----
-
-### Session 2: Overhaul CrewAI Content & Prompt Instructions
-
-**File:** `src/seo_agents/crew.py`  
-**Executor:** Claude Code (bridge) — nuanced prompt engineering  
-**Context estimate:** ~20k tokens
+The current `build_facebook_crew()` generates 7 posts/week (3 video + 3 photo + 1 text) all with phone-number CTAs. Research shows this uniform broadcast format gets suppressed by Facebook's 2026 algorithm. The fix requires changing the prompt instructions that CrewAI's GPT-4o agent follows — NOT changing the agent itself.
 
 #### Tasks
 
-1. **Overhaul VIDEO_PROMPT instructions in `build_facebook_crew()` (lines 1039-1049)**
+1. **Reduce posting frequency from 7 to 4 posts/week**
 
-   Replace the current instructions that ask for "3-4 fast cuts" and "dramatic, fast-paced" with the research-backed single-shot formula:
-
+   In the `fb_context` string (line 1005), change:
    ```python
-   "VIDEO POST RULES (days 1, 4, 7):\n"
-   "- TYPE must be: video\n"
-   "- VIDEO_PROMPT is a scene description for a vertical Reel (9:16, ~8 seconds). "
-   "A director step rewrites it before generation.\n"
-   "- SINGLE SHOT ONLY: one continuous camera shot, no cuts, no scene changes. "
-   "The entire 8 seconds is one unbroken take.\n"
-   "- STATIC or SLOW camera: use 'static shot', 'slow dolly-in', or 'slow pan'. "
-   "NEVER use 'whip pan', 'crash zoom', 'hard push-in', or 'handheld'.\n"
-   "- SHOW THE WORK, NOT THE FACE: focus on hands, tools, panels, installations, "
-   "and environments. Avoid faces — they cause uncanny valley artifacts in AI video.\n"
-   "- Use the five-part formula: [Cinematography] + [Subject] + [Action] + [Context] + [Style]\n"
-   "- Example: 'Static shot, close-up of an electrician's hands installing a circuit breaker "
-   "into a residential panel, in a clean utility room with white drywall walls, documentary "
-   "realism, natural daylight from a side window, consistent lighting, photorealistic, 4K'\n"
-   "- DRAMA through the problem, not through editing: show a sparking outlet, a scorched wire, "
-   "a tripped breaker — but in a single sustained shot, not a montage\n"
-   "- NEVER put the business name, any logo, any phone number, or any readable text/signage in "
-   "VIDEO_PROMPT — video models garble on-screen text; branding is composited on afterward\n"
+   "VIDEO DAYS: Days 1, 4, and 7 must be VIDEO posts. Day 5 must be a TEXT-only post..."
+   ```
+   To:
+   ```python
+   "POSTING DAYS: 4 posts per week — Mon (Day 1), Wed (Day 3), Fri (Day 5), Sat (Day 6). "
+   "Day 1 is VIDEO (Reel), Day 3 is PHOTO or CAROUSEL, Day 5 is VIDEO (Reel), Day 6 is PHOTO or TEXT."
    ```
 
-2. **Add before/after content type to schedule instructions**
+2. **Add content format variety requirements**
 
-   In the TONE RULES section (around line 1034), add:
+   After the "TONE RULES" section (line 1044), add a new "CONTENT FORMAT VARIETY (mandatory)" section:
 
    ```python
-   "CONTENT FORMAT (use at least 1 per week):\n"
-   "- Before/After: Show the problem (old panel, flickering lights) then the solution (new panel, bright lights) "
-   "in the VIDEO_PROMPT as a single continuous shot that starts on the problem and dollies to the solution\n"
-   "- Problem→Solution: HOOK states the problem, BODY is the diagnosis, CTA is the fix\n"
+   "CONTENT FORMAT VARIETY (mandatory — avoid algorithm suppression):\n"
+   "- Each post MUST use a DIFFERENT content format from the last. Never repeat the same "
+   "format twice in a row (e.g. not two 'hook→story→CTA' posts consecutively).\n"
+   "- Rotate through these formats across the week:\n"
+   "  1. Before/After transformation (photo or video): Show problem then solution\n"
+   "  2. Educational/How-To: Teach something useful (signs of failing panel, GFCI basics)\n"
+   "  3. Behind-the-Scenes/Day-in-the-Life: Team member at work, loading the van, job walkthrough\n"
+   "  4. Interactive/Question: Poll, 'this or that', 'what would you do', fill-in-the-blank\n"
+   "  5. Social Proof/Testimonial: Customer story, completed job showcase, review highlight\n"
+   "  6. Humor/Personality: Trade humor, relatable electrical fails, 'caption this'\n"
+   "- 50% of posts must be educational/value-first, 30% social proof/personality, 20% interactive\n"
+   "- 0% direct sales pitches — the CTA should invite conversation, not quote a phone number\n"
    ```
 
-3. **Improve CTA instructions**
+3. **Replace phone-number CTAs with engagement CTAs**
 
-   Change CTA rule (line 1037) from call-only to include DM-based CTAs:
-
+   Change the CTA rule (line 1047-1048):
    ```python
+   # OLD:
    "- CTA is specific: 'Call us today', 'DM us for a free quote', 'DM \"PANEL\" for a free estimate'. "
    "DM-based CTAs perform better on Reels because Meta rewards DM engagement.\n"
+   
+   # NEW:
+   "- CTA is an ENGAGEMENT invitation, NOT a sales pitch. Rotate through:\n"
+   "  * 'Save this for your next panel inspection'\n"
+   "  * 'Tag a homeowner who needs to see this'\n"
+   "  * 'Drop a 👍 if this has ever happened to you'\n"
+   "  * 'Which would you choose — left panel or right? 👇'\n"
+   "  * 'Share this with someone whose house was built before 1980'\n"
+   "  * 'What's the weirdest electrical issue you've had at home? Tell us below'\n"
+   "- Business phone number goes in a separate CONTACT field (add to format below), "
+   "NOT in the caption CTA. The poster script will post it as the first comment.\n"
    ```
 
-4. **Add seasonal awareness to fb_context**
+4. **Add CONTACT field to output format**
 
-   In the `fb_context` construction (before line 1029), add a seasonal hint:
-
+   In the format specification (lines 1080-1091), add a CONTACT field:
    ```python
-   seasonal_hint = ""
-   month = datetime.now().month
-   if month in [3, 4, 5]:
-       seasonal_hint = "DFW storm season (spring): emphasize generators, surge protection, storm prep."
-   elif month in [6, 7, 8]:
-       seasonal_hint = "DFW summer: emphasize AC-related electrical loads, EV charging, panel capacity."
-   elif month in [11, 12, 1, 2]:
-       seasonal_hint = "DFW winter: emphasize heating circuits, generator prep, ice storm readiness."
+   "CONTACT: [business phone/contact info — goes in the first comment, not caption]\n"
+   ```
+   
+   Place it after HASHTAGS and before PHOTO_FILE.
+
+5. **Add POST_GOAL field to output format**
+
+   Add a POST_GOAL field that tells the poster what this post should achieve:
+   ```python
+   "POST_GOAL: [engagement | education | social_proof | entertainment]\n"
+   ```
+   
+   This drives analytics tracking and boost decisions.
+
+6. **Update VIDEO_PROMPT instructions for algorithm-optimized Reels**
+
+   The current video instructions (lines 1054-1071) are technically correct for AI video quality but missing algorithm optimization. Add:
+   ```python
+   "- REEL LENGTH: 15-25 seconds (not 8). Facebook's algorithm favors Reels "
+   "in the 15-30 second range. The video generator will be told 15s.\n"
+   "- ON-SCREEN TEXT: Every Reel must include text overlays for the hook and key points — "
+   "most Facebook users watch without sound. Describe what text should appear on screen.\n"
+   "- FIRST 1.5 SECONDS: The VIDEO_PROMPT must describe an instant visual hook — "
+   "a sparking outlet, a burnt wire, a dramatic before/after reveal. No establishing shots.\n"
    ```
 
-   Inject into the task description.
+7. **Remove HASHTAGS requirement (negligible reach impact on Facebook)**
+
+   Research shows hashtags have minimal impact on Facebook distribution. Remove the HASHTAGS requirement and reallocate that space to keyword-rich captions:
+   ```python
+   # OLD:
+   "- HASHTAGS: 5-8 tags. Always include #DFW or #Dallas, one service tag, one brand tag (#GrizzlyElectrical)\n"
+   
+   # NEW:
+   "- HASHTAGS: 2-3 max (optional). Facebook hashtags have minimal reach impact. "
+   "Prioritize keyword-rich body text over hashtag stuffing.\n"
+   ```
 
 #### Verification
 
@@ -188,302 +186,119 @@ feat: upgrade xAI video backend — 1080p default, I2V support, seed logging, ne
 # Syntax check
 PYTHONPATH="" .venv/Scripts/python.exe -c "from seo_agents.crew import build_facebook_crew; print('OK')"
 
-# Run existing tests
-PYTHONPATH="" .venv/Scripts/python.exe -m pytest tests/ -q -x
+# Run existing tests (no regressions)
+PYTHONPATH="" .venv/Scripts/python.exe -m pytest tests/ -q -x --basetemp=/tmp/pytest-tmp -p no:cacheprovider
 ```
 
 #### Commit Message
 ```
-feat: overhaul video prompt instructions — single-shot, static camera, no faces, before/after format
+feat: overhaul Facebook content strategy — 4 posts/week, engagement CTAs, format variety, algorithm optimization
 ```
 
 ---
 
-### Session 3: Create Video Post-Processing Module
+### Session 2: Update facebook-poster.mjs — CTA Handling + First Comment + Engagement Tracking
 
-**File:** `scripts/video-postprocess.mjs` (NEW FILE)  
-**Executor:** Claude Code (bridge)  
-**Context estimate:** ~12k tokens
-
-#### Tasks
-
-1. **Create `scripts/video-postprocess.mjs`** — a standalone FFmpeg post-processing module
-
-   Exports a single function:
-
-   ```javascript
-   /**
-    * Post-process an AI-generated video to reduce artifacts and improve quality.
-    *
-    * Pipeline:
-    * 1. Trim first/last 0.5s (worst artifacts at clip boundaries)
-    * 2. Denoise (hqdn3d — removes inter-frame shimmer)
-    * 3. Sharpen (unsharp — recovers edge detail)
-    * 4. Subtle film grain (masks remaining artifacts, adds organic texture)
-    * 5. Re-encode (libx264, CRF 20, preset fast)
-    *
-    * @param {string} inputPath - raw AI video
-    * @param {string} outputPath - processed video
-    * @param {object} options - { trim: true, denoise: true, sharpen: true, grain: true }
-    * @returns {string} outputPath
-    */
-   export function enhanceVideo(inputPath, outputPath, options = {}) { ... }
-   ```
-
-2. **Implement the FFmpeg filter chain**
-
-   ```javascript
-   const filters = [];
-   
-   // 1. Trim 0.5s from start and end (skip if video < 3s)
-   if (options.trim !== false) {
-     // Use -ss and -to as input options (before -i) for fast seek
-   }
-   
-   // 2. Denoise
-   if (options.denoise !== false) {
-     filters.push('hqdn3d=2:2:3:3');
-   }
-   
-   // 3. Sharpen
-   if (options.sharpen !== false) {
-     filters.push('unsharp=5:5:0.6:5:5:0.4');
-   }
-   
-   // 4. Film grain (subtle)
-   if (options.grain !== false) {
-     filters.push('noise=alls=4:allf=t+u');
-   }
-   ```
-
-3. **Add a fade-in/fade-out function** for end card transitions
-
-   ```javascript
-   /**
-    * Concatenate video with a branded end card using a cross-fade transition
-    * instead of a hard cut.
-    *
-    * @param {string} videoPath - main video (already enhanced)
-    * @param {string} cardPath - end card image
-    * @param {string} outputPath - final video
-    * @param {object} overlays - { brandName, brandPhone, fontPath }
-    * @param {number} cardDuration - seconds (default 3)
-    * @returns {string} outputPath
-    */
-   export function addBrandedEndCardWithFade(videoPath, cardPath, outputPath, overlays, cardDuration = 3) { ... }
-   ```
-
-   This function:
-   - Probes video for dimensions, fps, audio presence (same as current addBrandedEndCard)
-   - Creates the end card with drawtext (same as current)
-   - Adds a 0.5s fade-out at the end of the main video
-   - Adds a 0.5s fade-in at the start of the end card
-   - Uses xfade filter for smooth transition (if supported) or fade+concat
-   - Preserves audio with silence padding on end card
-
-4. **Export a combined function**
-
-   ```javascript
-   /**
-    * Full post-processing pipeline: enhance → brand end card with fade.
-    * This replaces the current addBrandedEndCard() in facebook-poster.mjs.
-    */
-   export function postProcessVideo(rawVideoPath, finalOutputPath, options) {
-     const enhancedPath = rawVideoPath.replace('-raw.mp4', '-enhanced.mp4');
-     enhanceVideo(rawVideoPath, enhancedPath, options);
-     addBrandedEndCardWithFade(enhancedPath, options.cardPath, finalOutputPath, options.overlays);
-     fs.unlinkSync(enhancedPath);
-     return finalOutputPath;
-   }
-   ```
-
-5. **Add module-level FFmpeg availability check** (same pattern as facebook-poster.mjs)
-
-#### Verification
-
-```bash
-# Syntax check
-node -c scripts/video-postprocess.mjs
-
-# Functional test (if a test video exists)
-node -e "
-import { enhanceVideo } from './scripts/video-postprocess.mjs';
-// Test with existing raw video
-try {
-  enhanceVideo('outputs/fb-videos/fb-video-remodel-electrical-summer-home-renovation-raw.mp4', '/tmp/test-enhanced.mp4');
-  console.log('OK: enhanceVideo works');
-} catch (e) { console.log('SKIP:', e.message); }
-"
-```
-
-#### Commit Message
-```
-feat: add video post-processing module — denoise, sharpen, grain, fade transitions
-```
-
----
-
-## Wave 2: Integration (2 Parallel Sessions)
-
-### Session 4: Integrate New Pipeline into Facebook Poster
-
-**File:** `scripts/facebook-poster.mjs`  
-**Executor:** Claude Code (bridge) — large file, multiple function changes  
-**Context estimate:** ~40k tokens  
-**Depends on:** Session 1 (I2V support), Session 3 (post-processing module)
+**File:** `scripts/facebook-poster.mjs`
+**Executor:** Claude Code (bridge) — multiple function changes
+**Context estimate:** ~35k tokens
+**Depends on:** Session 1 (new schedule format with CONTACT field and POST_GOAL)
 
 #### Tasks
 
-1. **Import the new post-processing module** (top of file, after existing imports)
+1. **Strip phone-number CTAs from `buildCaption()` and move to first comment**
 
+   Modify `buildCaption()` (around line 260) to EXCLUDE the CTA field and INCLUDE a new `contact` field:
+   
    ```javascript
-   import { postProcessVideo, enhanceVideo } from './video-postprocess.mjs';
-   ```
-
-2. **Overhaul `generateCinematicPrompt()` system prompt (lines 549-581)**
-
-   Replace the current system prompt that demands "3-4 fast cuts", "whip pans", "crash zooms" with the research-backed five-part formula:
-
-   ```javascript
-   { role: 'system', content: `You are a video director writing generation prompts for short vertical Facebook Reels (9:16, ~8 seconds) for a licensed residential and commercial electrician in DFW, Texas.
-
-   Write a single vivid prompt (80-120 words) using the five-part formula:
-   [Cinematography] + [Subject] + [Action] + [Context] + [Style & Ambiance]
-
-   CRITICAL RULES for AI video quality:
-   - SINGLE SHOT ONLY: one continuous take, no cuts, no scene changes
-   - STATIC or SLOW camera: "static shot", "slow dolly-in", "slow pan" only
-   - NEVER use: whip pan, crash zoom, hard push-in, handheld, rapid cuts
-   - SHOW THE WORK, NOT THE FACE: focus on hands, tools, panels, installations
-   - Avoid faces — they cause uncanny valley artifacts
-   - Describe spatial relationships explicitly to prevent morphing
-   - Keep the scene simple: fewer objects = fewer artifacts
-   - Specify "consistent lighting" and "smooth continuous motion"
-   - Describe diegetic AUDIO (electrical hum, breaker thunk, tools) but no dialogue
-
-   DRAMA through the problem, not editing:
-   - Show a sparking outlet, a scorched wire, a tripped breaker — in ONE sustained shot
-   - The drama comes from what's IN the frame, not from cutting between frames
-
-   STRICT — NO readable text of any kind in the video:
-   - Do NOT name the business, owner, city, or phone number
-   - Do NOT ask for logos, signs, captions, or on-screen text
-   - Wardrobe: plain solid-color work polo, no visible writing
-   - Any incidental signs must be unreadable or out of focus
-
-   Ends with: Photorealistic, cinematic, 4K, consistent lighting, smooth continuous motion, plain unbranded wardrobe, absolutely no visible text or numbers anywhere in frame.
-
-   Output the prompt only. No explanation, no quotes, no title.` }
-   ```
-
-   Also reduce `max_tokens` from 320 to 280 (shorter prompts = better adherence).
-
-3. **Remove the double-rewrite for Day 1**
-
-   In `generateCinematicPrompt()`, add a check: if the post already has a video_prompt that looks like it was rewritten by mav-bridge (contains "Photorealistic, cinematic"), use it directly without rewriting. Only rewrite if the prompt is a raw scene idea.
-
-   Actually, simpler approach: **remove the mav-bridge Day 1 rewrite entirely** — this is handled in Session 5. For this session, just make `generateCinematicPrompt()` always rewrite using the new system prompt.
-
-4. **Add I2V path to `generateVideoViaBackend()`**
-
-   When a reference image is available for the post's service type, use I2V mode:
-
-   ```javascript
-   function generateVideoViaBackend(prompt, outputPath, { brand = true, referenceImage = null } = {}) {
-     fs.mkdirSync(path.dirname(outputPath), { recursive: true });
-     const rawPath = brand ? outputPath.replace(/\.mp4$/, '-raw.mp4') : outputPath;
-     const cleanPrompt = sanitizeVideoPrompt(prompt);
-     
-     const backendArgs = ['--prompt', cleanPrompt, '--output', rawPath];
-     if (referenceImage && fs.existsSync(referenceImage)) {
-       backendArgs.push('--image', referenceImage);
-       hopLog('facebook-poster→' + VIDEO_BACKEND, 'info', `Using image-to-video mode with reference: ${path.basename(referenceImage)}`);
-     }
-     
-     // Pass aspect-ratio and duration explicitly
-     backendArgs.push('--aspect-ratio', '9:16', '--duration', '8');
-     
-     const out = execFileSync('node', [VIDEO_GEN_SCRIPT, ...backendArgs], { ... });
-     // ... rest stays the same
+   function buildCaption(post) {
+     const parts = [];
+     if (post.hook) parts.push(post.hook);
+     if (post.body) parts.push(`\n${post.body}`);
+     // HASHTAGS: keep but minimize (Session 1 reduces to 2-3)
+     if (post.hashtags) parts.push(`\n\n${post.hashtags}`);
+     // CTA: only include if it's an ENGAGEMENT CTA (no phone numbers)
+     if (post.cta && !hasPhoneNumber(post.cta)) parts.push(`\n\n${post.cta}`);
+     return parts.join('').trim();
+   }
+   
+   function hasPhoneNumber(text) {
+     return /\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/.test(text);
    }
    ```
 
-5. **Replace `addBrandedEndCard()` with `postProcessVideo()`**
+2. **Post business contact as first comment after publishing**
 
-   In `generateVideoViaBackend()`, replace the call to `addBrandedEndCard(rawPath, outputPath)` with:
-
+   After `graphDispatch()` succeeds, post the contact info as a comment:
+   
    ```javascript
-   if (brand) {
-     hopLog('facebook-poster→ffmpeg', 'info', 'Post-processing: enhance + branded end card with fade...');
-     postProcessVideo(rawPath, outputPath, {
-       cardPath: ENDCARD_PATH,
-       overlays: { brandName: BRAND_NAME, brandPhone: BRAND_PHONE, fontPath: ENDCARD_FONT },
-       trim: true,
-       denoise: true,
-       sharpen: true,
-       grain: true,
+   async function postFirstComment(postId, contactText) {
+     if (!contactText) return;
+     const body = new URLSearchParams({
+       message: contactText,
+       access_token: FB_PAGE_ACCESS_TOKEN,
      });
+     await fetch(
+       `https://graph.facebook.com/${GRAPH_API_VERSION}/${postId}/comments`,
+       { method: 'POST', body }
+     );
    }
    ```
-
-   Keep the old `addBrandedEndCard()` function as a fallback if the new module fails.
-
-6. **Add basic quality validation after generation**
-
-   After video generation, probe the output:
-
-   ```javascript
-   function validateVideo(videoPath) {
-     if (!fs.existsSync(videoPath)) return { ok: false, reason: 'file missing' };
-     const stats = fs.statSync(videoPath);
-     if (stats.size < 100_000) return { ok: false, reason: `file too small (${stats.size} bytes)` };
-     try {
-       const probe = execFileSync('ffprobe', [
-         '-v', 'error', '-select_streams', 'v:0',
-         '-show_entries', 'stream=width,height,duration',
-         '-of', 'json', videoPath,
-       ], { encoding: 'utf8', timeout: 15000 });
-       const s = JSON.parse(probe).streams?.[0] || {};
-       const width = parseInt(s.width) || 0;
-       const height = parseInt(s.height) || 0;
-       const duration = parseFloat(s.duration) || 0;
-       if (width < 720 || height < 1280) return { ok: false, reason: `low resolution ${width}x${height}` };
-       if (duration < 5) return { ok: false, reason: `too short (${duration}s)` };
-       return { ok: true, width, height, duration, sizeBytes: stats.size };
-     } catch (e) {
-       return { ok: false, reason: `ffprobe failed: ${e.message}` };
-     }
-   }
-   ```
-
-   Log validation results. If validation fails, log a warning but don't block (the fallback chain handles it).
-
-7. **Add reference image resolution**
-
-   Add a function that maps post.service to a reference image path:
-
-   ```javascript
-   const REFERENCE_IMAGE_DIR = process.env.GRIZZLY_REFERENCE_IMAGES
-     || path.join(PROJECT_ROOT, 'assets', 'reference-images');
    
-   function resolveReferenceImage(post) {
-     if (!fs.existsSync(REFERENCE_IMAGE_DIR)) return null;
-     const slug = post.service?.toLowerCase()
-       .replace(/[^a-z0-9]+/g, '-')
-       .replace(/^-|-$/g, '');
-     const candidates = [
-       path.join(REFERENCE_IMAGE_DIR, `${slug}.jpg`),
-       path.join(REFERENCE_IMAGE_DIR, `${slug}.png`),
-       path.join(REFERENCE_IMAGE_DIR, `${post.date}.jpg`),
-     ];
-     for (const p of candidates) {
-       if (fs.existsSync(p)) return p;
-     }
-     return null;
+   Call this in `graphDispatch()` after successful post:
+   ```javascript
+   const { id, media, fallback } = await graphDispatch(post, caption, videoPath, scheduleUnix);
+   if (id && post.contact) {
+     await postFirstComment(id, post.contact).catch(e =>
+       hopLog('facebook-poster→graph', 'warn', `First comment failed: ${e.message}`)
+     );
    }
    ```
 
-   Use this in `generateAllVideos()` when calling `generateVideoViaBackend()`.
+3. **Add `parseSchedule()` support for new CONTACT and POST_GOAL fields**
+
+   In the schedule parser, add extraction for the new fields:
+   ```javascript
+   function parseSchedule(text) {
+     // ... existing parsing ...
+     const contact = get('CONTACT');    // NEW
+     const postGoal = get('POST_GOAL'); // NEW
+     // ... include in returned post object ...
+   }
+   ```
+
+4. **Add post-upload engagement tracking**
+
+   After a post is published, wait 1 hour then log initial engagement metrics:
+   
+   ```javascript
+   async function trackPostEngagement(postId, postGoal) {
+     // Facebook Insights data isn't available immediately — we log the post ID
+     // and goal for later analysis. The analytics feedback pipeline (Session 3)
+     // handles the delayed read-back.
+     hopLog('facebook-poster', 'info', `Post ${postId} published — goal: ${postGoal}`);
+     return { postId, postGoal, tracked: true };
+   }
+   ```
+
+5. **Update the schedule parser to handle 4-day weeks**
+
+   The current `parseSchedule()` expects 7 days. Make it flexible:
+   ```javascript
+   const posts = parseSchedule(SCHEDULE_FILE).filter(p => 
+     p.day >= args.startDay && p.day <= args.endDay && p.type !== 'skip'
+   );
+   ```
+   
+   Add support for `TYPE: skip` to allow the schedule to explicitly skip days.
+
+6. **Add logging for engagement CTA type**
+
+   Log which CTA type was used so the analytics pipeline can correlate:
+   ```javascript
+   const ctaType = classifyCta(post.cta || ''); // 'comment', 'save', 'tag', 'vote', 'share', 'call'
+   hopLog('facebook-poster', 'info', `Day ${post.day}: CTA type = ${ctaType}`);
+   ```
 
 #### Verification
 
@@ -491,168 +306,401 @@ feat: add video post-processing module — denoise, sharpen, grain, fade transit
 # Syntax check
 node -c scripts/facebook-poster.mjs
 
-# Dry run (if supported)
-node scripts/facebook-poster.mjs --dry-run --schedule-all
+# Test buildCaption with new format
+node -e "
+import { buildCaption } from './scripts/facebook-poster.mjs';
+const test = { hook: 'Test', body: 'Body', hashtags: '#DFW', cta: 'Save this!', contact: '(469) 863-9804' };
+const caption = buildCaption(test);
+console.assert(!caption.includes('863-9804'), 'Phone should not be in caption');
+console.assert(caption.includes('Save this!'), 'Engagement CTA should be in caption');
+console.log('PASS');
+"
 
-# Run existing tests
-node --test scripts/lib/facebook-poster.test.mjs 2>/dev/null || echo "No test file"
+# Test parseSchedule with new fields
+node -e "
+// Parse the existing schedule file to verify new fields are handled gracefully
+import { parseSchedule } from './scripts/facebook-poster.mjs';
+const posts = parseSchedule('outputs/facebook_posting_schedule.md');
+console.log('Posts parsed:', posts.length);
+posts.forEach(p => console.log('Day', p.day, 'Type', p.type, 'Goal', p.postGoal || 'N/A'));
+"
 ```
 
 #### Commit Message
 ```
-feat: integrate I2V, post-processing, quality validation, and new prompt system into facebook-poster
+feat: strip phone CTAs from captions, post to first comment, add engagement tracking
 ```
 
 ---
 
-### Session 5: Fix mav-bridge Day 1 Double-Rewrite
+### Session 3: Create Facebook Analytics Feedback Pipeline
 
-**File:** `scripts/mav-bridge.mjs`  
-**Executor:** Claude Code (bridge)  
-**Context estimate:** ~15k tokens  
-**Depends on:** Session 2 (understanding of new prompt format)
+**Files:** `scripts/facebook-insights-collector.mjs` (NEW), `outputs/facebook_engagement_report.md` (NEW output)
+**Executor:** Claude Code (bridge) — API integration + data pipeline
+**Context estimate:** ~15k tokens
+
+#### Background
+
+The current pipeline pushes content OUT but never reads results back IN. The Facebook Page Insights MCP tools are available (facebook_top_posts, facebook_page_overview, etc.) but aren't integrated into the SEO agents workflow. This session creates a bridge that feeds engagement data back into the weekly content generation cycle.
 
 #### Tasks
 
-1. **Remove or simplify `generateDay1VideoPrompt()` (lines 164-201)**
+1. **Create `scripts/facebook-insights-collector.mjs`**
 
-   The current function rewrites Day 1's VIDEO_PROMPT using Grok with a WEAKER system prompt than what facebook-poster.mjs uses. This creates inconsistency:
-   - Day 1: mav-bridge rewrite (weak) → facebook-poster rewrite (strong) = double rewrite
-   - Days 4, 7: facebook-poster rewrite only (strong) = single rewrite
+   A script that reads recent post performance and writes a structured report consumed by crew.py:
 
-   **Option A (recommended):** Remove the mav-bridge rewrite entirely. The facebook-poster's `generateCinematicPrompt()` already handles ALL video days with a better system prompt. The 5-minute approval window is the only value-add of the mav-bridge step.
+   ```javascript
+   #!/usr/bin/env node
+   /**
+    * facebook-insights-collector.mjs
+    * Collects engagement data for recent Facebook posts and writes a structured
+    * report consumed by crew.py's research phase.
+    *
+    * Usage:
+    *   node facebook-insights-collector.mjs --days 7 --output outputs/facebook_engagement_report.md
+    *   node facebook-insights-collector.mjs --post-id <id>  # single post
+    */
+   ```
 
-   **Option B:** If the approval window is needed, keep the function but just use the schedule's VIDEO_PROMPT as-is for approval display (no Grok rewrite). The actual rewrite happens in facebook-poster.
+   The script:
+   - Reads the last week's `facebook_posting_schedule.md` to get post IDs and goals
+   - Calls Facebook Graph API to fetch engagement metrics for each post:
+     - `/{post-id}/insights/post_impressions,post_engaged_users,post_reactions_by_type_total,post_clicks`
+   - Calculates engagement rate: (reactions + comments + shares) / impressions
+   - Ranks posts by engagement rate
+   - Identifies which content types (before/after, educational, behind-scenes) performed best
+   - Identifies which CTA types (save, tag, comment, vote) drove most engagement
+   - Writes a structured markdown report
 
-   Implement Option A: Remove the `generateDay1VideoPrompt()` call from `executeApprovedRun()`. Keep the function definition but mark it as deprecated with a comment. Remove the Step 0 block (lines ~247-270) that calls it and writes back to the schedule.
+2. **Report format**
 
-2. **Align the system prompt (if function is kept for any reason)**
+   The output file (`facebook_engagement_report.md`) follows this structure:
 
-   If any code path still calls `generateDay1VideoPrompt()`, update its system prompt (line 190) to match the new five-part formula from Session 4. Use the same instructions: single shot, static camera, no faces, five-part formula.
+   ```markdown
+   # Facebook Engagement Report — Week of [date]
+   
+   ## Top Performing Posts
+   | Rank | Day | Type | Goal | CTA | Impressions | Engagement | Rate |
+   |------|-----|------|------|-----|-------------|------------|------|
+   
+   ## Content Type Performance
+   | Type | Avg Engagement Rate | Best Day |
+   |------|---------------------|----------|
+   
+   ## CTA Performance
+   | CTA Type | Avg Comments | Avg Shares |
+   |----------|-------------|------------|
+   
+   ## Recommendations for Next Week
+   - Double down on: [winning content type]
+   - Drop: [worst performing format]
+   - Test: [new format idea based on data]
+   ```
 
-3. **Remove the schedule file mutation (line 260)**
+3. **Integrate into weekly pipeline**
 
-   The current code writes the Grok-rewritten prompt back into `facebook_posting_schedule.md`, overwriting the CrewAI-written prompt. This mutation should not happen — the schedule file should preserve the CrewAI output, and the rewrite should happen at generation time only.
+   In `src/seo_agents/main.py`, add a step BEFORE schedule generation that reads `facebook_engagement_report.md` and injects it into the Facebook crew's context:
+
+   ```python
+   # In the weekly pipeline, after research phase, before schedule generation:
+   fb_engagement = read_output("facebook_engagement_report.md")
+   # Pass to build_facebook_crew() as additional context
+   ```
+
+4. **Fallback for zero data**
+
+   When there's no engagement data yet (fresh start), the report should state:
+   ```markdown
+   # Facebook Engagement Report — Week of [date]
+   
+   **Status:** No engagement data available yet — this is expected for the first week of the new strategy.
+   Recommendations below are based on research best practices, not live data.
+   ```
 
 #### Verification
 
 ```bash
 # Syntax check
-node -c scripts/mav-bridge.mjs
+node -c scripts/facebook-insights-collector.mjs
 
-# Verify the Step 0 block is removed
-grep -n "generateDay1VideoPrompt" scripts/mav-bridge.mjs
-# Should show: function definition (deprecated) only, no calls
+# Dry run (should produce a report even with no data)
+node scripts/facebook-insights-collector.mjs --days 7 --dry-run
+
+# Verify report generated
+cat outputs/facebook_engagement_report.md
+
+# Verify Python integration
+PYTHONPATH="" .venv/Scripts/python.exe -c "
+from seo_agents.main import read_output
+report = read_output('facebook_engagement_report.md')
+print('Engagement report loaded:', 'yes' if report else 'no')
+"
 ```
 
 #### Commit Message
 ```
-fix: remove Day 1 double-rewrite from mav-bridge — facebook-poster handles all video prompts
+feat: add Facebook analytics feedback pipeline — closing the engagement loop
 ```
 
 ---
 
-## Wave 3: Polish (1 Session)
+## Wave 2: Integration — Schedule Format & Boost Framework (2 Parallel Sessions)
 
-### Session 6: Reference Image Generator + End-to-End Testing
+### Session 4: Update Schedule Format & Cross-Platform Alignment
 
-**Files:** `scripts/generate-reference-image.mjs` (NEW), `assets/reference-images/` (NEW DIR)  
-**Executor:** Claude Code (bridge)  
-**Context estimate:** ~15k tokens  
+**Files:** `src/seo_agents/crew.py` (format instructions), `scripts/facebook-poster.mjs` (parser)
+**Executor:** Claude Code (bridge)
+**Context estimate:** ~20k tokens
+**Depends on:** Session 1 (new content instructions), Session 2 (new parser fields)
+
+#### Tasks
+
+1. **Update the schedule output format in crew.py fb_task description**
+
+   In lines 1080-1093, update the format spec to include new fields:
+   ```python
+   "DAY: [number]\n"
+   "DATE: [YYYY-MM-DD]\n"
+   "TYPE: [video|photo|text|carousel|poll|skip]\n"
+   "SERVICE: [service area]\n"
+   "POST_GOAL: [engagement|education|social_proof|entertainment]\n"
+   "HOOK: [first line — the scroll-stopper]\n"
+   "BODY: [the story or value, varied by format type]\n"
+   "CTA: [engagement invitation — save, tag, vote, comment, share — NO phone numbers]\n"
+   "HASHTAGS: [2-3 max, optional]\n"
+   "CONTACT: [(469) 863-9804 — posted as first comment, not in caption]\n"
+   "PHOTO_FILE: [path or blank]\n"
+   "VIDEO_PROMPT: [cinematic Reel prompt with on-screen text notes or blank]\n"
+   "ON_SCREEN_TEXT: [text that should appear as overlays on the Reel]\n"
+   "STATUS: Needs approval\n"
+   ```
+
+2. **Ensure DAY_TOPIC_BINDING_RULE still works with 4-day weeks**
+
+   The GBP poster still runs 7 days. The binding rule needs to handle the mismatch:
+   ```python
+   DAY_TOPIC_BINDING_RULE = (
+       "DAY→TOPIC BINDING (MANDATORY):\n"
+       "Use the '## RECOMMENDED POST TOPIC QUEUE' in the GBP REPORT as the source of truth.\n"
+       "Facebook posts 4 days/week: assign RANK 1→Day 1, RANK 3→Day 3, RANK 5→Day 5, RANK 6→Day 6.\n"
+       "The topic/SERVICE on each posted day MUST match the same rank's topic on GBP.\n"
+   )
+   ```
+
+3. **Add `parseSchedule()` support for `SKIP` type and `ON_SCREEN_TEXT` field**
+
+   In facebook-poster.mjs:
+   ```javascript
+   // In parseSchedule:
+   if (type === 'skip') continue; // Skip this day entirely
+   
+   // Add on_screen_text to post object
+   post.on_screen_text = get('ON_SCREEN_TEXT') || '';
+   ```
+
+#### Verification
+
+```bash
+# Syntax check both files
+node -c scripts/facebook-poster.mjs
+PYTHONPATH="" .venv/Scripts/python.exe -c "from seo_agents.crew import build_facebook_crew; print('OK')"
+
+# Test schedule generation
+PYTHONPATH="" .venv/Scripts/python.exe -m seo_agents.main facebook-schedule --days 4 2>&1 | head -50
+
+# Verify new format fields present in output
+grep -c "POST_GOAL:" outputs/facebook_posting_schedule.md  # Should be 4
+grep -c "CONTACT:" outputs/facebook_posting_schedule.md     # Should be 4
+```
+
+#### Commit Message
+```
+feat: update schedule format — POST_GOAL, CONTACT, ON_SCREEN_TEXT, 4-day weeks, SKIP support
+```
+
+---
+
+### Session 5: Add Boost Recommendation Framework
+
+**Files:** `outputs/facebook_posting_schedule.md` (enhanced with boost flags), `scripts/facebook-poster.mjs` (optional boost logging)
+**Executor:** Claude Code (bridge)
+**Context estimate:** ~10k tokens
+**Depends on:** Session 1 (POST_GOAL field), Session 3 (analytics data)
+
+#### Background
+
+Research established a clear boost strategy: $10-15/day per post, targeting 15-mile radius around Rowlett, homeowner interests, boosting before/after photos and educational videos. The budget is **locked at $50/week** — the CrewAI agent decides how to distribute it (e.g., 1 post at $50, 2 posts at $25 each, or 3 posts at ~$17 each). This session adds boost recommendations to the schedule output so the user can act on them manually (full automated boosting via Ads API is a Phase 2 project).
+
+#### Tasks
+
+1. **Add boost recommendations to crew.py context with $50/week budget constraint**
+
+   In the `fb_context` (line 1005), add boost guidance for the agent:
+   ```python
+   "BOOST GUIDANCE (BUDGET: $50/week total — YOU decide how to distribute):\n"
+   "- TOTAL WEEKLY BUDGET: Exactly $50. Distribute across 1-3 posts as you see fit. "
+   "You are the strategist — decide which posts deserve budget and how much.\n"
+   "- Recommendation: $25 on your best post + $25 on your second-best, "
+   "OR $50 on a single must-win post, OR $17 × 3 for broad coverage.\n"
+   "- For each post, include a BOOST field: 'yes:$N' (boost with $N budget), "
+   "'maybe' (boost if extra budget appears), or 'no' (don't boost).\n"
+   "- The sum of all BOOST=$N values must equal exactly $50.\n"
+   "- BOOST=yes criteria: before/after photos, educational videos, testimonials "
+   "with photos — content with visual proof and educational value.\n"
+   "- BOOST=no criteria: text-only, generic updates, holiday posts.\n"
+   "- Include a BOOST_TARGETING hint: e.g. '15mi Rowlett, homeowners 28-65, "
+   "home improvement interests' or '10mi Garland, EV owners'\n"
+   "- Include a BOOST_DURATION: how many days to run each boost (3, 5, or 7 days). "
+   "At $17/day × 3 days = $51 (~on budget); at $25/day × 2 days = $50.\n"
+   ```
+
+2. **Add BOOST, BOOST_AMOUNT, BOOST_DURATION, and BOOST_TARGETING fields to output format**
+
+   In the schedule format spec:
+   ```python
+   "BOOST: [yes|maybe|no]\n"
+   "BOOST_AMOUNT: [$N — daily budget for this post's boost, e.g. $17]\n"
+   "BOOST_DURATION: [N days — how long to run the boost, e.g. 3]\n"
+   "BOOST_TARGETING: [targeting hint for this specific post or blank]\n"
+   ```
+
+3. **Add a weekly boost budget summary section**
+
+   After the 4 posts, in the CONTENT NOTES section, add:
+   ```python
+   "\nBOOST BUDGET SUMMARY (Weekly Budget: $50):\n"
+   "- Posts boosted: N of 4\n"
+   "- Budget allocation:\n"
+   "  * Day X: $N/day × N days = $N total\n"
+   "  * Day Y: $N/day × N days = $N total\n"
+   "- TOTAL SPEND: $50 (must equal exactly $50)\n"
+   "- Priority post (boost first): Day X — [reason]\n"
+   "- Expected weekly reach from boosts: ~5,000-10,000 additional impressions\n"
+   "- Expected weekly engagement from boosts: ~50-120 additional engagements\n"
+   "- Boost targeting: 15mi radius from Rowlett, homeowners 28-65, "
+   "home improvement/DIY/real estate interests. Exclude electrician interest "
+   "(that's competitors). Use Advantage+ Audience for AI optimization.\n"
+   ```
+
+4. **Update parseSchedule to extract BOOST fields**
+
+   In facebook-poster.mjs:
+   ```javascript
+   post.boost = get('BOOST') || 'no';
+   post.boostAmount = get('BOOST_AMOUNT') || '';
+   post.boostDuration = get('BOOST_DURATION') || '';
+   post.boostTargeting = get('BOOST_TARGETING') || '';
+   ```
+
+#### Verification
+
+```bash
+# Syntax checks
+node -c scripts/facebook-poster.mjs
+PYTHONPATH="" .venv/Scripts/python.exe -c "from seo_agents.crew import build_facebook_crew; print('OK')"
+
+# Verify BOOST fields in schedule output
+grep -c "BOOST:" outputs/facebook_posting_schedule.md
+grep "BOOST BUDGET SUMMARY" outputs/facebook_posting_schedule.md
+```
+
+#### Commit Message
+```
+feat: add boost recommendation framework to Facebook schedule — budget tiers, targeting hints
+```
+
+---
+
+## Wave 3: Polish & Verification (1 Sequential Session)
+
+### Session 6: End-to-End Testing & Runbook Update
+
+**Files:** Tests, `FRIDAY-RUNBOOK.md`, documentation
+**Executor:** Claude Code (bridge)
+**Context estimate:** ~12k tokens
 **Depends on:** All Wave 1 + Wave 2 sessions
 
 #### Tasks
 
-1. **Create `scripts/generate-reference-image.mjs`**
-
-   A script that generates clean reference images for I2V video generation using a text-to-image model. These images serve as the first frame for image-to-video, anchoring scene geometry and preventing artifacts.
-
-   ```javascript
-   #!/usr/bin/env node
-   /**
-    * Generates clean reference images for image-to-video generation.
-    * Uses FLUX (via FAL.ai) or Gemini image generation as the backend.
-    *
-    * Usage:
-    *   node generate-reference-image.mjs --prompt "text" --output /path/to/image.jpg
-    *   node generate-reference-image.mjs --service "panel-upgrade" --output assets/reference-images/panel-upgrade.jpg
-    */
-   ```
-
-   - Use the existing FAL.ai backend (already configured in Hermes) for FLUX image generation
-   - Or use Gemini's image generation API (Imagen) as fallback
-   - The prompt should describe a clean, artifact-free scene that matches the service type
-   - Generate at 1080×1920 (vertical, matches video aspect ratio)
-   - No text, no logos, no faces — just the scene
-
-2. **Create service-to-prompt mapping**
-
-   ```javascript
-   const SERVICE_PROMPTS = {
-     'panel-upgrade': 'Close-up of a clean, modern electrical panel with circuit breakers neatly arranged, installed in a residential utility room, white drywall wall, natural daylight, photorealistic, no text, no people, no hands',
-     'ev-charger': 'A Level 2 EV charger mounted on a garage wall, clean installation, modern home garage, photorealistic, no text, no people, no hands',
-     'generator': 'A whole-home generator installed outside a suburban house, clean installation, daytime, photorealistic, no text, no people, no hands',
-     'troubleshooting': 'Close-up of an electrician\'s multimeter probing an outlet, tools on a workbench nearby, residential wall, photorealistic, no text, no face visible',
-     'commercial': 'Interior of a commercial electrical room with large breaker panels, clean industrial environment, fluorescent lighting, photorealistic, no text, no people',
-     'lighting': 'Modern recessed lighting installed in a kitchen ceiling, warm LED glow, clean finish, photorealistic, no text, no people',
-     // Add more as needed
-   };
-   ```
-
-3. **Generate initial reference images for current schedule topics**
+1. **Run the full weekly pipeline with new 4-day Facebook configuration**
 
    ```bash
-   for service in panel-upgrade ev-charger generator troubleshooting commercial lighting; do
-     node scripts/generate-reference-image.mjs --service "$service" \
-       --output "assets/reference-images/$service.jpg"
-   done
+   # Generate fresh schedules with new 4-day Facebook + existing 7-day GBP
+   PYTHONPATH="" .venv/Scripts/python.exe -m seo_agents.main facebook-schedule --days 4
    ```
 
-4. **End-to-end test: generate one video with the full new pipeline**
+   Verify output:
+   - 4 posts (not 7)
+   - Each post has POST_GOAL, CONTACT, BOOST fields
+   - CTAs are engagement-focused (no phone numbers in CTA)
+   - Content formats are varied (no two identical formats in a row)
+
+2. **Test caption assembly with new format**
 
    ```bash
-   # Test with a reference image
-   FB_VIDEO_BACKEND=xai node scripts/xai-video-generator.mjs \
-     --prompt "Static shot, slow dolly-in on a clean electrical panel with breakers being installed, residential utility room, documentary realism, natural daylight, consistent lighting, photorealistic, 4K" \
-     --image assets/reference-images/panel-upgrade.jpg \
-     --output /tmp/test-i2v.mp4 \
-     --aspect-ratio 9:16 --duration 8
-
-   # Post-process
    node -e "
-   import { postProcessVideo } from './scripts/video-postprocess.mjs';
-   postProcessVideo('/tmp/test-i2v-raw.mp4', '/tmp/test-final.mp4', {
-     cardPath: 'assets/grizzly-endcard.jpg',
-     overlays: { brandName: 'Grizzly Electrical Solutions', brandPhone: '(469) 863-9804', fontPath: 'C:/Windows/Fonts/arialbd.ttf' },
-   });
+   import { buildCaption, parseSchedule } from './scripts/facebook-poster.mjs';
+   const posts = parseSchedule('outputs/facebook_posting_schedule.md');
+   for (const p of posts) {
+     const caption = buildCaption(p);
+     const hasPhone = /\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/.test(caption);
+     console.log('Day', p.day, '| Goal:', p.postGoal, '| CTA type:', p.cta?.slice(0, 40), '| Phone in caption:', hasPhone);
+     if (hasPhone) throw new Error('Phone number in caption — FAIL');
+   }
+   console.log('ALL PASS: No phone numbers in captions');
    "
-
-   # Validate
-   ffprobe -v error -show_entries stream=width,height,duration -of json /tmp/test-final.mp4
    ```
 
-5. **Update `.env.example` with new env vars**
-
-   Add:
-   ```
-   # Video generation
-   GROK_VIDEO_RESOLUTION=1080p
-   GRIZZLY_REFERENCE_IMAGES=assets/reference-images
-   ```
-
-6. **Run full test suite to verify no regressions**
+3. **Run existing test suites for regressions**
 
    ```bash
-   PYTHONPATH="" .venv/Scripts/python.exe -m pytest tests/ -q -x
+   PYTHONPATH="" .venv/Scripts/python.exe -m pytest tests/ -q -x --basetemp=/tmp/pytest-tmp -p no:cacheprovider
    node -c scripts/facebook-poster.mjs
-   node -c scripts/xai-video-generator.mjs
-   node -c scripts/video-postprocess.mjs
    node -c scripts/mav-bridge.mjs
+   node -c scripts/facebook-insights-collector.mjs
    ```
+
+4. **Update FRIDAY-RUNBOOK.md**
+
+   Update the runbook to reflect:
+   - New 4-day Facebook posting schedule
+   - New fields in schedule format
+   - Facebook Insights collection step (before schedule generation)
+   - Recommended boost workflow (manual for now)
+
+5. **Dry-run the full Facebook poster with new schedule format**
+
+   ```bash
+   node scripts/facebook-poster.mjs --dry-run --schedule-all
+   ```
+   
+   Verify that all posts parse correctly and the Graph API calls would succeed.
+
+6. **Verify backward compatibility**
+
+   The new code must still parse an OLD 7-day schedule without crashing:
+   ```bash
+   # Backup current schedule, generate old format, test parsing, restore
+   cp outputs/facebook_posting_schedule.md outputs/facebook_posting_schedule.md.bak
+   # ... test old format parsing ...
+   mv outputs/facebook_posting_schedule.md.bak outputs/facebook_posting_schedule.md
+   ```
+
+#### Verification
+
+```bash
+# Full verification suite
+PYTHONPATH="" .venv/Scripts/python.exe -m pytest tests/ -q -x --basetemp=/tmp/pytest-tmp -p no:cacheprovider
+node -c scripts/facebook-poster.mjs
+node -c scripts/mav-bridge.mjs
+node -c scripts/facebook-insights-collector.mjs
+node -c scripts/video-postprocess.mjs
+node -c scripts/xai-video-generator.mjs
+```
 
 #### Commit Message
 ```
-feat: add reference image generator, initial image library, and end-to-end pipeline test
+test: end-to-end verification of Facebook engagement optimization pipeline, update runbook
 ```
 
 ---
@@ -661,16 +709,16 @@ feat: add reference image generator, initial image library, and end-to-end pipel
 
 ```
 Wave 1 (parallel):
-  Session 1 (xai-video-generator.mjs) ──┐
-  Session 2 (crew.py)                   ──┼──→ Wave 2
-  Session 3 (video-postprocess.mjs)     ──┘
+  Session 1 (crew.py content overhaul)          ──┐
+  Session 2 (facebook-poster.mjs CTA/parse)     ──┼──→ Wave 2
+  Session 3 (analytics feedback pipeline)       ──┘
 
 Wave 2 (parallel):
-  Session 4 (facebook-poster.mjs)  [depends on 1, 3]
-  Session 5 (mav-bridge.mjs)       [depends on 2]
+  Session 4 (schedule format + cross-platform)  [depends on 1, 2]
+  Session 5 (boost framework)                   [depends on 1, 3]
 
 Wave 3 (sequential):
-  Session 6 (reference images + e2e test) [depends on 1,2,3,4,5]
+  Session 6 (e2e test + runbook)               [depends on 1, 2, 3, 4, 5]
 ```
 
 **DAG verification:** No cycles. Sessions in the same wave touch different files. ✅
@@ -679,30 +727,76 @@ Wave 3 (sequential):
 
 ## Acceptance Criteria
 
-1. ✅ xAI video backend defaults to 1080p (not 720p)
-2. ✅ xAI backend supports `--image` flag for image-to-video mode
-3. ✅ Prompt instructions use single-shot, static camera, no faces, five-part formula
-4. ✅ No "3-4 fast cuts", "whip pan", "crash zoom" in any prompt instructions
-5. ✅ Video post-processing applies denoise + sharpen + grain
-6. ✅ End card uses fade transition (not hard cut)
-7. ✅ mav-bridge no longer double-rewrites Day 1 prompt
-8. ✅ Quality validation checks resolution, duration, file size after generation
-9. ✅ Reference images can be used as I2V starting frames
-10. ✅ All existing tests pass
-11. ✅ No new subscriptions required (existing xAI + Google keys only)
+1. ✅ `build_facebook_crew()` generates 4 posts/week (not 7)
+2. ✅ All CTAs are engagement-focused (save, tag, vote, comment, share) — no phone numbers
+3. ✅ Business contact info posted as first comment, not in caption
+4. ✅ Schedule includes POST_GOAL, CONTACT, BOOST, BOOST_TARGETING, ON_SCREEN_TEXT fields
+5. ✅ Content formats are varied (no two identical formats consecutively)
+6. ✅ Facebook Insights analytics pipeline feeds back into weekly content generation
+7. ✅ Boost recommendations appear in schedule output with budget summaries
+8. ✅ Old 7-day schedule format still parses without crashes (backward compatibility)
+9. ✅ All existing tests pass
+10. ✅ No new subscriptions required (uses existing Facebook Graph API + OpenAI keys)
+
+---
+
+## Content Strategy Summary (for reference)
+
+### New Posting Cadence
+| Day | Format | Goal | CTA Example |
+|-----|--------|------|-------------|
+| Mon | Video (Reel 15-25s) | education/social_proof | "Save this for your next panel inspection" |
+| Wed | Photo or Carousel | education/engagement | "Would you call a pro or DIY? 👇" |
+| Fri | Video (Reel 15-25s) | social_proof/entertainment | "Tag an electrician who'd appreciate this" |
+| Sat | Photo or Text | engagement/social_proof | "Drop a 🔌 if you've had this issue" |
+
+### Content Mix
+- 50% Educational/Value (tips, safety, how-to, "what's wrong here")
+- 30% Social Proof/Personality (before/after, reviews, team, humor)
+- 20% Interactive (polls, questions, "this or that")
+- 0% Direct sales CTAs in captions
+
+### Organic Reach Tactics (manual — not automated)
+- Join 10-15 DFW Facebook community Groups as Page
+- Create 5-10 person seed engagement network (staff, family, past customers)
+- Reply to every comment within 15 minutes
+- Post 1-2 Stories/day with interactive stickers
+
+### Boost Strategy ($50/week — CrewAI decides distribution)
+
+- **Budget:** $50/week total. CrewAI agent decides: e.g. 2 posts × $25/day × 1 day = $50, or 3 posts × $17/day × 1 day = $51 (~on budget), or 1 post × $10/day × 5 days = $50.
+- **Targeting:** 15-mile radius Rowlett, homeowners 28-65, home improvement/DIY/real estate interests. Exclude electrician interest (competitors). Use Advantage+ Audience.
+- **Best posts to boost:** Before/after photos, educational videos, testimonials w/ photos
+- **Never boost:** Text-only posts, generic updates, holiday greeting posts
+- **Expected weekly reach from boosts:** ~3,000-7,000 additional impressions
+- **Expected monthly follower growth:** +30-60 followers/month (187 → ~220-250 in 30 days)
+- **Schedule output:** BOOST_AMOUNT, BOOST_DURATION, and BOOST_TARGETING per post + weekly budget summary that must sum to $50
+
+---
+
+## What This Plan Does NOT Cover
+
+The following are OUT OF SCOPE for this plan and would be separate builds:
+
+- **Facebook Groups automation** — the plan recommends joining Groups but automating Group posting is a different technical challenge
+- **Facebook Stories automation** — Stories API is limited; Stories are best done manually
+- **Automated boosting via Ads API** — this plan adds recommendations to the schedule; actual automated boosting is a Phase 2 project
+- **GBP content optimization** — this plan is Facebook-only per user's direction
+- **Instagram cross-posting** — the research recommends it but the pipeline doesn't currently connect to Instagram
+- **Facebook Live** — low priority for follower count; Reels are the priority format
+- **Meta Verified subscription** — $15/mo, worth testing but out of scope for code changes
 
 ---
 
 ## New Subscription Cost Analysis
 
-| Provider | Cost | Required? | Verdict |
-|----------|------|-----------|---------|
-| xAI Grok Imagine 1.5 (I2V) | $0.25/sec at 1080p = $2.00/8s | Already have API key | ✅ No new cost |
-| Google Veo 3.1 | $0.03–$0.75/sec = $0.24–$6.00/8s | Already have API key | ✅ No new cost |
-| Kling 3.0 (optional) | $0.09–$0.14/sec = $0.72–$1.12/8s | Would need API key | ❌ Optional, not required |
-| FAL.ai (FLUX images) | ~$0.01–$0.05/image | Already configured in Hermes | ✅ No new cost |
-
-**Total new subscription cost: $0** — All improvements use existing API keys and free tiers.
+| Item | Cost | Required? | Verdict |
+|------|------|-----------|---------|
+| Facebook Graph API | Free (included) | Already have token | ✅ No new cost |
+| OpenAI (GPT-4o for CrewAI) | Existing subscription | Already configured | ✅ No new cost |
+| xAI Grok (video generation) | Existing API key | Already configured | ✅ No new cost |
+| Facebook Insights API | Free (included) | Same Page token | ✅ No new cost |
+| **Total new subscription cost: $0** | | | |
 
 ---
 
@@ -713,13 +807,18 @@ After all sessions are verified and merged:
 ```bash
 # Copy PLAN.md to archive
 mkdir -p "C:\Workspace\Archive\Build Plans\SEO-Agents-App"
-cp PLAN.md "C:\Workspace\Archive\Build Plans\SEO-Agents-App\20260715_video-quality.md"
+cp PLAN.md "C:\Workspace\Archive\Build Plans\SEO-Agents-App\20260716_fb-engagement.md"
 
 # Archive run artifacts
 mkdir -p "C:\Workspace\Archive\Agent-Orchestration\SEO-Agents-App"
-cp -r artifacts/video-quality-run-20260715 "C:\Workspace\Archive\Agent-Orchestration\SEO-Agents-App\"
+cp -r artifacts/fb-engagement-20260716 "C:\Workspace\Archive\Agent-Orchestration\SEO-Agents-App\"
+
+# Copy research reports to archive
+cp C:\Workspace\Active\pi-agents\research_facebook_organic_reach_grizzly.md "C:\Workspace\Archive\Build Plans\SEO-Agents-App\20260716_research_organic-reach.md"
+cp C:\Workspace\Active\pi-agents\facebook-trade-business-research.md "C:\Workspace\Archive\Build Plans\SEO-Agents-App\20260716_research_content-formats.md"
+cp C:\Workspace\Active\pi-agents\research\facebook-boost-strategy-grizzly-electrical.md "C:\Workspace\Archive\Build Plans\SEO-Agents-App\20260716_research_boost-strategy.md"
 
 # Remove PLAN.md from repo
 git rm PLAN.md
-git commit -m "chore: archive PLAN.md for video quality build"
+git commit -m "chore: archive PLAN.md for Facebook engagement optimization build"
 ```

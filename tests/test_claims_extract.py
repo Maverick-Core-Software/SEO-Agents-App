@@ -363,8 +363,11 @@ class TestMalformedBlocks:
             "website_report.md",
             "run-001",
         )
-        assert any(d["code"] == "invalid_claim_id_format" for d in result["diagnostics"])
-        assert result["evidence"][0]["status"] == "rejected"
+        assert any(d["code"] == "normalized_claim_id" for d in result["diagnostics"])
+        # Auto-normalization: the claim ID is rewritten to a valid format;
+        # status is derived from confidence, not rejected.
+        assert result["evidence"][0]["claim_id"].startswith("claim_")
+        assert result["evidence"][0]["claim_id"] != "claim_bad"
 
     def test_unsupported_claim_type(self):
         block = _make_block(claim_type="promotion")

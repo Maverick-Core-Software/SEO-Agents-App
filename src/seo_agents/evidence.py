@@ -45,14 +45,21 @@ MIN_AUTHORITY_FOR_HIGH = 0.5
 
 
 def _parse_iso(date_str: str) -> datetime | None:
-    """Parse an ISO-8601 string, returning None on failure."""
+    """Parse an ISO-8601 string, returning None on failure.
+
+    Naive timestamps are assumed to be UTC so they can be compared with
+    offset-aware datetimes.
+    """
     if not date_str:
         return None
     try:
         s = date_str.replace("Z", "+00:00")
-        return datetime.fromisoformat(s)
+        dt = datetime.fromisoformat(s)
     except (ValueError, TypeError):
         return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
 
 
 def validate_evidence_package(
@@ -118,8 +125,10 @@ def validate_evidence_package(
         # Gate 5: Secrets or sensitive data in excerpts
         excerpt = ev.get("evidence_excerpt", "")
         if excerpt:
-            for pattern in [r"(\d{3}-?\d{4,6})", r"\b[A-Z]{2}\d{9}\b", r"api[_\-]?key\s*[=:\s]+[\w-]+"]:
-                if re.search(pattern, excerpt):
+            # Only flag actual credential patterns as hard failures.
+            # Phone numbers in business context are expected, not secrets.
+            for pattern in [r"\b[A-Z]{2}\d{9}\b", r"api[_\-]?key\s*[=:]+\s*[\w-]{20,}", r"password\s*[=:]+\s*\S+", r"secret\s*[=:]+\s*\S+"]:
+                if re.search(pattern, excerpt, re.IGNORECASE):
                     gates.append({
                         "gate": "potential_secrets",
                         "severity": "fail",

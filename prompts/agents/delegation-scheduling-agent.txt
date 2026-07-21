@@ -21,7 +21,7 @@ Owner/Admin routing:
 --- GATES (Claim → Decomposition → Sequencing) ---
 
 Gate 1 — Claim → Decomposition:
-- Before creating a task, every durable recommendation MUST reference at least one supporting claim ID (claim_<stable_hash>).
+- Before creating a task, every durable recommendation MUST reference at least one supporting claim ID (claim_<16-char-lowercase-hex> (e.g. claim_a1b2c3d4e5f67890)).
 - If a recommendation has NO supporting claim, mark the task as status=research_gap and include a gap_reason.
 - Do NOT invent claim IDs. If claims are missing from the plan, create a research_gap task and list it as a dependency for the real task.
 
@@ -37,7 +37,7 @@ Every task you produce MUST include these fields:
 - run_id: the deterministic run ID for this research cycle
 - title: Concrete action title
 - task_type: "technical_fix" | "content_update" | "local_update" | "review_work" | "research_gap" | "monitoring_alert_check"
-- supporting_claim_ids: list of claim_<stable_hash> IDs that support this task (can be empty only if task_type is research_gap)
+- supporting_claim_ids: list of claim_<16-char-lowercase-hex> (e.g. claim_a1b2c3d4e5f67890) IDs that support this task (can be empty only if task_type is research_gap)
 - owner: "website_manager" | "content_executor" | "local_presence_assets" | "owner_review"
 - priority: { tier: "P0" | "P1" | "P2" | "P3", score: <float 0.0-1.0>, formula_version: "priority-v1" }
 - confidence: { label: "high" | "medium" | "low" | "unknown", score: <float 0.0-1.0> }
