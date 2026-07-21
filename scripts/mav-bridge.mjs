@@ -25,6 +25,7 @@ import { createClient } from '@supabase/supabase-js';
 import { checkFacebookToken } from './facebook-poster.mjs';
 import { mediaStatusFor, bucketStatus, isStuck, describeAction, agentFor } from './lib/action-enrich.mjs';
 import { makeAlertStore } from './lib/alert-store.mjs';
+import { sendHermesAlert } from './lib/hermes-alert.mjs';
 import { makeRunPhase } from './lib/run-phase.mjs';
 import { runGbpForApprovedRun, runDailyGbp, centralDateHour } from './lib/gbp-runner.mjs';
 
@@ -59,7 +60,6 @@ const XAI_API_KEY = process.env.XAI_API_KEY || process.env.GROK_API_KEY || '';
 const SMTP_FROM = process.env.SMTP_FROM || '';
 const SMTP_TO = process.env.SMTP_TO || '';
 const SMTP_APP_PASSWORD = process.env.SMTP_APP_PASSWORD || '';
-const GRIZZLY_HCP_DIR = process.env.GRIZZLY_HCP_DIR || 'C:\\Workspace\\Active\\grizzly-hcp';
 const ALERTED_PATH = path.join(PROJECT_ROOT, 'state', 'alerted.json');
 const GRAPH_API_VERSION = process.env.FB_GRAPH_API_VERSION || 'v22.0';
 const FB_PAGE_ACCESS_TOKEN = process.env.FB_PAGE_ACCESS_TOKEN || process.env.FB_ACCESS_TOKEN || '';
@@ -132,17 +132,16 @@ async function sendBridgeAlert(subject, body) {
 }
 
 // Fire a non-silent alert exactly once per (run, action, fault). Banner data is
-// served separately by /seo/actions; this handles the push channels (iMessage + email).
+// served separately by /seo/actions; this handles the push channels (Slack + email).
 async function notifyAlert({ runId, actionId, faultType, title, detail }) {
   if (!alertStore.shouldFire(runId, actionId, faultType)) return;
   const msg = `⚠️ Grizzly SEO: ${title}\n${detail || ''}`.trim();
-  // iMessage via grizzly-hcp send-only helper. Failure must not break the poll loop.
+  // Slack via the Maverick-Homelab hermes CLI (was iMessage — dead since spectrum-ts
+  // shut down, which hid the 7/17 no-post incident). Failure must not break the poll loop.
   try {
-    await execFileAsync('npx', ['tsx', 'scripts/notify-imessage.ts', msg], {
-      cwd: GRIZZLY_HCP_DIR, timeout: 20_000, windowsHide: true, shell: true,
-    });
+    await sendHermesAlert(msg);
   } catch (e) {
-    console.error(`[mav-bridge] iMessage alert failed: ${e.message}`);
+    console.error(`[mav-bridge] Hermes alert failed: ${e.message}`);
   }
   await sendBridgeAlert(`Grizzly SEO: ${title}`, detail || title);
 }
