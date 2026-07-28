@@ -8,6 +8,57 @@ By leveraging project **`Hermes Agent`** (`exalted-slice-502415-s0` / `108430184
 
 ---
 
+## 🛑 PICK UP HERE — status as of 2026-07-27
+
+**The code below is written and shipped, but the feature is DORMANT and must stay that way until Google approves API access. Read this section before touching anything else in this file.**
+
+### Where we are
+
+* Modules 1, 2, 3, 5, 6 are committed in **`b7b6007`**. Module 4 (`gbp-qanda-agent.mjs`) was never written.
+* `gbp-worker.mjs` reads `GBP_POSTER`, which **defaults to `playwright`**. Runtime behaviour is unchanged from before the commit; nothing was restarted.
+* Every GBP endpoint is blocked. Not a rate limit — the project has never been allowlisted:
+
+  | surface | result | meaning |
+  |---|---|---|
+  | `mybusinessaccountmanagement/v1` | 429 `quota_limit=0` | enabled, unapproved |
+  | `mybusinessbusinessinformation/v1` | 429 `quota_limit=0` | enabled, unapproved |
+  | `businessprofileperformance/v1` | 403 SERVICE_DISABLED | not enabled in console |
+  | `mybusinessqanda/v1` | 403 SERVICE_DISABLED | not enabled in console |
+  | `mybusinessverifications/v1` | 403 SERVICE_DISABLED | not enabled in console |
+  | `mybusiness.googleapis.com/v4` | **404** (incl. `$discovery`) | gated — not allowlisted |
+
+* **Second blocker:** `gbp-api-poster.mjs` builds Local Posts and media upload on **legacy v4** (`/v4/{location}/localPosts`, `media:startUpload`). That host 404s entirely for this project. Local Posts exist **only** on v4 — there is no v1 equivalent — so no amount of code work routes around approval.
+* Enabling an API in the console is **not** approval. Account Management and Business Information are self-serve and can be enabled by anyone; the gated legacy API is the one still 404ing.
+
+### The application
+
+Basic-access application filed **2026-07-27**, case **`2-5921000040991`**, from **carterbarns@grizzlyelectrical.net** (the account that manages the verified listing), as business owner, single location, not an agency. Project number `1084301840332`, website `https://www.grizzlyelectricaltx.com`. Google quoted **7–10 business days** → decision expected **~Aug 5–10, 2026**.
+
+Prior quota-increase requests were denied three times (2026-04-30, 07-22, 07-23) because they used the **wrong form** — quota increases are step two and are auto-denied until basic access is granted.
+
+### What to do when the decision lands
+
+1. Run the probe:
+
+   ```bash
+   node scripts/gbp-access-probe.mjs
+   ```
+
+2. If it still says *still gated*, stop — nothing to do, the approval hasn't propagated.
+3. If v4 answers, enable the three `SERVICE_DISABLED` APIs in the console, re-run the probe, and do one real read before writing anything.
+4. Only then set `GBP_POSTER=api` (env var, not a code change — the default stays `playwright` as the rollback path).
+5. Post to a real listing exactly once and verify it on the live profile before letting the worker run unattended.
+
+### If it's denied again
+
+Read the denial text carefully — a second denial on the *basic access* form means something in the application itself (use case, ownership, or the project/account mismatch) is the problem, not the form choice. Do not file another quota request.
+
+### Set aside, not lost
+
+An uncommitted change to `lib/gbp-runner.mjs` removed native Day 2–7 GBP scheduling in *both* modes, reasoning that the REST API has no scheduling endpoint. It was reverted before commit — `mav-bridge.mjs` still hardcodes `driver.mjs`, so native scheduling works today and dropping it while the API is dead would regress the 7/11 feature for no gain. The diff is preserved at `C:\Workspace\Active\brain\projects\gbp-runner-drop-native-scheduling.patch`; re-apply it only if the API is approved and posting actually moves to `api` mode.
+
+---
+
 ## 🎯 Architecture & New Modules Overview
 
 ```
@@ -98,9 +149,10 @@ By leveraging project **`Hermes Agent`** (`exalted-slice-502415-s0` / `108430184
 
 ## 🚦 Execution Roadmap
 
-1. **Phase 1: Immediate Quota Approval Activation**
-   - Background monitor (`task-529`) catches approval email from `googlebusinessprofile-support@google.com`.
-   - Run verification script `scratch/test_live_gbp_now2.py` to confirm `200 OK`.
+1. **Phase 1: Basic API Access Approval** ← *blocked here, see "PICK UP HERE" above*
+   - Waiting on case `2-5921000040991` (filed 2026-07-27, decision ~Aug 5–10 2026).
+   - ~~Background monitor `task-529` watching for a *quota* approval email~~ — that email will never arrive; quota requests are auto-denied until basic access is granted.
+   - Confirm with `node scripts/gbp-access-probe.mjs`, not with a quota email.
 
 2. **Phase 2: Core Posting Engine Swap**
    - Deploy `scripts/gbp-api-poster.mjs` using `gmail-multi` tokens.
