@@ -42,7 +42,20 @@ const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY || '';
 const POLL_INTERVAL_MS = parseInt(process.env.GBP_WORKER_POLL_MS || process.env.MAV_BRIDGE_POLL_MS || '30000');
 const SEO_AGENTS_EXE = process.env.SEO_AGENTS_EXE
   || 'C:\\Users\\carte\\AppData\\Local\\Programs\\Python\\Python312\\Scripts\\seo-agents.exe';
-const GBP_POSTER_PATH = path.join(PROJECT_ROOT, 'scripts', 'gbp-poster', 'driver.mjs');
+// GBP_POSTER selects the posting engine: 'playwright' (default, browser driver)
+// or 'api' (direct REST via gbp-api-poster.mjs). Both honour the same
+// --date / exit-code / JSON-stdout contract.
+//
+// Default stays 'playwright' until Google approves Business Profile API access
+// for project exalted-slice-502415-s0. As of 2026-07-23 every GBP endpoint
+// returns 429 with quota_limit_value:"0" — three quota requests were denied
+// (Apr 30, Jul 22, Jul 23) because the project itself is not approved for API
+// access. Flip this to 'api' (or set GBP_POSTER=api) only after a live call
+// returns 200. See PLANSCOPE.MD.
+const GBP_MODE = (process.env.GBP_POSTER || 'playwright').toLowerCase();
+const GBP_POSTER_PATH = GBP_MODE === 'playwright'
+  ? path.join(PROJECT_ROOT, 'scripts', 'gbp-poster', 'driver.mjs')
+  : path.join(PROJECT_ROOT, 'scripts', 'gbp-api-poster.mjs');
 const PHOTO_PICK_PATH = path.join(PROJECT_ROOT, 'scripts', 'gbp-photo-pick.mjs');
 const GBP_VERIFY_PATH = path.join(PROJECT_ROOT, 'scripts', 'verify-gbp-posts.mjs');
 
@@ -250,6 +263,7 @@ async function poll() {
 
 const once = process.argv.includes('--once');
 console.log(`[gbp-worker] Starting — project root: ${PROJECT_ROOT}`);
+console.log(`[gbp-worker] GBP_POSTER=${GBP_MODE} → ${path.basename(GBP_POSTER_PATH)}`);
 if (once) {
   await poll();
   console.log('[gbp-worker] --once complete');
