@@ -458,8 +458,20 @@ def website_adapter_status() -> dict[str, Any]:
     if not WEBSITE_STRUCTURE_FILE.exists():
         status["missing"].append("knowledge/website-structure.md")
     if not status["missing"]:
-        status["state"] = "live_ready"
-        status["sections"] = list(parse_sections(load_index()))
+        # parse_sections() raises when a <section>/<footer> has no id. That is a real
+        # problem — the website manager can't target those blocks — but this function
+        # is a *status report*, and it is called from build_action_queue() inside
+        # write_workflow_status(). Letting it raise killed the 2026-07-28 run after the
+        # research crew had already finished: the status write blew up, then the
+        # exception handler called write_workflow_status() again and blew up the same
+        # way, aborting finalization and the whole downstream chain. Report the
+        # condition as blocked instead; run_website_action() still fails loudly when an
+        # edit actually needs a section key.
+        try:
+            status["sections"] = list(parse_sections(load_index()))
+            status["state"] = "live_ready"
+        except ValueError as e:
+            status["missing"].append(f"index.html not parseable: {e}")
     return status
 
 
