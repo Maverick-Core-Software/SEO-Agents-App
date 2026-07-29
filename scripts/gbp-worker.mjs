@@ -70,26 +70,39 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 // Logging — own Supabase client, but same run_logs schema mav-bridge writes.
 // ─────────────────────────────────────────────
 
+// supabase-js puts the whole response body into error.message. When Supabase is
+// behind a Cloudflare 5xx that body is a full HTML error page, so a single failed
+// query dumps ~10KB into the log — 17 of them made up 180KB of a 182KB log file and
+// buried the actual symptom. Summarise HTML down to its <title>, truncate the rest.
+function briefErr(err) {
+  const raw = String(err?.message ?? err ?? '');
+  if (!raw.trimStart().startsWith('<')) {
+    return raw.length > 300 ? `${raw.slice(0, 300)}… (${raw.length} chars)` : raw;
+  }
+  const title = raw.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1].replace(/\s+/g, ' ').trim();
+  return `HTML error page (${raw.length} bytes): ${title || 'no <title>'}`;
+}
+
 async function log(runId, phase, level, message) {
   const line = `[gbp-worker][${phase}][${level}] ${message}`;
   console.log(line);
   if (runId) {
     const { error } = await supabase.from('run_logs').insert({ run_id: runId, phase, level, message });
-    if (error) console.error(`[gbp-worker][gbp-worker→supabase][error] log insert failed: ${error.message}`);
+    if (error) console.error(`[gbp-worker][gbp-worker→supabase][error] log insert failed: ${briefErr(error)}`);
   }
 }
 
 // Structured per-hop error logging, mirroring mav-bridge's hopError. `hop` is e.g.
 // 'gbp-worker→supabase', 'gbp-worker→subprocess:gbp'.
 async function hopError(runId, phase, hop, message, err) {
-  const detail = err ? `${message}: ${err.message || err}` : message;
+  const detail = err ? `${message}: ${briefErr(err)}` : message;
   const rec = { ts: new Date().toISOString(), source: 'gbp-worker', hop, phase, message: detail };
   console.error(`[gbp-worker][${hop}][error] ${detail}`);
   console.error(`  ↳ ${JSON.stringify(rec)}`);
   if (runId) {
     const { error } = await supabase.from('run_logs')
       .insert({ run_id: runId, phase, level: 'error', message: `[${hop}] ${detail}` });
-    if (error) console.error(`[gbp-worker][gbp-worker→supabase][error] could not write hop error: ${error.message}`);
+    if (error) console.error(`[gbp-worker][gbp-worker→supabase][error] could not write hop error: ${briefErr(error)}`);
   }
 }
 
@@ -126,7 +139,7 @@ async function poll() {
       .eq('platform', 'gbp')
       .eq('status', 'approved')
       .order('run_id');
-    if (apprErr) console.error(`[gbp-worker][gbp-worker→supabase][error] approved query: ${apprErr.message}`);
+    if (apprErr) console.error(`[gbp-worker][gbp-worker→supabase][error] approved query: ${briefErr(apprErr)}`);
 
     if (approved?.length) {
       // Process the earliest run_id only (mirrors mav-bridge's one-run-per-poll).
@@ -251,7 +264,7 @@ async function poll() {
       }
     }
   } catch (e) {
-    console.error(`[gbp-worker][gbp-worker→poll][error] poll exception: ${e.message}`);
+    console.error(`[gbp-worker][gbp-worker→poll][error] poll exception: ${briefErr(e)}`);
   } finally {
     busy = false;
   }

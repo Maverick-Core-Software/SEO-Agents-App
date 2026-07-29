@@ -30,6 +30,10 @@ OUTPUTS_DIR = PROJECT_ROOT / "outputs"
 # even before any Supabase row exists.
 RUNNER_HEALTH_FILE = OUTPUTS_DIR / "weekly-runner-health.json"
 RUNNER_LOG_FILE = OUTPUTS_DIR / f"weekly-runner-{date.today().isoformat()}.log"
+# The crew's own stdout/stderr. Without this the child wrote to a console that Task
+# Scheduler throws away, so a crash left no reason anywhere — that is how the 7/24
+# run died on an LLM 402 with nothing recorded but "crew exit 1".
+CREW_LOG_FILE = OUTPUTS_DIR / f"weekly-crew-{date.today().isoformat()}.log"
 
 
 def _now_iso() -> str:
@@ -63,10 +67,20 @@ def write_runner_health(status: str, topic: str = "", returncode=None, error: st
             "returncode": returncode,
             "error": error or None,
             "log_file": str(RUNNER_LOG_FILE),
+            "crew_log_file": str(CREW_LOG_FILE),
         }
         RUNNER_HEALTH_FILE.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     except Exception as e:
         print(f"[run-weekly-seo] WARNING: could not write runner health: {e}", flush=True)
+
+
+def tail_crew_log(lines: int = 40) -> list:
+    """Last N non-blank lines of the crew log, for the failure report."""
+    try:
+        text = CREW_LOG_FILE.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return []
+    return [ln.rstrip() for ln in text.splitlines() if ln.strip()][-lines:]
 
 
 def resolve_seo_agents_cmd() -> list:
@@ -221,9 +235,21 @@ def main() -> None:
     # Clear PYTHONPATH to prevent module pollution from system env.
     # The package is installed editable (pip install -e .) so no path needed.
     child_env["PYTHONPATH"] = ""
+    # Redirecting stdout to a file makes Python block-buffer it while stderr stays
+    # unbuffered, so the whole run's output lands *after* the traceback and the tail
+    # below shows progress chatter instead of the error. Force line ordering.
+    child_env["PYTHONUNBUFFERED"] = "1"
 
+    # Stream the crew's output to disk rather than capture=True — a research run takes
+    # ~20 minutes and buffering all of it in memory to inspect only on failure is waste.
+    log_line(f"[run-weekly-seo] Crew output -> {CREW_LOG_FILE}")
     try:
-        result = subprocess.run(cmd, cwd=str(PROJECT_ROOT), env=child_env)
+        OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
+        with CREW_LOG_FILE.open("a", encoding="utf-8") as fh:
+            fh.write(f"\n=== {_now_iso()} launching: {cmd}\n")
+            fh.flush()
+            result = subprocess.run(cmd, cwd=str(PROJECT_ROOT), env=child_env,
+                                    stdout=fh, stderr=subprocess.STDOUT)
     except FileNotFoundError as e:
         log_line(f"[run-weekly-seo] ERROR: could not launch crew ({e}). "
                  f"Check that the .venv exists and `pip install -e .` has been run.")
@@ -235,8 +261,18 @@ def main() -> None:
         write_runner_health("success", topic=topic, returncode=0)
     else:
         log_line(f"[run-weekly-seo] Research crew exited non-zero: {result.returncode}")
+        tail = tail_crew_log()
+        if tail:
+            log_line(f"[run-weekly-seo] --- last {len(tail)} lines of crew output ---")
+            for ln in tail:
+                log_line(f"[crew] {ln}")
+            log_line("[run-weekly-seo] --- end crew output ---")
+        else:
+            log_line(f"[run-weekly-seo] (crew produced no output; see {CREW_LOG_FILE})")
+        # Keep the health payload small — the monitor emails it. Last few lines only.
+        reason = " | ".join(tail[-3:])[:600] if tail else "no crew output captured"
         write_runner_health("failed", topic=topic, returncode=result.returncode,
-                            error=f"crew exit {result.returncode}")
+                            error=f"crew exit {result.returncode}: {reason}")
     sys.exit(result.returncode)
 
 
