@@ -100,7 +100,12 @@ def _import_finalize_with_patched_evidence(output_dir: Path):
     """Import finalize.py after patching evidence.py constants."""
     # Ensure evidence module is patched first.
     _import_evidence(output_dir)
-    # Import finalize (which imports evidence functions)
+    # finalize.py binds evidence functions with `from ... import` at import time.
+    # If another test already imported it (e.g. via seo_agents.main), the cached
+    # module still holds the OLD evidence bindings and writes to the real outputs
+    # dir — drop it so the re-import binds the freshly patched evidence module.
+    if "seo_agents.finalize" in sys.modules:
+        del sys.modules["seo_agents.finalize"]
     import seo_agents.finalize as finalize_mod
     return finalize_mod
 
