@@ -180,6 +180,27 @@ function parseWebsiteTasks(executionQueueText, finalReportText) {
         status: 'pending_approval',
       });
     }
+
+    // Format C: "### 🟡 T-GES-20260731-001 — PARTIAL" status blocks with
+    // **Title:** / **Blocker:** / **Recommended Next Step:** fields. Only
+    // non-complete statuses become pending tasks.
+    const statusBlocks = [...clean.matchAll(/###[^\n]*?\b(T[A-Z0-9-]*\d)\b[^\n]*?[—–-]\s*(PARTIAL|INCOMPLETE|BLOCKED|NOT[ _]?DONE|FAILED)[^\n]*\n([\s\S]*?)(?=\n###|\n##(?!#)|$)/gi)];
+    for (const [, taskId, , body] of statusBlocks) {
+      const title = boldField(body, 'Title');
+      const blocker = boldField(body, 'Blocker');
+      const next = boldField(body, 'Recommended Next Step') || boldField(body, 'Next Step');
+      if (!title || seenTitles.has(title)) continue;
+      seenTitles.add(title);
+      const description = [blocker && `Blocker: ${blocker}`, next && `Next step: ${next}`].filter(Boolean).join('\n');
+      tasks.push({
+        type: mapTaskType(title),
+        priority: 'high',
+        title,
+        description,
+        details: mergeClassification({ task_id: taskId, source: 'final_report' }, { title, description }),
+        status: 'pending_approval',
+      });
+    }
   }
 
   // From grizzly_execution_queue.md
@@ -216,9 +237,36 @@ function parseWebsiteTasks(executionQueueText, finalReportText) {
         status: 'pending_approval',
       });
     }
+
+    // Format C: "### T-GES-20260731-001" ID-header blocks with **Title:** /
+    // **Status:** / **Task Type:** fields. Completed tasks are skipped.
+    const idBlocks = [...clean.matchAll(/###\s+(T[A-Z0-9-]*\d)\s*\n([\s\S]*?)(?=\n###\s|\n##\s|$)/g)];
+    for (const [, taskId, body] of idBlocks) {
+      const title = boldField(body, 'Title');
+      if (!title || seenTitles.has(title)) continue;
+      const status = boldField(body, 'Status').replace(/`/g, '');
+      if (/complete|done|verified|shipped/i.test(status)) continue;
+      seenTitles.add(title);
+      const steps = body.match(/\*{0,2}Exact Action Steps:?\*{0,2}:?\s*\n([\s\S]*?)(?=\n\*\*[A-Z]|$)/i)?.[1].trim() || '';
+      const description = [status && `Status: ${status}`, steps].filter(Boolean).join('\n');
+      tasks.push({
+        type: mapTaskType(boldField(body, 'Task Type').replace(/`/g, '') || title),
+        priority: mapPriority(boldField(body, 'Priority')),
+        title,
+        description,
+        details: mergeClassification({ task_id: taskId, source: 'execution_queue' }, { title, description }),
+        status: 'pending_approval',
+      });
+    }
   }
 
   return tasks;
+}
+
+// Matches "**Key:** value", "**Key**: value", and plain "Key: value" lines.
+function boldField(body, key) {
+  const m = body.match(new RegExp(`\\*{0,2}${key}:?\\*{0,2}:?\\s*(.+)`, 'i'));
+  return m ? m[1].trim() : '';
 }
 
 function mapTaskType(raw) {
@@ -232,9 +280,9 @@ function mapTaskType(raw) {
 
 function mapPriority(raw) {
   const r = raw.toLowerCase();
-  if (r.includes('critical')) return 'critical';
-  if (r.includes('high')) return 'high';
-  if (r.includes('low')) return 'low';
+  if (r.includes('critical') || /\bp0\b/.test(r)) return 'critical';
+  if (r.includes('high') || /\bp1\b/.test(r)) return 'high';
+  if (r.includes('low') || /\bp[34]\b/.test(r)) return 'low';
   return 'medium';
 }
 
@@ -279,45 +327,58 @@ function mergeClassification(details, task) {
 // ─────────────────────────────────────────────
 
 async function main() {
+  // --tasks-only: re-sync website_tasks for an existing run without touching
+  // weekly_posts or the run's approval status (safe after posts are approved).
+  const tasksOnly = process.argv.includes('--tasks-only');
   const weekOf = getWeekOf();
-  console.log(`Syncing week of ${weekOf} to Supabase...`);
+  console.log(`Syncing week of ${weekOf} to Supabase...${tasksOnly ? ' (website tasks only)' : ''}`);
 
-  // Upsert seo_run row
-  const { data: runData, error: runError } = await supabase
-    .from('seo_runs')
-    .upsert({ week_of: weekOf, status: 'pending_approval', execute_completed_at: new Date().toISOString() },
-      { onConflict: 'week_of' })
-    .select()
-    .single();
-
-  if (runError) { console.error('Failed to upsert seo_run:', runError.message); process.exit(1); }
-  const runId = runData.id;
-  console.log(`Run ID: ${runId}`);
-
-  // Clear existing pending posts for this run (allow re-sync)
-  await supabase.from('weekly_posts').delete().eq('run_id', runId).eq('status', 'pending_approval');
-  await supabase.from('website_tasks').delete().eq('run_id', runId).eq('status', 'pending_approval');
-
-  // Parse and insert Facebook posts
-  const fbText = readFile('facebook_posting_schedule.md');
-  const fbPosts = parseFacebookSchedule(fbText);
-  if (fbPosts.length) {
-    const { error } = await supabase.from('weekly_posts').insert(fbPosts.map(p => ({ ...p, run_id: runId })));
-    if (error) console.error('FB posts insert error:', error.message);
-    else console.log(`Synced ${fbPosts.length} Facebook posts`);
+  let runId;
+  if (tasksOnly) {
+    const { data: runData, error: runError } = await supabase
+      .from('seo_runs').select('id').eq('week_of', weekOf).single();
+    if (runError || !runData) { console.error(`No existing seo_run for week ${weekOf}:`, runError?.message || 'not found'); process.exit(1); }
+    runId = runData.id;
+    console.log(`Run ID: ${runId}`);
+    await supabase.from('website_tasks').delete().eq('run_id', runId).eq('status', 'pending_approval');
   } else {
-    console.log('No Facebook posts found');
-  }
+    // Upsert seo_run row
+    const { data: runData, error: runError } = await supabase
+      .from('seo_runs')
+      .upsert({ week_of: weekOf, status: 'pending_approval', execute_completed_at: new Date().toISOString() },
+        { onConflict: 'week_of' })
+      .select()
+      .single();
 
-  // Parse and insert GBP posts
-  const gbpText = readFile('gbp_posting_schedule.md');
-  const gbpPosts = parseGbpSchedule(gbpText);
-  if (gbpPosts.length) {
-    const { error } = await supabase.from('weekly_posts').insert(gbpPosts.map(p => ({ ...p, run_id: runId })));
-    if (error) console.error('GBP posts insert error:', error.message);
-    else console.log(`Synced ${gbpPosts.length} GBP posts`);
-  } else {
-    console.log('No GBP posts found');
+    if (runError) { console.error('Failed to upsert seo_run:', runError.message); process.exit(1); }
+    runId = runData.id;
+    console.log(`Run ID: ${runId}`);
+
+    // Clear existing pending posts for this run (allow re-sync)
+    await supabase.from('weekly_posts').delete().eq('run_id', runId).eq('status', 'pending_approval');
+    await supabase.from('website_tasks').delete().eq('run_id', runId).eq('status', 'pending_approval');
+
+    // Parse and insert Facebook posts
+    const fbText = readFile('facebook_posting_schedule.md');
+    const fbPosts = parseFacebookSchedule(fbText);
+    if (fbPosts.length) {
+      const { error } = await supabase.from('weekly_posts').insert(fbPosts.map(p => ({ ...p, run_id: runId })));
+      if (error) console.error('FB posts insert error:', error.message);
+      else console.log(`Synced ${fbPosts.length} Facebook posts`);
+    } else {
+      console.log('No Facebook posts found');
+    }
+
+    // Parse and insert GBP posts
+    const gbpText = readFile('gbp_posting_schedule.md');
+    const gbpPosts = parseGbpSchedule(gbpText);
+    if (gbpPosts.length) {
+      const { error } = await supabase.from('weekly_posts').insert(gbpPosts.map(p => ({ ...p, run_id: runId })));
+      if (error) console.error('GBP posts insert error:', error.message);
+      else console.log(`Synced ${gbpPosts.length} GBP posts`);
+    } else {
+      console.log('No GBP posts found');
+    }
   }
 
   // Parse and insert website tasks
