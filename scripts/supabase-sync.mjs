@@ -41,12 +41,15 @@ function getWeekOf() {
   const args = process.argv.slice(2);
   const idx = args.indexOf('--week-of');
   if (idx !== -1 && args[idx + 1]) return args[idx + 1];
-  // Default: next Monday
+  // Default: next Monday, formatted in LOCAL time. toISOString() converts to
+  // UTC first, so any run after ~19:00 CDT rolled the date forward a day —
+  // that's how the 2026-07-28 22:53 manual run got filed as week_of 2026-08-04
+  // (a Tuesday), stranding its posts under a week no other query looked at.
   const d = new Date();
   const day = d.getDay();
   const diff = day === 0 ? 1 : 8 - day;
   d.setDate(d.getDate() + diff);
-  return d.toISOString().slice(0, 10);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
 function readFile(filename) {

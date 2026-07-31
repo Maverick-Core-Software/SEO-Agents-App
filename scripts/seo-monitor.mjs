@@ -21,6 +21,7 @@ import http from 'node:http';
 import { execSync, execFile } from 'node:child_process';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
+import { sendHermesAlert } from './lib/hermes-alert.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '..');
@@ -199,7 +200,10 @@ function mountMDrive() {
   }
 }
 
-// ── Email alert ───────────────────────────────────────────────────────────────
+// ── Alerts ───────────────────────────────────────────────────────────────────
+// Primary: hermes SMS/Slack via HERMES_ALERT_TO (MavH Twilio line). Secondary:
+// Gmail SMTP, best-effort only — a dead app password must never suppress alerts
+// again (2026-07-31: every 535 BadCredentials failure was silent for two weeks).
 let _mailerTransport = null;
 async function getMailer() {
   if (_mailerTransport) return _mailerTransport;
@@ -217,23 +221,32 @@ async function getMailer() {
 }
 
 async function sendAlert(subject, body) {
-  if (!SMTP_APP_PASSWORD) {
-    log('warn', 'SMTP_APP_PASSWORD not set — cannot send email alert', { subject });
-    return;
-  }
-  const transport = await getMailer();
-  if (!transport) return;
+  let delivered = false;
   try {
-    await transport.sendMail({
-      from: SMTP_FROM,
-      to: SMTP_TO,
-      subject: `[SEO Monitor] ${subject}`,
-      text: body,
-    });
-    log('info', 'Alert email sent', { subject });
+    await sendHermesAlert(`[SEO Monitor] ${subject}\n${body}`);
+    log('info', 'Alert sent via hermes', { subject, to: process.env.HERMES_ALERT_TO || 'slack' });
+    delivered = true;
   } catch (e) {
-    log('warn', 'Alert email failed to send', { subject, error: e.message });
+    log('warn', 'Hermes alert failed', { subject, error: e.message });
   }
+  if (SMTP_APP_PASSWORD) {
+    const transport = await getMailer();
+    if (transport) {
+      try {
+        await transport.sendMail({
+          from: SMTP_FROM,
+          to: SMTP_TO,
+          subject: `[SEO Monitor] ${subject}`,
+          text: body,
+        });
+        log('info', 'Alert email sent', { subject });
+        delivered = true;
+      } catch (e) {
+        log('warn', 'Alert email failed to send', { subject, error: e.message });
+      }
+    }
+  }
+  if (!delivered) log('error', 'ALL alert channels failed — alert not delivered', { subject });
 }
 
 async function alertOnce(key, subject, body) {

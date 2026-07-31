@@ -84,10 +84,30 @@ Register-RebootProofTask -Name 'Grizzly SEO Monitor' `
     -TaskArgs ('"{0}\scripts\seo-monitor.mjs" --run-hours {1}' -f $ProjectRoot, $MonitorHours) `
     -At $at
 
+# 3) Watchdog — DAILY trigger, deliberately independent of the Friday trigger
+#    above. The monitor shares its trigger with the run it watches, so if Task
+#    Scheduler misfires or the weekly task is disabled, both die together and a
+#    missed week is silent (2026-07-24). The watchdog reads only the runner
+#    health marker and alerts via hermes SMS; single-shot, exits in seconds.
+$WatchdogTime = '10:00'
+$atWatchdog = [datetime]::ParseExact($WatchdogTime, 'HH:mm', $null)
+$wdAction   = New-ScheduledTaskAction -Execute $NodeExe `
+    -Argument ('"{0}\scripts\seo-watchdog.mjs"' -f $ProjectRoot) -WorkingDirectory $ProjectRoot
+$wdTrigger  = New-ScheduledTaskTrigger -Daily -At $atWatchdog
+$wdPrincipal = New-ScheduledTaskPrincipal -UserId $RunAsUser -LogonType S4U -RunLevel Highest
+$wdSettings  = New-ScheduledTaskSettingsSet `
+    -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+    -StartWhenAvailable -WakeToRun `
+    -ExecutionTimeLimit (New-TimeSpan -Minutes 10)
+Register-ScheduledTask -TaskName 'Grizzly SEO Watchdog' -Action $wdAction -Trigger $wdTrigger `
+    -Principal $wdPrincipal -Settings $wdSettings -Force | Out-Null
+Write-Host "Registered 'Grizzly SEO Watchdog' -> $NodeExe seo-watchdog.mjs  (Daily $WatchdogTime)"
+
 Write-Host ""
 Write-Host "Done. Verify:"
 Write-Host "  Get-ScheduledTaskInfo -TaskName 'Grizzly SEO Photo Sync'"
 Write-Host "  Get-ScheduledTaskInfo -TaskName 'Grizzly SEO Weekly Run'"
 Write-Host "  Get-ScheduledTaskInfo -TaskName 'Grizzly SEO Monitor'"
+Write-Host "  Get-ScheduledTaskInfo -TaskName 'Grizzly SEO Watchdog'"
 Write-Host "Dry-test the wrapper now (writes outputs\weekly-runner-health.json):"
 Write-Host "  Start-ScheduledTask -TaskName 'Grizzly SEO Weekly Run'"

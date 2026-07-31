@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import smtplib
+import subprocess
 import sys
 import time
 from datetime import date, datetime, timezone
@@ -90,14 +91,34 @@ _PHASE_LABELS = {
 }
 
 
-def _send_failure_alert(phase: str, error: str, topic: str, at: str) -> None:
-    """Send a Gmail SMTP alert when a phase fails. Silently skips if not configured."""
-    app_password = os.getenv("SMTP_APP_PASSWORD", "").strip()
-    from_addr = os.getenv("SMTP_FROM_EMAIL", "barnscarter@gmail.com").strip()
-    to_addr = os.getenv("SMTP_TO_EMAIL", "barnscarter@gmail.com").strip()
-    if not app_password:
-        return  # Not configured — skip silently
+_DEFAULT_HERMES_CLI = (
+    r"C:\Users\carte\AppData\Local\hermes\hermes-agent\venv\Scripts\hermes.exe"
+)
 
+
+def _send_hermes_alert(message: str) -> bool:
+    """Push an alert through the local `hermes send` CLI (MavH Twilio SMS per
+    HERMES_ALERT_TO). Direct platform delivery — no LLM, no agent loop."""
+    cli = os.getenv("HERMES_CLI", "").strip() or _DEFAULT_HERMES_CLI
+    target = os.getenv("HERMES_ALERT_TO", "").strip() or "slack"
+    try:
+        subprocess.run(
+            [cli, "send", "--to", target, "--quiet", message],
+            check=True,
+            timeout=20,
+            capture_output=True,
+        )
+        print(f"\n📱 Failure alert sent via hermes to {target}")
+        return True
+    except Exception as exc:
+        print(f"\n⚠ Hermes alert failed: {exc}")
+        return False
+
+
+def _send_failure_alert(phase: str, error: str, topic: str, at: str) -> None:
+    """Alert Carter that a phase failed. Primary: hermes → MavH Twilio SMS.
+    Secondary: Gmail SMTP, best-effort — a dead app password must never be the
+    only channel again (2026-07-31: two weeks of silent 535 BadCredentials)."""
     phase_label = _PHASE_LABELS.get(phase, phase)
     topic_line = f"\nTopic: {topic}" if topic else ""
     subject = f"⚠ SEO Agent FAILED: {phase_label}"
@@ -111,18 +132,28 @@ def _send_failure_alert(phase: str, error: str, topic: str, at: str) -> None:
         f"Fix the issue before the next scheduled Friday run.\n\n"
         f"— Maverick Console"
     )
-    msg = MIMEText(body)
-    msg["Subject"] = subject
-    msg["From"] = from_addr
-    msg["To"] = to_addr
-    try:
-        with smtplib.SMTP("smtp.gmail.com", 587, timeout=15) as smtp:
-            smtp.starttls()
-            smtp.login(from_addr, app_password)
-            smtp.sendmail(from_addr, [to_addr], msg.as_string())
-        print(f"\n📧 Failure alert sent to {to_addr}")
-    except Exception as exc:
-        print(f"\n⚠ Could not send failure alert: {exc}")
+    delivered = _send_hermes_alert(f"{subject}\n{body}")
+
+    app_password = os.getenv("SMTP_APP_PASSWORD", "").strip()
+    from_addr = os.getenv("SMTP_FROM_EMAIL", "barnscarter@gmail.com").strip()
+    to_addr = os.getenv("SMTP_TO_EMAIL", "barnscarter@gmail.com").strip()
+    if app_password:
+        msg = MIMEText(body)
+        msg["Subject"] = subject
+        msg["From"] = from_addr
+        msg["To"] = to_addr
+        try:
+            with smtplib.SMTP("smtp.gmail.com", 587, timeout=15) as smtp:
+                smtp.starttls()
+                smtp.login(from_addr, app_password)
+                smtp.sendmail(from_addr, [to_addr], msg.as_string())
+            print(f"\n📧 Failure alert sent to {to_addr}")
+            delivered = True
+        except Exception as exc:
+            print(f"\n⚠ Could not send failure alert email: {exc}")
+
+    if not delivered:
+        print("\n❌ ALL alert channels failed — failure alert was NOT delivered.")
 
 
 def write_run_health(phase: str, status: str, topic: str = "", error: str = "", started_at: float | None = None) -> None:
