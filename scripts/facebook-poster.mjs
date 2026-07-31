@@ -209,9 +209,21 @@ function parseSchedule(filePath) {
 export function parseScheduleText(text) {
   const blocks = text.split(/\n\s*---\s*\n/).filter(b => b.includes('DAY:'));
   return blocks.map(block => {
+    // Executor models vary between `**HOOK:** value` (inline) and `**HOOK:**\nvalue`
+    // (value on the following lines) — accept both, reading until the next field
+    // header. An inline value that is only `**`/whitespace counts as empty.
     const get = (key) => {
-      const m = block.match(new RegExp(`^\\*{0,2}${key}:\\s*(.*?)\\s*$`, 'm'));
-      return m ? stripMd(m[1]) : '';
+      const m = block.match(new RegExp(`^\\*{0,2}${key}:\\*{0,2}[ \\t]*(.*)$`, 'm'));
+      if (!m) return '';
+      const inline = stripMd(m[1]);
+      if (inline) return inline;
+      const following = block.slice(m.index + m[0].length).split('\n').slice(1);
+      const lines = [];
+      for (const line of following) {
+        if (/^\*{0,2}[A-Z_]+:/.test(line.trim()) || /^#{1,6}\s/.test(line.trim())) break;
+        lines.push(line);
+      }
+      return stripMd(lines.join('\n').trim());
     };
     const type = get('TYPE').toLowerCase();
     return {

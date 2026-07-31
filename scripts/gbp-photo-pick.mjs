@@ -573,7 +573,11 @@ async function main() {
       continue;
     }
 
-    const ext = path.extname(photo.filename);
+    // GBP's uploader rejects HEIC/HEIF — curated copies must be JPEG (2026-07-31:
+    // Day-1 post went out image-less because the winner was copied as .HEIC).
+    const srcExt = path.extname(photo.filename);
+    const isHeic = /^\.hei[cf]$/i.test(srcExt);
+    const ext = isHeic ? '.jpg' : srcExt;
     const destFilename = `${post.date}-${serviceSlug(post.service)}${ext}`;
     const destPath = path.join(CURATED_FOLDER, destFilename);
 
@@ -583,7 +587,19 @@ async function main() {
     console.log(`    → ${destFilename}`);
 
     if (!dryRun) {
-      fs.copyFileSync(photo.filePath, destPath);
+      if (isHeic) {
+        if (!heicConvert) {
+          console.log(`    ⚠ heic-convert unavailable — copying original ${srcExt} (GBP will reject it)`);
+          fs.copyFileSync(photo.filePath, destPath);
+        } else {
+          const jpegBuf = Buffer.from(await heicConvert({
+            buffer: fs.readFileSync(photo.filePath), format: 'JPEG', quality: 0.9,
+          }));
+          fs.writeFileSync(destPath, jpegBuf);
+        }
+      } else {
+        fs.copyFileSync(photo.filePath, destPath);
+      }
       scheduleText = updateSchedulePhotoFile(scheduleText, post.date, destPath);
     }
 
