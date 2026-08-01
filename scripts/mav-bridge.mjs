@@ -28,6 +28,7 @@ import { makeAlertStore } from './lib/alert-store.mjs';
 import { sendHermesAlert } from './lib/hermes-alert.mjs';
 import { makeRunPhase } from './lib/run-phase.mjs';
 import { runGbpForApprovedRun, runDailyGbp, centralDateHour } from './lib/gbp-runner.mjs';
+import { fetchApprovedWebsiteTasks, executeNextWebsiteTask, sweepOrphanWebsiteTasks } from './lib/website-task-runner.mjs';
 
 const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -151,6 +152,9 @@ async function notifyAlert({ runId, actionId, faultType, title, detail }) {
 // ─────────────────────────────────────────────
 
 const runPhase = makeRunPhase({ log, hopError, projectRoot: PROJECT_ROOT });
+
+// Shared deps for website-task execution (run-scoped path + poll orphan sweep).
+const WEBSITE_DEPS = { supabase, log, execFileAsync, seoAgentsExe: SEO_AGENTS_EXE, projectRoot: PROJECT_ROOT };
 
 // ─────────────────────────────────────────────
 // Handle an approved run
@@ -395,104 +399,16 @@ async function executeApprovedRun(run) {
   }
 
   // ── 3. Website tasks ───────────────────────────────────────────
+  // Execution logic lives in lib/website-task-runner.mjs, shared with the
+  // poll-loop orphan sweep (tasks approved after this run settles).
   if (WEBSITE_AUTO_EXEC) {
-    const PRIORITY_MAP = { critical: 0, high: 1, medium: 2, low: 3 };
-
-    const { data: tasks } = await supabase
-      .from('website_tasks')
-      .select('*')
-      .eq('run_id', runId)
-      .eq('status', 'approved')
-      .is('details->platform', null, 'is')
-      .or('details->platform.eq.website')
-      .order('priority');
-
-    if (tasks?.length) {
-      // Sort by priority (critical→low), tie-break oldest created_at first
-      const sorted = tasks.sort((a, b) => {
-        const pa = PRIORITY_MAP[a.priority] ?? 4;
-        const pb = PRIORITY_MAP[b.priority] ?? 4;
-        if (pa !== pb) return pa - pb;
-        return new Date(a.created_at) < new Date(b.created_at) ? -1 : 1;
-      });
-
-      // Claim exactly ONE task per poll cycle via compare-and-swap
-      for (const task of sorted) {
-        const { data: claimed, error: claimErr } = await supabase
-          .from('website_tasks')
-          .update({ status: 'executing' })
-          .eq('id', task.id)
-          .eq('status', 'approved')
-          .select('*')
-          .maybeSingle();
-
-        if (claimErr) {
-          await log(runId, 'website', 'error', `Claim failed: ${claimErr.message}`);
-          break;
-        }
-        if (!claimed) {
-          // Another worker took it — skip this cycle
-          break;
-        }
-
-        await log(runId, 'website', 'info', `Claimed task ${task.id}: ${task.title}`);
-
-        const actionType = task.details?.website_action_type || 'website_copy_update';
-        const command = `seo-agents website "${task.title}. ${task.description}" --type ${actionType} --live`;
-
-        try {
-          await log(runId, 'website', 'info', `Executing: ${command}`);
-          const { stdout } = await execFileAsync(SEO_AGENTS_EXE, [
-            'website',
-            `"${task.title}. ${task.description}"`,
-            '--type', actionType,
-            '--live',
-          ], { cwd: PROJECT_ROOT, timeout: 20 * 60 * 1000, encoding: 'utf8', windowsHide: true });
-
-          // Parse the last JSON object on stdout
-          const output = (stdout || '').trim();
-          const jsonMatch = output.match(/({\s*[\s\S]*?})\s*$/);
-          if (jsonMatch) {
-            const result = JSON.parse(jsonMatch[1]);
-            if (result.status === 'pushed') {
-              await supabase
-                .from('website_tasks')
-                .update({
-                  status: 'done',
-                  details: { ...task.details, result },
-                  completed_at: new Date().toISOString(),
-                })
-                .eq('id', task.id);
-              await log(runId, 'website', 'info', `Task done: ${task.title}`);
-            } else {
-              const statusMap = { preview: 'preview', validation_failed: 'validation_failed', error: 'error', push_failed: 'push_failed' };
-              const errStatus = statusMap[result.status] || result.status;
-              await supabase
-                .from('website_tasks')
-                .update({
-                  status: 'error',
-                  details: { ...task.details, result: { status: errStatus, message: result.message || result.status } },
-                })
-                .eq('id', task.id);
-              await log(runId, 'website', 'warn', `Task failed: ${task.title} — ${result.status}`);
-            }
-          } else {
-            throw new Error('No JSON result found in stdout');
-          }
-        } catch (e) {
-          // Never leave a task stuck in 'executing'
-          await supabase
-            .from('website_tasks')
-            .update({
-              status: 'error',
-              details: { ...task.details, result: { status: 'error', message: e.message } },
-            })
-            .eq('id', task.id);
-          await log(runId, 'website', 'error', `Task error: ${task.title} — ${e.message}`);
-        }
-        // Only process one task per cycle
-        break;
-      }
+    const { data: tasks, error: tasksErr } = await fetchApprovedWebsiteTasks(supabase, { runId });
+    if (tasksErr) {
+      // Never swallow this — a malformed filter here previously errored on
+      // every run and read as "no tasks" (see lib/website-task-runner.mjs).
+      await log(runId, 'website', 'error', `Website task query failed: ${tasksErr.message}`);
+    } else if (tasks?.length) {
+      await executeNextWebsiteTask(tasks, WEBSITE_DEPS);
     } else {
       await log(runId, 'website', 'info', 'No website tasks for this run');
     }
@@ -582,6 +498,21 @@ async function poll() {
       if (state?.runId === waitingRuns[0].id && state?.approved) {
         // Prompt was approved externally — continue the run
         await executeApprovedRunSafe(waitingRuns[0]);
+      }
+    }
+
+    // ── Orphaned approved website tasks ──────────
+    // executeApprovedRun only fires for runs in 'approved', so a website task
+    // approved in MCC after its run settled ('done'/'error') sits in 'approved'
+    // forever (2026-07-31: run bc9f900f, week 2026-08-03). The sweep claims one
+    // such task per cycle via the same CAS executor; it also covers
+    // /seo/actions/retry on website tasks, which re-approves the task without
+    // nudging the parent run.
+    if (WEBSITE_AUTO_EXEC) {
+      try {
+        await sweepOrphanWebsiteTasks(WEBSITE_DEPS);
+      } catch (e) {
+        console.error(`[mav-bridge][website-sweep] ${e.message}`);
       }
     }
 
@@ -1056,7 +987,9 @@ async function handleHttpRequest(req, res) {
       const retriableTask = ['error', 'needs_verification', 'skipped', 'executing'];
       const retriableRun = ['error', 'executing', 'done'];
 
-      // website_task
+      // website_task — no run nudge needed (unlike weekly_post below): the
+      // poll-loop orphan sweep executes approved website tasks even when the
+      // parent run is already 'done'/'error'.
       {
         const { data: task, error: taskErr } = await supabase.from('website_tasks')
           .update({ status: 'approved', error: null, updated_at: new Date().toISOString() })
