@@ -262,7 +262,9 @@ async function setComposerSchedule(ctx, page, isoDate) {
     assert.equal(isChecked, 'true', 'Schedule toggle did not engage — it will classify as ui_changed_or_timeout');
 
     logStep('typing schedule date');
-    const dateCombobox = ctx.getByRole('combobox', { name: /Date/i }).first();
+    // Google has rendered these fields as both combobox and plain textbox variants.
+    const dateCombobox = ctx.getByRole('combobox', { name: /Date/i })
+        .or(ctx.getByRole('textbox', { name: /Date/i })).first();
     await dateCombobox.click({ timeout: 10000 });
     await page.keyboard.press('Control+A').catch(() => {});
     await page.keyboard.insertText(formatted);
@@ -271,9 +273,17 @@ async function setComposerSchedule(ctx, page, isoDate) {
     assert.equal(readback, formatted, `Date read-back mismatch: expected ${formatted}, got ${readback}`);
 
     logStep('selecting 9:00 AM schedule time');
-    const timeCombobox = ctx.getByRole('combobox', { name: 'Time' }).first();
+    const timeCombobox = ctx.getByRole('combobox', { name: /Time/i })
+        .or(ctx.getByRole('textbox', { name: /Time/i })).first();
     await timeCombobox.click({ timeout: 10000 });
-    await ctx.getByRole('option', { name: SCHEDULE_TIME_LABEL }).first().click({ timeout: 10000 });
+    try {
+        await ctx.getByRole('option', { name: SCHEDULE_TIME_LABEL }).first().click({ timeout: 5000 });
+    } catch {
+        // Textbox variant: no dropdown options — type the time directly.
+        await page.keyboard.press('Control+A').catch(() => {});
+        await page.keyboard.insertText('9:00 AM');
+        await page.keyboard.press('Tab');
+    }
     const timeReadback = (await timeCombobox.inputValue().catch(() => '')) || '';
     assert.ok(SCHEDULE_TIME_LABEL.test(timeReadback), `Time read-back mismatch: expected 9:00 AM (tolerant), got '${timeReadback}'`);
 }
