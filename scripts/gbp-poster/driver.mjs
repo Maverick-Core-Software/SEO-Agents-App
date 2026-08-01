@@ -5,6 +5,7 @@ import path from 'path';
 import os from 'os';
 import { fileURLToPath, pathToFileURL } from 'url';
 import assert from 'node:assert/strict';
+import { checkPostPolicy, formatViolations } from './policy-check.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 
@@ -100,6 +101,17 @@ function parseSchedule(filePath, targetDate) {
     const post = data.find((row) => excelDateToIso(row.Date || row.date) === targetDate);
     if (!post) throw new Error(`No post found for date: ${targetDate}`);
     return post;
+}
+
+// Captions of every row EXCEPT the target date, for duplicate-content detection.
+function readOtherCaptions(filePath, targetDate) {
+    const workbook = xlsx.readFile(filePath);
+    const sheetName = workbook.SheetNames.includes('Posts') ? 'Posts' : workbook.SheetNames[0];
+    const data = xlsx.utils.sheet_to_json(workbook.Sheets[sheetName], { defval: '' });
+    return data
+        .filter((row) => excelDateToIso(row.Date || row.date) !== targetDate)
+        .map((row) => String(row.CaptionDraft || row.Body || row.Caption || '').trim())
+        .filter(Boolean);
 }
 
 function buildPayload(post) {
@@ -537,6 +549,20 @@ async function main() {
     if (payload.imagePath && !fs.existsSync(payload.imagePath)) {
         throw new Error(`Post image not found: ${payload.imagePath}`);
     }
+
+    // Content-policy gate — runs in dry-run too so rows can be linted without a
+    // browser. 2026-07-31: Google rejected three scheduled posts within minutes
+    // (phone numbers in the captions) and disabled posting profile-wide; nothing
+    // reaches the composer until the caption/image pass every policy rule.
+    // Exit 5 = policy_violation (0=ok, 1=failed, 3=unverified, 4=needs_approval).
+    const policyViolations = checkPostPolicy(payload, { otherCaptions: readOtherCaptions(workbookPath, payload.date) });
+    if (policyViolations.length > 0) {
+        const message = `Post ${payload.date} violates GBP content policy:\n${formatViolations(policyViolations)}`;
+        emitResult({ result: 'policy_violation', date: payload.date, verified: false, postUrl: null, error: message, violations: policyViolations });
+        console.error(message);
+        process.exit(5);
+    }
+
     if (!args.dryRun && payload.status !== 'Approved') {
         // Approval gate, not a failure: the post is awaiting human approval in the
         // workbook. Exit 4 (distinct from 1=failed / 3=unverified) so the caller can
