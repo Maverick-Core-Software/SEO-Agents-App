@@ -39,6 +39,18 @@ export function fetchApprovedWebsiteTasks(supabase, { runId } = {}) {
   return q;
 }
 
+// The CLI prints its real failure to STDOUT ("❌ Website Manager crew
+// failed: ..."), while execFile errors carry only stderr in e.message —
+// during the 2026-08-01 live test that left tasks stored as an opaque
+// "exit code 1". Surface the last ❌ line, or failing that the stdout tail.
+function describeExecError(e) {
+  const stdout = (e.stdout || '').trim();
+  if (!stdout) return e.message;
+  const failLines = stdout.split(/\r?\n/).filter(l => l.trimStart().startsWith('❌'));
+  const detail = failLines.length ? failLines[failLines.length - 1].trim() : stdout.slice(-500);
+  return `${e.message} — stdout: ${detail}`;
+}
+
 // Claim and execute at most ONE task per call via compare-and-swap, so a poll
 // cycle never runs two 20-minute website builds back to back. Returns the
 // claimed task id, or null if nothing was claimed.
@@ -110,14 +122,15 @@ export async function executeNextWebsiteTask(tasks, deps) {
       }
     } catch (e) {
       // Never leave a task stuck in 'executing'
+      const message = describeExecError(e);
       await supabase
         .from('website_tasks')
         .update({
           status: 'error',
-          details: { ...task.details, result: { status: 'error', message: e.message } },
+          details: { ...task.details, result: { status: 'error', message } },
         })
         .eq('id', task.id);
-      await log(runId, 'website', 'error', `Task error: ${task.title} — ${e.message}`);
+      await log(runId, 'website', 'error', `Task error: ${task.title} — ${message}`);
     }
     // Only process one task per cycle
     return task.id;

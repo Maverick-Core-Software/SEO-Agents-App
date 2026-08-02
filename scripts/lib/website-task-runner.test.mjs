@@ -111,6 +111,46 @@ const baseDeps = { log: async () => {}, seoAgentsExe: 'C:/fake/seo-agents.exe', 
   console.log('ok executeNextWebsiteTask throw');
 }
 
+// ── executeNextWebsiteTask: exec throw with stdout → ❌ line surfaced in message ──
+{
+  const task = { id: 't1', run_id: 'r1', priority: 'high', created_at: '2026-07-01', title: 'T', description: 'D', details: {} };
+  const { supabase, updates } = makeSupabaseStub({ tables: { website_tasks: [task] } });
+  const execFileAsync = async () => {
+    const e = new Error('Command failed: seo-agents.exe website ... (exit code 1)');
+    e.stdout = 'Loading crew...\nRunning agents...\n❌ Website Manager crew failed: Venice API returned 401\ncleanup done\n';
+    e.stderr = '';
+    throw e;
+  };
+
+  await executeNextWebsiteTask([task], { ...baseDeps, supabase, execFileAsync });
+
+  const err = updates.find(u => u.vals.status === 'error');
+  assert.ok(err, 'task marked error after throw');
+  assert.match(err.vals.details.result.message, /Command failed/, 'keeps original exec message');
+  assert.match(err.vals.details.result.message, /❌ Website Manager crew failed: Venice API returned 401/, 'surfaces the ❌ stdout line');
+  console.log('ok executeNextWebsiteTask throw with ❌ stdout');
+}
+
+// ── executeNextWebsiteTask: exec throw with stdout, no ❌ line → last 500 chars ──
+{
+  const task = { id: 't1', run_id: 'r1', priority: 'high', created_at: '2026-07-01', title: 'T', description: 'D', details: {} };
+  const { supabase, updates } = makeSupabaseStub({ tables: { website_tasks: [task] } });
+  const execFileAsync = async () => {
+    const e = new Error('Command failed (exit code 1)');
+    e.stdout = 'x'.repeat(600) + 'TAIL-MARKER';
+    throw e;
+  };
+
+  await executeNextWebsiteTask([task], { ...baseDeps, supabase, execFileAsync });
+
+  const err = updates.find(u => u.vals.status === 'error');
+  assert.ok(err, 'task marked error after throw');
+  const msg = err.vals.details.result.message;
+  assert.match(msg, /TAIL-MARKER/, 'includes the stdout tail');
+  assert.ok(!msg.includes('x'.repeat(501)), 'stdout detail capped at ~500 chars');
+  console.log('ok executeNextWebsiteTask throw with stdout tail');
+}
+
 // ── executeNextWebsiteTask: claim lost (another worker) → no execution ──
 {
   const task = { id: 't1', run_id: 'r1', priority: 'high', created_at: '2026-07-01', title: 'T', description: 'D', details: {} };
