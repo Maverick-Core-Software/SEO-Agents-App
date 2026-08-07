@@ -185,6 +185,25 @@ function trackPostEngagement(postId, postGoal, postDay) {
   return { postId, postGoal, tracked: true };
 }
 
+export async function postFirstComment(postId, contactText) {
+  if (!contactText) return;
+  const body = new URLSearchParams({
+    message: contactText,
+    access_token: FB_PAGE_ACCESS_TOKEN,
+  });
+  const res = await fetch(
+    `https://graph.facebook.com/${GRAPH_API_VERSION}/${postId}/comments`,
+    { method: 'POST', body }
+  );
+  const json = await res.json();
+  if (json.error) {
+    hopLog('facebook-poster→graph', 'warn', `First comment failed: ${json.error.message}`, { code: json.error.code });
+    return null;
+  }
+  hopLog('facebook-poster→graph', 'info', `Contact posted as first comment on ${postId}`);
+  return json.id;
+}
+
 export function buildCaption(post) {
   const parts = [];
   if (post.hook) parts.push(post.hook);
@@ -496,29 +515,6 @@ async function graphDispatch(post, caption, videoPath, scheduleUnix) {
   });
 }
 
-// Post business contact info as the first comment on a published post.
-// Facebook's algorithm suppresses sales-style phone CTAs in captions;
-// posting contact in the first comment avoids that penalty while still
-// making it easy for viewers to find the phone number.
-async function postFirstComment(postId, contactText) {
-  if (!contactText) return;
-  const body = new URLSearchParams({
-    message: contactText,
-    access_token: FB_PAGE_ACCESS_TOKEN,
-  });
-  const res = await fetch(
-    `https://graph.facebook.com/${GRAPH_API_VERSION}/${postId}/comments`,
-    { method: 'POST', body }
-  );
-  const json = await res.json();
-  if (json.error) {
-    hopLog('facebook-poster→graph', 'warn', `First comment failed: ${json.error.message}`, { code: json.error.code });
-    return null;
-  }
-  hopLog('facebook-poster→graph', 'info', `Contact posted as first comment on ${postId}`);
-  return json.id;
-}
-
 // ---------------------------------------------------------------------------
 // Gemini video generation
 // ---------------------------------------------------------------------------
@@ -717,6 +713,8 @@ function resolveReferenceImage(post) {
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-|-$/g, '');
   if (!slug) return null;
+
+  // Exact match candidates (full slug, date-based)
   const candidates = [
     path.join(REFERENCE_IMAGE_DIR, `${slug}.jpg`),
     path.join(REFERENCE_IMAGE_DIR, `${slug}.png`),
@@ -727,6 +725,31 @@ function resolveReferenceImage(post) {
   for (const p of candidates) {
     if (fs.existsSync(p)) return p;
   }
+
+  // Prefix-fallback: the crew writes verbose service names like
+  // "Generator Inlet & Interlock Installation" → slug "generator-inlet-interlock-installation".
+  // Reference images use short slugs like "generator". Split the slug on hyphens
+  // and try progressively shorter prefixes until we find a match.
+  const segments = slug.split('-');
+  for (let i = 0; i < segments.length; i++) {
+    const prefix = segments.slice(0, segments.length - i).join('-');
+    if (!prefix) continue;
+    const jpg = path.join(REFERENCE_IMAGE_DIR, `${prefix}.jpg`);
+    const png = path.join(REFERENCE_IMAGE_DIR, `${prefix}.png`);
+    if (fs.existsSync(jpg)) return jpg;
+    if (fs.existsSync(png)) return png;
+  }
+
+  // Last resort: return ANY available reference image. An anchored
+  // electrical photo is orders of magnitude better than pure T2V with
+  // zero visual grounding — it prevents the model from hallucinating
+  // extra limbs and morphing objects.
+  try {
+    const anyImage = fs.readdirSync(REFERENCE_IMAGE_DIR)
+      .find(f => /\.(jpe?g|png|webp)$/i.test(f));
+    if (anyImage) return path.join(REFERENCE_IMAGE_DIR, anyImage);
+  } catch { /* dir not readable */ }
+
   return null;
 }
 
@@ -755,8 +778,11 @@ CRITICAL RULES for AI video quality:
 - SINGLE SHOT ONLY: one continuous take, no cuts, no scene changes
 - STATIC or SLOW camera: "static shot", "slow dolly-in", "slow pan" only
 - NEVER use: whip pan, crash zoom, hard push-in, handheld, rapid cuts
-- SHOW THE WORK, NOT THE FACE: focus on hands, tools, panels, installations
-- Avoid faces — they cause uncanny valley artifacts
+- NO HANDS, NO FACES, NO PEOPLE — AI video models cannot render human anatomy
+  without severe artifacts (extra fingers, melting limbs, morphing skin)
+- Use TOOL-ONLY POV: show the work through tool movement, mechanical action,
+  indicators lighting up, breakers flipping, wires connecting — as if the
+  camera IS the person doing the work. Never describe hands or bodies.
 - Describe spatial relationships explicitly to prevent morphing
 - Keep the scene simple: fewer objects = fewer artifacts
 - Specify "consistent lighting" and "smooth continuous motion"
@@ -1268,7 +1294,10 @@ async function runWeek(args) {
       const scheduleUnix = isLive ? null : rawScheduleUnix;
       try {
         const { id, media, fallback } = await graphDispatch(post, caption, post._videoPath || null, scheduleUnix);
-        if (id && post.contact) {
+        // Only post the first comment on live posts — for scheduled posts,
+        // the comment is posted later by mav-bridge's fb-reconcile when the
+        // post actually goes live (Facebook rejects comments on unpublished posts).
+        if (id && post.contact && isLive) {
           await postFirstComment(id, FIRST_COMMENT).catch(e =>
             hopLog('facebook-poster→graph', 'warn', `First comment failed: ${e.message}`)
           );

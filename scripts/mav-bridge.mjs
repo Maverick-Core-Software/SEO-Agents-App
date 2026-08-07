@@ -22,7 +22,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createClient } from '@supabase/supabase-js';
-import { checkFacebookToken } from './facebook-poster.mjs';
+import { checkFacebookToken, postFirstComment } from './facebook-poster.mjs';
 import { mediaStatusFor, bucketStatus, isStuck, describeAction, agentFor } from './lib/action-enrich.mjs';
 import { makeAlertStore } from './lib/alert-store.mjs';
 import { sendHermesAlert } from './lib/hermes-alert.mjs';
@@ -50,7 +50,10 @@ const BRIDGE_PORT = parseInt(process.env.MAV_BRIDGE_PORT || '8790');
 const SEO_AGENTS_EXE = process.env.SEO_AGENTS_EXE
   || 'C:\\Users\\carte\\AppData\\Local\\Programs\\Python\\Python312\\Scripts\\seo-agents.exe';
 const PENDING_PROMPT_FILE = path.join(PROJECT_ROOT, 'outputs', 'pending_prompt.json');
-const GBP_POSTER_PATH = path.join(PROJECT_ROOT, 'scripts', 'gbp-poster', 'driver.mjs');
+const GBP_MODE = (process.env.GBP_POSTER || 'api').toLowerCase();
+const GBP_POSTER_PATH = GBP_MODE === 'playwright'
+  ? path.join(PROJECT_ROOT, 'scripts', 'gbp-poster', 'driver.mjs')
+  : path.join(PROJECT_ROOT, 'scripts', 'gbp-api-poster.mjs');
 // GBP is owned by the user-session gbp-worker (Scheduled Task). The service does NO
 // GBP by default. Flip MAV_BRIDGE_GBP to 'on' ONLY as a rollback, and stop gbp-worker
 // first to avoid double-posting. See docs/runbooks/gbp-worker.md.
@@ -574,6 +577,13 @@ async function poll() {
                 .update({ status: 'posted', posted_at: new Date().toISOString() })
                 .eq('id', post.id);
               console.log(`[mav-bridge][fb-reconcile] ${post.post_date} verified + marked posted`);
+              // Post the first comment now that the post is live — this was skipped
+              // at schedule time because Facebook rejects comments on unpublished posts.
+              const FB_FIRST_COMMENT = process.env.FB_FIRST_COMMENT
+                || '📲 Text us at (469) 896-3862 to get a free instant quote — calls welcome too!';
+              postFirstComment(post.platform_post_id, FB_FIRST_COMMENT).catch(e =>
+                console.error(`[mav-bridge][fb-reconcile] First comment failed for ${post.platform_post_id}: ${e.message}`)
+              );
             }
           } catch (e) {
             // Network error — can't confirm. Don't flip the row either way.

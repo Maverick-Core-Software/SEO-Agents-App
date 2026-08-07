@@ -79,9 +79,9 @@ function httpsRequest(url, options, body, _redirects = 0) {
 async function generateVideo(prompt, aspectRatio, durationSeconds) {
   if (!GEMINI_API_KEY) throw new Error('GEMINI_API_KEY not set in environment or .env');
 
-  // Veo models use predictLongRunning (Vertex AI-style endpoint via Gemini API)
+  // Veo models use predictLongRunning (Vertex AI-style endpoint via Gemini API).
+  // Auth: API key via x-goog-api-key header (supports both AIza... and AQ... formats).
   const submitUrl = new URL(`https://generativelanguage.googleapis.com/v1beta/models/${VEO_MODEL}:predictLongRunning`);
-  submitUrl.searchParams.set('key', GEMINI_API_KEY);
 
   const body = {
     instances: [{ prompt }],
@@ -96,7 +96,11 @@ async function generateVideo(prompt, aspectRatio, durationSeconds) {
   console.error(`Submitting video generation job (${VEO_MODEL})...`);
   const submitRes = await httpsRequest(submitUrl.toString(), {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(bodyStr) },
+    headers: {
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(bodyStr),
+      'x-goog-api-key': GEMINI_API_KEY,
+    },
   }, bodyStr);
 
   if (submitRes.error) throw new Error(`Gemini API error: ${submitRes.error.message || JSON.stringify(submitRes.error)}`);
@@ -110,9 +114,11 @@ async function generateVideo(prompt, aspectRatio, durationSeconds) {
     await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
 
     const pollUrl = new URL(`https://generativelanguage.googleapis.com/v1beta/${operationName}`);
-    pollUrl.searchParams.set('key', GEMINI_API_KEY);
 
-    const pollRes = await httpsRequest(pollUrl.toString(), { method: 'GET' });
+    const pollRes = await httpsRequest(pollUrl.toString(), {
+      method: 'GET',
+      headers: { 'x-goog-api-key': GEMINI_API_KEY },
+    });
 
     if (pollRes.error) throw new Error(`Poll error: ${pollRes.error.message || JSON.stringify(pollRes.error)}`);
 
