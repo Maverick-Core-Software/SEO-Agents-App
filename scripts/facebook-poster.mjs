@@ -207,7 +207,15 @@ function parseSchedule(filePath) {
 }
 
 export function parseScheduleText(text) {
-  const blocks = text.split(/\n\s*---\s*\n/).filter(b => b.includes('DAY:'));
+  // Anchor blocks on `DAY:` field lines rather than splitting on `---`:
+  // executor models sometimes put a `---` INSIDE a day block (between the
+  // metadata fields and HOOK/BODY), which would orphan the content from its
+  // DAY marker and yield empty captions.
+  const starts = [];
+  const dayRe = /^\*{0,2}DAY:/gm;
+  let dm;
+  while ((dm = dayRe.exec(text)) !== null) starts.push(dm.index);
+  const blocks = starts.map((s, i) => text.slice(s, i + 1 < starts.length ? starts[i + 1] : text.length));
   return blocks.map(block => {
     // Executor models vary between `**HOOK:** value` (inline) and `**HOOK:**\nvalue`
     // (value on the following lines) — accept both, reading until the next field
@@ -220,7 +228,7 @@ export function parseScheduleText(text) {
       const following = block.slice(m.index + m[0].length).split('\n').slice(1);
       const lines = [];
       for (const line of following) {
-        if (/^\*{0,2}[A-Z_]+:/.test(line.trim()) || /^#{1,6}\s/.test(line.trim())) break;
+        if (/^\*{0,2}[A-Z_]+:/.test(line.trim()) || /^#{1,6}\s/.test(line.trim()) || /^-{3,}$/.test(line.trim())) break;
         lines.push(line);
       }
       return stripMd(lines.join('\n').trim());
@@ -304,8 +312,11 @@ function dateTimeToUnix(dateStr, timeStr) {
 class TokenExpiredError extends Error {}
 
 function isTokenError(graphError) {
-  // Graph error code 190 covers expired/invalid OAuth access tokens.
-  return graphError && (graphError.code === 190 || graphError.type === 'OAuthException');
+  // Graph error codes 190 (invalid/expired OAuth token) and 102 (session
+  // invalidated) are the only true token errors. Facebook labels MANY
+  // unrelated errors with type 'OAuthException' (e.g. 197 "post is empty"),
+  // so type alone must never trigger the regenerate-token advice.
+  return graphError && (graphError.code === 190 || graphError.code === 102);
 }
 
 function tokenErrorMessage(graphError) {
@@ -396,7 +407,9 @@ async function withTokenRetry(label, fn) {
       return await fn();
     } catch (e2) {
       hopLog('facebook-poster→graph', 'error', `${label}: still failing after token refresh`, { detail: e2.message });
-      throw new TokenExpiredError(e2 instanceof TokenExpiredError ? e2.message : tokenErrorMessage({ code: 190, message: e2.message }));
+      // Propagate the real error — a different failure after refresh (e.g.
+      // empty caption) must keep its message, not the regenerate-token advice.
+      throw e2;
     }
   }
 }
@@ -416,6 +429,11 @@ async function graphParse(label, res) {
 }
 
 async function graphPostText(caption, scheduleUnix) {
+  if (!caption || !caption.trim()) {
+    // Graph rejects empty text posts with error 197 — fail fast with the real
+    // reason (a schedule/payload parse that produced no HOOK/BODY) instead.
+    throw new Error('Refusing to post: caption is empty. The post content parse produced no HOOK/BODY — check the schedule/payload format, this is NOT a token problem.');
+  }
   const body = new URLSearchParams({ message: caption, access_token: FB_PAGE_ACCESS_TOKEN });
   if (scheduleUnix) { body.append('published', 'false'); body.append('scheduled_publish_time', String(scheduleUnix)); }
   const res = await fetch(`https://graph.facebook.com/${GRAPH_API_VERSION}/${FB_PAGE_ID}/feed`, { method: 'POST', body });

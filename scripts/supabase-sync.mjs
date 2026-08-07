@@ -66,17 +66,45 @@ function stripMd(str) {
   return (str || '').replace(/\*\*/g, '').trim();
 }
 
+// Field getter tolerant of both executor-model output styles:
+// inline `**KEY:** value` and following-line `**KEY:**\nvalue` (value on the
+// next line(s), read until the next field header or markdown heading).
+// Mirrors parseScheduleText in facebook-poster.mjs.
+function makeFieldGetter(block) {
+  return key => {
+    const m = block.match(new RegExp(`^\\*{0,2}${key}:\\*{0,2}[ \\t]*(.*)$`, 'm'));
+    if (!m) return '';
+    const inline = stripMd(m[1]);
+    if (inline) return inline;
+    const following = block.slice(m.index + m[0].length).split('\n').slice(1);
+    const lines = [];
+    for (const line of following) {
+      if (/^\*{0,2}[A-Z_]+:/.test(line.trim()) || /^#{1,6}\s/.test(line.trim()) || /^-{3,}$/.test(line.trim())) break;
+      lines.push(line);
+    }
+    return stripMd(lines.join('\n').trim());
+  };
+}
+
+// Split schedule text into one block per post, anchored on `DAY:` field lines.
+// Splitting on `---` is unsafe: executor models sometimes put a `---` INSIDE a
+// day block (between the metadata fields and HOOK/BODY), which orphans the
+// content from its DAY marker. Mirrors parseScheduleText in facebook-poster.mjs.
+function splitDayBlocks(text) {
+  const starts = [];
+  const dayRe = /^\*{0,2}DAY:/gm;
+  let m;
+  while ((m = dayRe.exec(text)) !== null) starts.push(m.index);
+  return starts.map((s, i) => text.slice(s, i + 1 < starts.length ? starts[i + 1] : text.length));
+}
+
 function parseFacebookSchedule(text) {
   if (!text) return [];
   // Strip leading ```markdown code fence the LLM sometimes adds
   text = stripCodeFence(text);
-  const blocks = text.split(/\n\s*---\s*\n/).filter(b => /DAY:/i.test(b));
+  const blocks = splitDayBlocks(text);
   return blocks.map(block => {
-    const get = key => {
-      // Handle both plain `KEY: value` and bold `**KEY: value**` formats
-      const m = block.match(new RegExp(`^\\*{0,2}${key}:\\*{0,2}\\s*(.+?)\\s*\\*{0,2}\\s*$`, 'm'));
-      return m ? stripMd(m[1]) : '';
-    };
+    const get = makeFieldGetter(block);
     return {
       platform: 'facebook',
       day: parseInt(get('DAY')) || 0,
@@ -100,12 +128,9 @@ function parseFacebookSchedule(text) {
 
 function parseGbpSchedule(text) {
   if (!text) return [];
-  const blocks = text.split(/\n\s*---\s*\n/).filter(b => b.includes('DAY:'));
+  const blocks = splitDayBlocks(text);
   return blocks.map(block => {
-    const get = key => {
-      const m = block.match(new RegExp(`^\\*{0,2}${key}:\\*{0,2}\\s*(.+)$`, 'm'));
-      return m ? stripMd(m[1]) : '';
-    };
+    const get = makeFieldGetter(block);
     return {
       platform: 'gbp',
       day: parseInt(get('DAY')) || 0,

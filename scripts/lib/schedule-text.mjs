@@ -18,8 +18,12 @@ export function normalizePhotoFile(raw) {
   const v = cleanField(raw);
   if (!v) return '';
   if (BLANK_RE.test(v)) return '';
-  // Defensive: a leaked prompt or label is not a filename. Only accept values
-  // that look like an image file (have a known image extension).
-  if (!IMAGE_EXT_RE.test(v)) return '';
-  return v;
+  if (IMAGE_EXT_RE.test(v)) return v;
+  // The agent sometimes annotates the filename — `IMG_2329.JPG *(best-effort
+  // pick — curator to confirm)*` — so a bare extension check at end-of-string
+  // would drop the photo entirely. Pull the first filename token out instead.
+  // Defensive: a leaked prompt or label is not a filename — values with no
+  // image extension anywhere are still rejected.
+  const m = v.match(/[\w][\w.\- ]*?\.(jpe?g|png|gif|webp|bmp|tiff?)\b/i);
+  return m ? m[0].trim() : '';
 }

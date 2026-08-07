@@ -508,18 +508,53 @@ def parse_execution_actions(run_id: str = "") -> list[dict[str, Any]]:
     return actions
 
 
+def _block_field(cleaned: str, label: str) -> str | None:
+    """Read a `LABEL:` field from a post block.
+
+    Executor models vary between `LABEL: value` (inline) and `LABEL:` with the
+    value on the following line(s) — accept both, reading until the next field
+    header or markdown heading. Mirrors parseScheduleText in facebook-poster.mjs.
+    """
+    match = re.search(rf"^{label}:[ \t]*(.*)$", cleaned, flags=re.MULTILINE)
+    if not match:
+        return None
+    inline = match.group(1).strip()
+    if inline:
+        return inline
+    following = cleaned[match.end():].split("\n")[1:]
+    lines: list[str] = []
+    for line in following:
+        stripped = line.strip()
+        if re.match(r"^[A-Z_]+:", stripped) or re.match(r"^#{1,6}\s", stripped) or re.match(r"^-{3,}$", stripped):
+            break
+        lines.append(line)
+    value = "\n".join(lines).strip()
+    return value or None
+
+
+def _split_day_blocks(text: str) -> list[str]:
+    """Split schedule text into one block per post, anchored on `DAY:` lines.
+
+    Splitting on `---` is unsafe: executor models sometimes put a `---` INSIDE
+    a day block (between the metadata fields and HOOK/BODY), which orphans the
+    content from its DAY marker. Mirrors parseScheduleText in facebook-poster.mjs.
+    """
+    starts = [m.start() for m in re.finditer(r"^\*{0,2}DAY:", text, flags=re.MULTILINE)]
+    ends = starts[1:] + [len(text)]
+    return [text[s:e] for s, e in zip(starts, ends)]
+
+
 def _parse_gbp_post_blocks(text: str) -> list[dict[str, str]]:
-    blocks = re.split(r"^\s*---\s*$", text, flags=re.MULTILINE)
     posts: list[dict[str, str]] = []
-    for block in blocks:
+    for block in _split_day_blocks(text):
         cleaned = block.replace("**", "")
-        if "DAY:" not in cleaned or "HEADLINE:" not in cleaned:
+        if "HEADLINE:" not in cleaned:
             continue
         post: dict[str, str] = {}
         for label in ("DAY", "DATE", "SERVICE", "TOPIC", "TREND_TIE", "HEADLINE", "BODY", "CAPTION", "PHOTO_FILE", "CTA", "STATUS"):
-            match = re.search(rf"^{label}:\s*(.+)", cleaned, flags=re.MULTILINE)
-            if match:
-                post[label.lower()] = match.group(1).strip()
+            value = _block_field(cleaned, label)
+            if value is not None:
+                post[label.lower()] = value
         if post:
             posts.append(post)
     return posts
@@ -577,17 +612,16 @@ def parse_gbp_post_actions(run_id: str = "") -> list[dict[str, Any]]:
 
 
 def _parse_facebook_post_blocks(text: str) -> list[dict[str, str]]:
-    blocks = re.split(r"^\s*---\s*$", text, flags=re.MULTILINE)
     posts: list[dict[str, str]] = []
-    for block in blocks:
+    for block in _split_day_blocks(text):
         cleaned = block.replace("**", "")
-        if "DAY:" not in cleaned or "HOOK:" not in cleaned:
+        if "HOOK:" not in cleaned:
             continue
         post: dict[str, str] = {}
         for label in ("DAY", "DATE", "TYPE", "SERVICE", "HOOK", "BODY", "CTA", "HASHTAGS", "PHOTO_FILE", "VIDEO_PROMPT", "STATUS"):
-            match = re.search(rf"^{label}:\s*(.+)", cleaned, flags=re.MULTILINE)
-            if match:
-                post[label.lower()] = match.group(1).strip()
+            value = _block_field(cleaned, label)
+            if value is not None:
+                post[label.lower()] = value
         if post:
             posts.append(post)
     return posts

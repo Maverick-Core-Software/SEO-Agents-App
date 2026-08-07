@@ -15,6 +15,14 @@ assert.equal(normalizePhotoFile(null), '');
 assert.equal(normalizePhotoFile('VIDEO_PROMPT: a cinematic shot of sparks'), '');
 // plain filename passes through
 assert.equal(normalizePhotoFile('photo.png'), 'photo.png');
+// annotated filename: extract the file token, drop the curator note
+assert.equal(
+  normalizePhotoFile('`IMG_2329.JPG` *(best-effort pick — panel-related; curator to confirm or swap)*'),
+  'IMG_2329.JPG');
+// annotation mentioning alternate files keeps the FIRST (primary) filename
+assert.equal(
+  normalizePhotoFile('`2026-06-12-serving-dallas-plano-rowlett.JPG` *(curator to confirm, e.g. `IMG_2702.JPG` or `IMG_3733.JPG`)*'),
+  '2026-06-12-serving-dallas-plano-rowlett.JPG');
 // absolute windows path preserved
 assert.equal(normalizePhotoFile('`E:\\Media\\Grizzly\\Curated\\x.jpg`'), 'E:\\Media\\Grizzly\\Curated\\x.jpg');
 // cleanField strips bold + backticks but keeps prose
