@@ -6,7 +6,7 @@ import json
 import os
 import re
 import shutil
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from crewai import Agent, Crew, LLM, Process, Task
@@ -966,6 +966,30 @@ def build_poster_crew(
 # Facebook Schedule Crew  (seo-agents facebook-schedule)
 # ---------------------------------------------------------------------------
 
+# Facebook day numbers are weekdays, not offsets: 1=Mon, 3=Wed, 5=Fri, 6=Sat.
+FB_DAY_WEEKDAY = {1: 0, 3: 2, 5: 4, 6: 5}
+
+
+def fb_week_dates(start_date: str = "") -> dict:
+    """Map each Facebook day number to a real calendar date.
+
+    The weekly run fires on a Friday, so `start_date` is that Friday — but the
+    posting week is Mon/Wed/Fri/Sat of the week that follows. The prompt used
+    to hand the model a Friday START DATE alongside "POSTING DAYS: Mon/Wed/
+    Fri/Sat" and let it reconcile the two; on 2026-08-07 it resolved that by
+    calling Friday "Monday, August 7" and shipping the whole week three days
+    early, on top of the previous week's still-scheduled posts. Compute the
+    dates here so the model never does calendar math.
+    """
+    try:
+        anchor = date.fromisoformat(start_date) if start_date else date.today()
+    except ValueError:
+        anchor = date.today()
+    # Monday on or after the anchor (a Monday run schedules that same Monday).
+    monday = anchor + timedelta(days=(7 - anchor.weekday()) % 7)
+    return {day: monday + timedelta(days=wd) for day, wd in FB_DAY_WEEKDAY.items()}
+
+
 def build_facebook_crew(
     start_date: str = "",
     days: int = 7,
@@ -1001,8 +1025,17 @@ def build_facebook_crew(
     elif month in [11, 12, 1, 2]:
         seasonal_hint = "DFW winter: emphasize heating circuits, generator prep, ice storm readiness."
 
+    week = fb_week_dates(start_date)
+    date_table = "\n".join(
+        f"  DAY {d} -> DATE: {week[d].isoformat()} "
+        f"({week[d]:%A}, {week[d]:%B} {week[d].day}, {week[d].year})"
+        for d in sorted(week)
+    )
+
     fb_context = (
-        f"START DATE: {start_date or 'Next business day'}\n"
+        "EXACT POSTING DATES — copy these verbatim into the DATE field. Do NOT "
+        "compute, shift, or re-label them, and do not use today's date:\n"
+        f"{date_table}\n\n"
         f"DAYS TO SCHEDULE: 4 (reduced from 7 to optimize for algorithm reach)\n\n"
         "POSTING DAYS: 4 posts per week on Mon (Day 1), Wed (Day 3), Fri (Day 5), Sat (Day 6). "
         "Day 1 is VIDEO (Reel). Day 3 is PHOTO or CAROUSEL. Day 5 is VIDEO (Reel). Day 6 is PHOTO or TEXT. "
@@ -1056,7 +1089,8 @@ def build_facebook_crew(
     fb_task = Task(
         description=(
             f"{fb_context}\n\n"
-            f"Build a 4-day Facebook posting schedule starting from {start_date or 'the next business day'}.\n\n"
+            f"Build a 4-post Facebook schedule for the week of {week[1].isoformat()} "
+            "using the EXACT POSTING DATES above — one post per listed DAY, no others.\n\n"
             f"{DAY_TOPIC_BINDING_RULE}\n"
             "TONE RULES (mandatory):\n"
             "- HOOK must be the first line — make it impossible to scroll past (question, bold claim, or shocking stat)\n"
@@ -1115,8 +1149,8 @@ def build_facebook_crew(
             "A later deterministic step will refine PHOTO_FILE using service-matched curated photos, "
             "so a best-effort topical pick is fine; leave blank if nothing fits.\n\n"
             "Use the following format for each post (one per day, separated by ---):\n\n"
-            "DAY: [number]\n"
-            "DATE: [YYYY-MM-DD]\n"
+            "DAY: [1, 3, 5, or 6]\n"
+            "DATE: [the exact date listed for this DAY in EXACT POSTING DATES above]\n"
             "TYPE: [video|photo|text|carousel|poll|skip]\n"
             "SERVICE: [service area this post covers]\n"
             "POST_GOAL: [engagement|education|social_proof|entertainment]\n"
