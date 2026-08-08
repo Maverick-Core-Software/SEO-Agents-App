@@ -110,12 +110,44 @@ facebook-poster):
        3.5 s → ArrowDown → Enter. "United States" in the list is the country
        group HEADER, not a chip — only actual chips have Remove buttons.
        Radius slider (`aria-label` "Change radius"): focus + ArrowLeft/Right
-       to **15 mi**.
+       to **15 mi** — it defaults to **25 mi**, so this is never a no-op.
+       Whether "United States" is a removable chip varies: on 8/07 it was one,
+       and adding Dallas replaced it automatically with no explicit remove.
+       Confirm the final chip list is exactly the location you intended.
      - Interests: suggested chips under Detailed targeting are sometimes
        directly clickable (`role=button` with the interest text); otherwise
        search box + keyboard (fill → wait 3 s → ArrowDown → Enter). Interest
        *exclusion* is unavailable in the boost UI — skip "Exclude" hints.
-     - Save audience.
+     - **VERIFY THE CHIP after every keyboard add — never trust blind
+       ArrowDown+Enter.** The dropdown does not stay empty on a no-match term;
+       it falls back to unrelated *behavior/demographic* options and Enter
+       silently selects one. Real case (8/07): the schedule asked for
+       "Portable generators", FB had no such interest, and ArrowDown+Enter
+       added **"Facebook access (mobile): all mobile devices"** — a device
+       restriction nobody asked for, which would have cut every desktop user
+       from the audience.
+
+       After each add, re-enumerate the chips and confirm the new one is a
+       plausible match for the term you typed:
+       ```js
+       const chips = async () => (await Promise.all(
+         (await page.getByRole('button').all()).map(async (el) =>
+           (await el.getAttribute('aria-label').catch(() => '')) || '')
+       )).filter((al) => /^Remove/i.test(al));
+
+       const before = await chips();
+       /* fill → wait 3 s → ArrowDown → Enter */
+       const added = (await chips()).filter((c) => !before.includes(c));
+       // 0 added  = no match; fine, move on (don't retry — retry re-triggers the fallback)
+       // 1 added  = check it loosely matches the term; if not, click its Remove and move on
+       ```
+       Terms that produced no match are **not** an error — drop them and note
+       it. A wrong chip that survives to Publish is the real failure, and it is
+       invisible in the Payment summary, so nothing downstream will catch it.
+       The same trap applies to the Locations box.
+     - Save audience (`role=button`, name **"Save audience"** — the dialog has
+       no plain "Save"). Then re-read "Audience details" on the main composer
+       and confirm location, age range, and interests all read back correctly.
    - **Duration:** click "Choose end date" (radio labels are empty — click the
      text node), then set the `input[type=number]` Days field (defaults to 7!)
      to the schedule's days via triple-click + fill + Tab.
@@ -153,6 +185,18 @@ was created before deciding anything.
 
 ## History
 
+- 2026-08-07: Day 1 Generator Interlock (slideshow, posted as a reel object —
+  post `108252941997164_1029168739903021`), $25×2d=$50, published, In review.
+  Notes: (a) the morning run correctly **halted** — the Day 1 asset was still
+  being produced and the 9 AM slot held a carried-over EV-charger reel, so the
+  Step 3 verify-live gate did its job; (b) the crew's schedule dropped
+  `**Start Date:**` (now `**Week of August 7–12, 2026**`), which failed the
+  ledger's week parse *closed* until the parser gained fallbacks; (c) **funds
+  gate hit** — prepaid was $25.29 against a $50 total, and Carter explicitly
+  authorized the Visa to cover the ~$24.71 remainder in chat. Rule 5 still
+  stands: an unattended run must escalate here, not self-authorize the card;
+  (d) the Detailed-targeting mis-selection that produced the VERIFY THE CHIP
+  step above.
 - 2026-08-01: Day 1 Panel Upgrade Reel, $25×2d=$50, published manually by
   Claude with Carter's chat approval (ledger seeded retroactively).
 - 2026-07-22: Day 1 generator post $25×1d published; Day 5 one-shot scheduled
