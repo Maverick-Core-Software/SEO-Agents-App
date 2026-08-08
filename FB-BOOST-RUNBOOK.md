@@ -38,8 +38,20 @@ If the output is `eligible: false`, exit quietly — no browser, no SMS. There i
 nothing to boost today. This replaces the old approach of blindly running daily
 and hoping the schedule had work.
 
-If `eligible: true`, the output includes `pick` (key, date, daily, days, total).
-Proceed to Step 2 with that pick.
+If `eligible: true`, the output includes `pick` (key, date, daily, days, total,
+and `source`: `summary` when the amounts came from the authoritative BOOST
+BUDGET SUMMARY, `post-fields` when no summary section exists). Proceed to
+Step 2 with that pick.
+
+`eligible` already cross-checks the summary and **fails closed** — it will
+return `eligible: false` with a "human review required" reason when the summary
+is unparseable, or when the crew deferred the allocation to a judgement call
+(either-or wording like "whichever performs better", or YES rows totalling more
+than the cap — the week of 8/07 did exactly this). In those cases the crew has
+NOT made a machine-followable decision: do not boost, and do not try to pick a
+winner yourself. Send Carter one SMS noting the schedule needs his call, then
+stop. Only send that SMS once per week — check the ledger entries first so a
+daily re-run doesn't text him repeatedly about the same schedule.
 
 The old `status` check (below) is still useful for inspecting the overall budget
 state, but `eligible` is the gate that decides whether the rest of the runbook
@@ -54,10 +66,13 @@ Read `outputs/facebook_posting_schedule.md`:
 - Per-post `BOOST*` fields give candidates (`BOOST: yes:$N`, amount, duration,
   targeting).
 - The **BOOST BUDGET SUMMARY section at the bottom is authoritative** and
-  overrides per-post fields. The crew often writes a "Revised decision" /
-  "Corrected Allocation" there when per-post fields conflict with the $50 cap
-  (e.g. week of 7/31: two posts each marked $25×2d, summary gave the full $50
-  to Day 1 and $0 to Day 3). Follow the summary's final allocation.
+  overrides per-post fields — both the yes/no decision AND the amounts. The
+  crew often writes a "Revised decision" / "Corrected Allocation" there when
+  per-post fields conflict with the $50 cap (e.g. week of 7/31: two posts each
+  marked $25×2d, summary gave the full $50 to Day 1 and $0 to Day 3). Follow
+  the summary's final allocation. `eligible` enforces this in code, so its
+  `pick` already reflects the summary; use the pick's amounts, not the
+  per-post fields.
 - `BOOST: maybe` or blank amounts = NOT a boost instruction. Skip.
 - Cross-check `entries` from ledger status so you never re-boost a post
   (entries carry `post_id` and `key`).

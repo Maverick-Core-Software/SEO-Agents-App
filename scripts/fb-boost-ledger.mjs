@@ -30,7 +30,10 @@ import { sendHermesAlert } from './lib/hermes-alert.mjs';
 
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const LEDGER_PATH = path.join(PROJECT_ROOT, 'outputs', 'fb-boost-ledger.json');
-const SCHEDULE_PATH = path.join(PROJECT_ROOT, 'outputs', 'facebook_posting_schedule.md');
+// Overridable so the summary/eligibility logic can be exercised against
+// fixtures without touching the live schedule other processes read.
+const SCHEDULE_PATH = process.env.FB_SCHEDULE_PATH
+  || path.join(PROJECT_ROOT, 'outputs', 'facebook_posting_schedule.md');
 
 const envPath = path.join(PROJECT_ROOT, '.env');
 if (fs.existsSync(envPath)) {
@@ -71,6 +74,56 @@ function scheduleWeekStart() {
   // Fallback: extract from first DAY block's DATE field
   m = text.match(/DATE:\s*(\d{4}-\d{2}-\d{2})/);
   return m ? m[1] : null;
+}
+
+// The BOOST BUDGET SUMMARY section at the bottom of the schedule is the
+// AUTHORITATIVE allocation — the crew writes per-post BOOST fields first, then
+// reconciles them against the weekly cap here (often over-allocating per-post
+// and resolving it in the summary prose). Per-post fields alone have twice
+// greenlit posts the summary had zeroed out, so `eligible` must obey this.
+//
+// Returns { present, rows: Map<dayNum, {decision, daily, days, total}>, conditional }
+// - decision: 'yes' | 'no' | 'maybe'
+// - conditional: the summary allocates more than the cap and resolves it with
+//   prose ("whichever performs better", "— OR —"). Not machine-decidable.
+function parseSummary(text) {
+  const secM = text.match(/##\s*BOOST BUDGET SUMMARY([\s\S]*?)(?=\n## |\n?$)/i);
+  if (!secM) return { present: false, rows: new Map(), conditional: false };
+  const section = secM[1];
+  const rows = new Map();
+
+  for (const line of section.split(/\r?\n/)) {
+    if (!line.trim().startsWith('|')) continue;
+    const cells = line.split('|').map((c) => c.trim());
+    const dayM = cells.find((c) => /^\**Day\s+\d+/i.test(c))?.match(/Day\s+(\d+)/i);
+    if (!dayM) continue;
+    const day = Number(dayM[1]);
+    const joined = cells.join(' | ');
+    // Decision keyword, ignoring the day/service cells it might appear inside.
+    let decision = null;
+    if (/\bNO\b/.test(joined.replace(/\bNOTE\b/gi, ''))) decision = 'no';
+    if (/\bMAYBE\b/i.test(joined)) decision = 'maybe';
+    if (/\bYES\b/i.test(joined)) decision = 'yes';
+    if (!decision) continue;
+    const dailyM = joined.match(/\$(\d+(?:\.\d+)?)\s*\/?\s*day/i);
+    const daysM = joined.match(/(\d+)\s*days?\b/i);
+    rows.set(day, {
+      decision,
+      daily: dailyM ? Number(dailyM[1]) : null,
+      days: daysM ? Number(daysM[1]) : null,
+    });
+  }
+
+  // Conditional/either-or language, or a YES total that exceeds the cap, means
+  // the crew deferred the choice to a human judgement call (e.g. "spend it on
+  // whichever post performs better in the first 24 hours").
+  const yesTotal = [...rows.values()]
+    .filter((r) => r.decision === 'yes' && r.daily && r.days)
+    .reduce((sum, r) => sum + r.daily * r.days, 0);
+  const conditional = /—\s*OR\s*—|\bOR\b\s*—|whichever|if .* underperform|shift the \$|hold .* boost|only one boost/i
+    .test(section) || yesTotal > CAP;
+
+  return { present: true, rows, conditional };
 }
 
 function parseArgs(argv) {
@@ -218,6 +271,27 @@ if (cmd === 'status') {
   const entries = weekEntries(ledger, week);
   const today = new Date().toISOString().slice(0, 10);
 
+  // Cross-check against the authoritative summary. Fail CLOSED: an unreadable
+  // or human-deferred summary must never auto-spend.
+  const summary = parseSummary(text);
+  if (summary.present && summary.rows.size === 0) {
+    console.log(JSON.stringify({
+      eligible: false,
+      reason: 'BOOST BUDGET SUMMARY present but no decisions parsed — human review required',
+      week,
+    }));
+    process.exit(0);
+  }
+  if (summary.conditional) {
+    console.log(JSON.stringify({
+      eligible: false,
+      reason: 'summary defers the allocation to a human judgement call (conditional/either-or wording or over-cap YES total) — human review required',
+      week,
+      summary: Object.fromEntries(summary.rows),
+    }));
+    process.exit(0);
+  }
+
   // Parse each post block for DATE + BOOST fields (handles both **DATE:** and DATE: formats)
   const blocks = text.split(/\n(?=## DAY \d)/);
   const candidates = [];
@@ -227,12 +301,21 @@ if (cmd === 'status') {
     const postDate = dateM[1];
     const boostM = block.match(/\*{0,2}BOOST:\*{0,2}\s*yes:\$?(\d+)/i);
     if (!boostM) continue;
-    const daily = Number(boostM[1]);
-    const durM = block.match(/\*{0,2}BOOST_DURATION:\*{0,2}\s*(\d+)\s*days?/i);
-    const days = durM ? Number(durM[1]) : 2;
-    const total = daily * days;
     const dayM = block.match(/\*{0,2}DAY:\*{0,2}\s*(\d+)/);
     const svcM = block.match(/\*{0,2}SERVICE:\*{0,2}\s*(.+)/);
+
+    // Summary overrides the per-post fields, both decision and amounts.
+    const dayNum = dayM ? Number(dayM[1]) : null;
+    const sRow = summary.present && dayNum !== null ? summary.rows.get(dayNum) : null;
+    if (summary.present) {
+      // A post the summary didn't greenlight is not a boost instruction.
+      if (!sRow || sRow.decision !== 'yes') continue;
+    }
+
+    const durM = block.match(/\*{0,2}BOOST_DURATION:\*{0,2}\s*(\d+)\s*days?/i);
+    const daily = sRow?.daily ?? Number(boostM[1]);
+    const days = sRow?.days ?? (durM ? Number(durM[1]) : 2);
+    const total = daily * days;
     const key = `day${dayM?.[1] || '?'}-${(svcM?.[1] || 'unknown').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')}`;
 
     // Already handled?
@@ -240,7 +323,9 @@ if (cmd === 'status') {
     // Date not reached yet?
     if (postDate > today) continue;
 
-    candidates.push({ key, date: postDate, daily, days, total, service: svcM?.[1] || '' });
+    candidates.push({
+      key, date: postDate, daily, days, total, service: svcM?.[1] || '', source: sRow ? 'summary' : 'post-fields',
+    });
   }
 
   if (!candidates.length) {
