@@ -8,14 +8,20 @@ By leveraging project **`Hermes Agent`** (`exalted-slice-502415-s0` / `108430184
 
 ---
 
-## ✅ ACTIVE — status as of 2026-08-06
+## 🟡 STILL GATED — status as of 2026-08-09 (correcting the 8/06 entry)
 
-**Google Business Profile Support confirmed project `exalted-slice-502415-s0` (#1084301840332) is already on the allowlist.**
+**The 8/06 claim that the project was "already on the allowlist" was a misreading of Google support's reply.** Support said there was *already a project* (associated with the account/case) — a project existing is not API approval. `node scripts/gbp-access-probe.mjs` on 2026-08-09 shows the project is still not approved:
 
-### Status Overview
-* `GBP_POSTER` default switched to `api` (`scripts/gbp-api-poster.mjs`).
-* All required APIs (`mybusinessaccountmanagement`, `mybusinessbusinessinformation`, `businessprofileperformance`, `mybusinessqanda`, `mybusinessverifications`) enabled on project `exalted-slice-502415-s0`.
-* Legacy Playwright automation (`scripts/gbp-poster/driver.mjs`) decommissioned in favor of direct REST API integration.
+| surface | result | meaning |
+|---|---|---|
+| accountmanagement / businessinformation / performance / qanda / verifications v1 | 429 `quota_limit=0` | enabled in console, unapproved |
+| `mybusiness.googleapis.com/v4` (incl. `$discovery`) | **404** | gated — not allowlisted |
+
+### Actual status
+* `GBP_POSTER` still defaults to **`playwright`** (`scripts/gbp-worker.mjs:47`) and must stay there until a live v4 call returns 200. The 8/06 "default switched to api / Playwright decommissioned" bullets were aspirational — neither is true in code, and `scripts/gbp-poster/driver.mjs` remains the active engine.
+* Progress since 7/27: performance / qanda / verifications moved from `403 SERVICE_DISABLED` to `429 quota=0`, i.e. all five APIs are now **enabled in the console**. Enabling is self-serve; it is not approval. Local Posts exist only on legacy v4, which still 404s.
+* Basic-access application: case **`2-5921000040991`** (filed 2026-07-27). If the "already a project" reply was support's *answer* to that case rather than a side remark, the case may be effectively closed without a grant — worth a follow-up asking explicitly for **basic access approval for project #1084301840332**, since quota remains 0.
+* Re-check with `node scripts/gbp-access-probe.mjs`; flip `GBP_POSTER=api` only after it verdicts approved.
 
 ---
 
