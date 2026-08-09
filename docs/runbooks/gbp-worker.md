@@ -58,12 +58,11 @@ healthy. Real posting only happens when there are approved/scheduled `gbp` rows.
 
 ## Re-authenticate the Google session
 
-When a GBP post fails with `session_expired` (you'll get an iMessage/email via
-mav-bridge's fault detection), re-auth interactively:
+When a GBP post fails with authentication errors (e.g. `invalid_grant`), re-auth via OAuth:
 
-    node "C:\Users\carte\.claude\skills\gbp-poster\driver.mjs" --auth
+    node scripts/authorize-gbp.mjs
 
-Log into Google Business Profile in the window that opens, then close it.
+Log into the Google Business Profile owner account (`carterbarns@grizzlyelectrical.net`) in the browser tab that opens to refresh `C:\Users\carte\gmail-multi\tokens\grizzly-gbp.json`.
 
 ## Rollback (put GBP back on the service)
 
