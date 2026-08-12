@@ -100,11 +100,11 @@ async function graphCreateScheduledPhoto(photoPath, caption, scheduleUnix) {
   return json.id;
 }
 
-// ── Supabase lookup (post_id for a given day) ───────────────────────────────
+// ── Supabase state ──────────────────────────────────────────────────────────
 
-async function lookupSupabasePostId(day) {
+async function lookupSupabasePost(day) {
   if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) return null;
-  const url = `${SUPABASE_URL}/rest/v1/weekly_posts?select=platform_post_id,post_date`
+  const url = `${SUPABASE_URL}/rest/v1/weekly_posts?select=id,platform_post_id,post_date,status`
     + `&platform=eq.facebook&status=in.(posted,scheduled)&day=eq.${day}&post_date=gte.2026-07-01`
     + `&order=created_at.desc&limit=1`;
   try {
@@ -117,12 +117,43 @@ async function lookupSupabasePostId(day) {
     });
     if (!res.ok) { hopLog('warn', `Supabase lookup for day ${day} returned ${res.status}`); return null; }
     const rows = await res.json();
-    const pid = rows?.[0]?.platform_post_id;
-    return pid || null;
+    return rows?.[0]?.id && rows[0].platform_post_id ? rows[0] : null;
   } catch (e) {
     hopLog('warn', `Supabase lookup failed for day ${day}: ${e.message}`);
     return null;
   }
+}
+
+async function updateSupabaseReplacement(row, oldPostId, newPostId, deleted) {
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
+    throw new Error('Replacement created, but Supabase credentials are not configured; platform_post_id was not updated');
+  }
+  const url = `${SUPABASE_URL}/rest/v1/weekly_posts`
+    + `?id=eq.${encodeURIComponent(row.id)}`
+    + `&platform=eq.facebook`
+    + `&platform_post_id=eq.${encodeURIComponent(oldPostId)}`;
+  const body = {
+    platform_post_id: newPostId,
+    status: 'scheduled',
+    error: deleted ? null : `Replacement ${newPostId} created, but old post ${oldPostId} could not be deleted`,
+    updated_at: new Date().toISOString(),
+  };
+  const res = await fetch(url, {
+    method: 'PATCH',
+    headers: {
+      apikey: SUPABASE_SERVICE_KEY,
+      Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
+      'Content-Type': 'application/json',
+      Prefer: 'return=representation',
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`Supabase replacement update returned ${res.status}: ${(await res.text()).slice(0, 240)}`);
+  const rows = await res.json();
+  if (!Array.isArray(rows) || rows.length !== 1 || rows[0].platform_post_id !== newPostId) {
+    throw new Error('Supabase replacement update matched no row; refusing to claim the database is synchronized');
+  }
+  return rows[0];
 }
 
 // ── Main ────────────────────────────────────────────────────────────────────
@@ -144,8 +175,9 @@ async function fixDay(day) {
   const caption = buildCaption(post);
 
   // 2. Look up the old FB post id
-  const oldPostId = await lookupSupabasePostId(day);
-  if (!oldPostId) throw new Error(`Day ${day}: no platform_post_id in Supabase — pass --id to target manually`);
+  const supabasePost = await lookupSupabasePost(day);
+  if (!supabasePost) throw new Error(`Day ${day}: no platform_post_id in Supabase — pass --id to target manually`);
+  const oldPostId = supabasePost.platform_post_id;
 
   // 3. Fetch the old post's scheduled_publish_time
   const oldPost = await graphGet(oldPostId, 'id,scheduled_publish_time,is_published');
@@ -176,6 +208,11 @@ async function fixDay(day) {
   const deleted = await graphDelete(oldPostId);
   hopLog(deleted ? 'info' : 'warn', `Day ${day}: delete old ${oldPostId} → ${deleted ? 'success' : 'FAILED (manual cleanup needed — duplicate scheduled post)'}`);
 
+  // Keep the database pointer in lockstep with the Graph object. Without this,
+  // the daily reconciler checks the deleted old ID and raises a false failure.
+  await updateSupabaseReplacement(supabasePost, oldPostId, newId, deleted);
+  hopLog('info', `Day ${day}: Supabase platform_post_id updated to ${newId}`);
+
   return { day, status: 'fixed', oldPostId, newPostId: newId, scheduleUTC, photo: photoPath, deleted };
 }
 
@@ -202,10 +239,9 @@ async function main() {
   console.log('\n=== Result ===');
   console.log(JSON.stringify(results, null, 2));
 
-  // Print new IDs clearly for the Supabase update step
   const fixed = results.filter(r => r.status === 'fixed');
   if (fixed.length) {
-    console.log('\nNew post IDs (update Supabase weekly_posts.platform_post_id):');
+    console.log('\nReplacement IDs recorded in Supabase:');
     for (const r of fixed) console.log(`  Day ${r.day}: ${r.newPostId} (was ${r.oldPostId})`);
   }
 }
