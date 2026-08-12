@@ -140,6 +140,11 @@ Use the **"Log Job Photos"** iOS Shortcut. Build it following the guide at
 photos, and they upload to Drive with unique timestamp-prefixed filenames. The Friday
 08:25 scheduled sync pulls them into the local cache automatically.
 
+If the originals are already in Google Photos and not on the phone's share sheet,
+use `docs/ingestion/google-photos-picker.md` and run
+`node scripts/google-photos-picker-import.mjs`. Google requires a user selection
+through the Picker API; an unattended full-library album scan is no longer supported.
+
 ### Prerequisite: Drive for Desktop
 
 The `sync-photos-from-drive.mjs` step reads from `H:\My Drive\GBP Photos`, which is the
