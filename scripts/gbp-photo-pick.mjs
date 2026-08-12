@@ -40,6 +40,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { normalizePhotoFile } from './lib/schedule-text.mjs';
+import {
+  derivePostServiceType,
+  serviceSlug,
+  loadPhotoSelectionManifest,
+} from './lib/photo-selection.mjs';
 
 // heic-convert internally imports its own package.json, which Node ESM rejects
 // without an import attribute ("needs an import attribute of type: json").
@@ -81,6 +86,8 @@ const LOCAL_CACHE = process.env.GBP_PHOTOS_LOCAL_CACHE
 const PHOTOS_FOLDER = LOCAL_CACHE; // what discovery actually scans
 const CURATED_FOLDER = process.env.GBP_CURATED_FOLDER || 'E:\\Media\\Grizzly\\Curated';
 const CACHE_FILE = process.env.GBP_PHOTO_CACHE || path.join(PROJECT_ROOT, 'state', 'photo-cache.json');
+const SELECTION_MANIFEST_FILE = process.env.GBP_PHOTO_SELECTION_MANIFEST
+  || path.join(PROJECT_ROOT, 'state', 'photo-selection-manifest.json');
 const SCHEDULE_FILE = path.join(PROJECT_ROOT, 'outputs', 'gbp_posting_schedule.md');
 const MIN_SCORE = parseInt(process.env.GBP_MIN_PHOTO_SCORE || '60');
 const SUPPORTED_EXTS = new Set(['.jpg', '.jpeg', '.png', '.heic', '.heif', '.webp']);
@@ -267,40 +274,13 @@ Reply ONLY with JSON: {"score":<0-100>,"service_type":"<type>","tags":["tag1"],"
   }
 }
 
-// ── Service type matching ──────────────────────────────────────────────────
-
-const SERVICE_TYPE_KEYWORDS = {
-  panel: ['panel', 'breaker', 'main panel', 'subpanel', 'electrical panel', 'box'],
-  'ev-charger': ['ev', 'charger', 'electric vehicle', 'level 2', 'charging station', 'tesla'],
-  lighting: ['light', 'fixture', 'recessed', 'ceiling fan', 'dimmer', 'lamp', 'led', 'illuminat'],
-  wiring: ['wiring', 'wire', 'conduit', 'romex', 'junction', 'rewir'],
-  outlet: ['outlet', 'gfci', 'receptacle', 'plug', 'usb', 'circuit'],
-  generator: ['generator', 'standby', 'backup power', 'transfer switch', 'inlet box', 'interlock', 'whole-home generator'],
-};
-
-function derivePostServiceType(post) {
-  const text = `${post.service} ${post.topic} ${post.headline} ${post.body || ''}`.toLowerCase();
-  for (const [type, keywords] of Object.entries(SERVICE_TYPE_KEYWORDS)) {
-    if (keywords.some(kw => text.includes(kw))) return type;
-  }
-  return 'other';
-}
-
-function serviceSlug(service) {
-  return (service || 'electrical')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 30);
-}
-
 // ── Photo discovery ────────────────────────────────────────────────────────
 
 function isLikelyImage(filePath) {
   try {
-    const buf = Buffer.alloc(4);
+    const buf = Buffer.alloc(12);
     const fd = fs.openSync(filePath, 'r');
-    fs.readSync(fd, buf, 0, 4, 0);
+    fs.readSync(fd, buf, 0, buf.length, 0);
     fs.closeSync(fd);
     // JPEG, PNG, WebP, HEIC (ftyp box), GIF
     if (buf[0] === 0xFF && buf[1] === 0xD8) return true;
@@ -365,7 +345,7 @@ ${catalogText}
 Rules:
 - Match service_type first: panel post → panel photo, ev-charger post → ev-charger photo, etc.
 - Within matching type, prefer higher score.
-- Only use a mismatched type if zero correct-type photos exist.
+- Never use a mismatched type. If no correct-type photo exists, return null for that post.
 
 Reply ONLY with a JSON array of ${posts.length} photo numbers (1-based), one per post:
 [photoNum1, photoNum2, ...]`,
@@ -542,34 +522,48 @@ async function main() {
       const postType = derivePostServiceType(post);
       const pick =
         usable.find(p => !used.has(p.filename) && p.service_type === postType) ||
-        usable.find(p => !used.has(p.filename)) ||
         null;
       if (pick) used.add(pick.filename);
       return pick;
     });
-    console.warn(`Fallback assigned ${matches.filter(Boolean).length}/${postsToMatch.length} unique photos (no GPT vision). Quality may be lower — set a valid OPENAI_API_KEY for service-aware matching.`);
+    console.warn(`Fallback assigned ${matches.filter(Boolean).length}/${postsToMatch.length} service-compatible photos (no GPT vision). Posts without an exact type remain text-only.`);
   }
 
   // ── Step 6: Copy winners to Curated ──────────────────────────────────────
   if (!dryRun) fs.mkdirSync(CURATED_FOLDER, { recursive: true });
 
   const usedFilenames = new Set();
+  const selectionManifest = loadPhotoSelectionManifest(SELECTION_MANIFEST_FILE)
+    .filter(entry => !posts.some(post =>
+      entry.postDate === post.date && serviceSlug(entry.postService) === serviceSlug(post.service)
+    ));
   let successCount = 0;
+  let noPhotoCount = 0;
+  let scheduleChanged = false;
 
   console.log('');
   for (let i = 0; i < postsToMatch.length; i++) {
     const post = postsToMatch[i];
     let photo = matches[i];
 
-    // Deduplicate — if GPT picked the same photo twice, grab next best unused
-    if (photo && usedFilenames.has(photo.filename)) {
-      photo = usable.find(p => !usedFilenames.has(p.filename) && p.service_type === (photo?.service_type || 'other'))
-           || usable.find(p => !usedFilenames.has(p.filename))
-           || null;
+    const postType = derivePostServiceType(post);
+
+    // Enforce the service boundary after GPT returns. The old code trusted the
+    // model's best-effort pick and then renamed the file to the post service,
+    // which is how a generator-panel image became a panel-upgrade image.
+    if (photo && (usedFilenames.has(photo.filename) || photo.service_type !== postType)) {
+      photo = null;
+    }
+    if (!photo) {
+      photo = usable.find(p => !usedFilenames.has(p.filename) && p.service_type === postType) || null;
     }
 
     if (!photo) {
       console.log(`  ${post.date} [${post.service}] → NO PHOTO AVAILABLE`);
+      noPhotoCount++;
+      const nextSchedule = updateSchedulePhotoFile(scheduleText, post.date, '');
+      scheduleChanged ||= nextSchedule !== scheduleText;
+      scheduleText = nextSchedule;
       continue;
     }
 
@@ -600,18 +594,35 @@ async function main() {
       } else {
         fs.copyFileSync(photo.filePath, destPath);
       }
-      scheduleText = updateSchedulePhotoFile(scheduleText, post.date, destPath);
+      const nextSchedule = updateSchedulePhotoFile(scheduleText, post.date, destPath);
+      scheduleChanged ||= nextSchedule !== scheduleText;
+      scheduleText = nextSchedule;
+      selectionManifest.push({
+        postDate: post.date,
+        postService: post.service,
+        postServiceType: postType,
+        photoPath: destPath,
+        sourcePath: photo.filePath,
+        sourceFilename: photo.filename,
+        photoServiceType: photo.service_type,
+        score: photo.score,
+        tags: photo.tags || [],
+        selectedAt: new Date().toISOString(),
+      });
     }
 
     usedFilenames.add(photo.filename);
     successCount++;
   }
 
-  if (!dryRun && successCount > 0) {
-    fs.writeFileSync(SCHEDULE_FILE, scheduleText);
-    console.log(`\n✓ Done: ${successCount}/${postsToMatch.length} posts matched`);
+  if (!dryRun) {
+    if (scheduleChanged) fs.writeFileSync(SCHEDULE_FILE, scheduleText);
+    fs.mkdirSync(path.dirname(SELECTION_MANIFEST_FILE), { recursive: true });
+    fs.writeFileSync(SELECTION_MANIFEST_FILE, JSON.stringify(selectionManifest, null, 2));
+    console.log(`\n✓ Done: ${successCount}/${postsToMatch.length} posts matched; ${noPhotoCount} left without a compatible photo`);
     console.log(`  Curated folder: ${CURATED_FOLDER}`);
-    console.log(`  Schedule updated: ${SCHEDULE_FILE}`);
+    console.log(`  Schedule ${scheduleChanged ? 'updated' : 'unchanged'}: ${SCHEDULE_FILE}`);
+    console.log(`  Selection manifest: ${SELECTION_MANIFEST_FILE}`);
     console.log(`\nNext: node scripts/sync-gbp-schedule.mjs`);
   } else if (dryRun) {
     console.log(`\n✓ Dry run complete: ${successCount}/${postsToMatch.length} posts would be matched`);

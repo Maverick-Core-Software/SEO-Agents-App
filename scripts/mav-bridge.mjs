@@ -278,12 +278,10 @@ async function executeApprovedRun(run) {
   }
 
   // ── 0.6 Rewrite FB schedule PHOTO_FILEs from the curated folder ───────────────
-  // The FB crew's LLM picks photo filenames by keyword with no service constraint,
-  // so an EV-charger post can ship with "financing-available.JPG". GBP doesn't have
-  // this problem (gbp-photo-pick service-matches with vision). fb-photo-rewrite
-  // applies the same deterministic matching to the FB schedule: for each photo day,
-  // overwrite PHOTO_FILE with the same-date curated photo whose slug matches the
-  // post's SERVICE; if none, switch the day to text-only so no off-topic image ships.
+  // The FB crew's LLM picks photo filenames by keyword. fb-photo-rewrite now
+  // accepts only same-date curated files that gbp-photo-pick recorded in its
+  // service-validated selection manifest; if there is no audited match, it
+  // switches the day to text-only so no off-topic image ships.
   const FB_REWRITE_PATH = path.join(PROJECT_ROOT, 'scripts', 'fb-photo-rewrite.mjs');
   const scheduleFile = path.join(PROJECT_ROOT, 'outputs', 'facebook_posting_schedule.md');
   if (fs.existsSync(FB_REWRITE_PATH) && fs.existsSync(scheduleFile)) {

@@ -34,6 +34,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { normalizePhotoFile } from './lib/schedule-text.mjs';
+import {
+  derivePostServiceType,
+  loadPhotoSelectionManifest,
+  isManifestSelectionCompatible,
+  serviceSlug,
+} from './lib/photo-selection.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '..');
@@ -48,36 +54,38 @@ if (fs.existsSync(envPath)) {
 }
 
 const CURATED_FOLDER = process.env.GBP_CURATED_FOLDER || 'E:\\Media\\Grizzly\\Curated';
+const SELECTION_MANIFEST_FILE = process.env.GBP_PHOTO_SELECTION_MANIFEST
+  || path.join(PROJECT_ROOT, 'state', 'photo-selection-manifest.json');
 const SCHEDULE_FILE = path.join(PROJECT_ROOT, 'outputs', 'facebook_posting_schedule.md');
 const IMAGE_EXT_RE = /\.(jpe?g|png|webp)$/i;
 
 const dryRun = process.argv.includes('--dry-run');
 
-// ── serviceSlug — IDENTICAL to gbp-photo-pick.mjs:287-293 ───────────────────
-// The picker names winners ${date}-${slug}<ext> using this exact transform, so
-// the lookup key here MUST match byte-for-byte or the search will miss.
-function serviceSlug(service) {
-  return (service || 'electrical')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 30);
-}
-
 // Find the curated photo for a given (date, service): a file in CURATED_FOLDER
 // whose name starts with `${date}-${slug}` and has an image extension. Case-
 // insensitive — the picker preserves original extension case from the source
 // photo (e.g. .JPG vs .jpg), so we can't assume lowercase.
-function findCuratedPhoto(date, service) {
+function findCuratedPhoto(date, service, manifest) {
   if (!date || !service) return null;
   const slug = serviceSlug(service);
   if (!slug) return null;
   const prefix = `${date}-${slug}`.toLowerCase();
   let files;
   try { files = fs.readdirSync(CURATED_FOLDER); } catch { return null; }
-  return files
+  const candidates = files
     .filter(f => f.toLowerCase().startsWith(prefix) && IMAGE_EXT_RE.test(f))
-    .sort()[0] || null;
+    .sort();
+  for (const candidate of candidates) {
+    const absolute = path.join(CURATED_FOLDER, candidate);
+    const audit = isManifestSelectionCompatible({
+      date,
+      service,
+      photoPath: absolute,
+      manifest,
+    });
+    if (audit.ok) return candidate;
+  }
+  return null;
 }
 
 // ── Schedule rewrite ────────────────────────────────────────────────────────
@@ -86,7 +94,7 @@ function findCuratedPhoto(date, service) {
 // block-tracking pattern as gbp-photo-pick.mjs updateSchedulePhotoFile (172-186),
 // extended to also flip TYPE on no-match days.
 
-function rewriteSchedule(text) {
+function rewriteSchedule(text, manifest) {
   const lines = text.split('\n');
   const decisions = [];
   let inPhotoBlock = false;     // inside a TYPE: photo day block
@@ -99,7 +107,7 @@ function rewriteSchedule(text) {
 
   function flushBlock() {
     if (!inPhotoBlock) return;
-    const curated = findCuratedPhoto(blockDate, blockService);
+    const curated = findCuratedPhoto(blockDate, blockService, manifest);
     if (curated) {
       const abs = path.join(CURATED_FOLDER, curated);
       if (photoLineIdx >= 0 && normalizePhotoFile(lines[photoLineIdx]) !== abs) {
@@ -118,7 +126,12 @@ function rewriteSchedule(text) {
         if (!dryRun) lines[typeLineIdx] = 'TYPE: text';
         changedAny = true;
       }
-      decisions.push({ date: blockDate, service: blockService, status: 'text_only' });
+      decisions.push({
+        date: blockDate,
+        service: blockService,
+        status: 'text_only',
+        expectedType: derivePostServiceType({ service: blockService, topic: blockService }),
+      });
     }
     inPhotoBlock = false;
     blockStartIdx = -1;
@@ -180,10 +193,12 @@ function main() {
   }
 
   const original = fs.readFileSync(SCHEDULE_FILE, 'utf8');
-  const { rewritten, decisions, changedAny } = rewriteSchedule(original);
+  const manifest = loadPhotoSelectionManifest(SELECTION_MANIFEST_FILE);
+  const { rewritten, decisions, changedAny } = rewriteSchedule(original, manifest);
 
   console.log(`\n=== FB Photo Rewrite ${dryRun ? '(dry run)' : ''} ===`);
-  console.log(`Curated folder: ${CURATED_FOLDER}\n`);
+  console.log(`Curated folder: ${CURATED_FOLDER}`);
+  console.log(`Selection manifest: ${SELECTION_MANIFEST_FILE}\n`);
   for (const d of decisions) {
     if (d.status === 'matched') {
       console.log(`  ${d.date} [${d.service}] → ${d.photo} ✓`);

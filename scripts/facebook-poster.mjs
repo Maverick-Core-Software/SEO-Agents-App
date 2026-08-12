@@ -46,6 +46,7 @@ import process from 'node:process';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { normalizePhotoFile } from './lib/schedule-text.mjs';
+import { loadPhotoSelectionManifest, isManifestSelectionCompatible } from './lib/photo-selection.mjs';
 import { postProcessVideo, enhanceVideo } from './video-postprocess.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -94,6 +95,9 @@ const XAI_VIDEO_GEN = process.env.XAI_VIDEO_GENERATOR
 const VIDEO_GEN_SCRIPT = VIDEO_BACKEND === 'gemini' ? GEMINI_VIDEO_GEN : XAI_VIDEO_GEN;
 const GBP_PHOTO_PATH = process.env.GBP_PHOTO_PATH
   || String.raw`C:\Workspace\Shared\Assets\Media\Grizzly\GBP Post Photos`;
+const PHOTO_SELECTION_MANIFEST = process.env.GBP_PHOTO_SELECTION_MANIFEST
+  || path.join(PROJECT_ROOT, 'state', 'photo-selection-manifest.json');
+const photoSelectionManifest = loadPhotoSelectionManifest(PHOTO_SELECTION_MANIFEST);
 const SCHEDULE_FILE = path.join(PROJECT_ROOT, 'outputs', 'facebook_posting_schedule.md');
 const LOGO_PATH = process.env.GRIZZLY_LOGO_PATH || path.join(PROJECT_ROOT, 'assets', 'grizzly-logo.png');
 const ENDCARD_PATH = process.env.GRIZZLY_ENDCARD_PATH || path.join(PROJECT_ROOT, 'assets', 'grizzly-endcard.jpg');
@@ -291,22 +295,58 @@ function curatedPhotoForDate(date, service) {
     if (!files.length) return null;
     if (service) {
       const slug = service.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-      const match = files.find(f => f.toLowerCase().includes(slug));
-      if (match) return path.join(GBP_CURATED_FOLDER, match);
+      const matches = files.filter(f => f.toLowerCase().includes(slug));
+      for (const match of matches) {
+        const candidate = path.join(GBP_CURATED_FOLDER, match);
+        if (isManifestSelectionCompatible({
+          date,
+          service,
+          photoPath: candidate,
+          manifest: photoSelectionManifest,
+        }).ok) return candidate;
+      }
     }
-    return path.join(GBP_CURATED_FOLDER, files[0]);
+    for (const file of files) {
+      const candidate = path.join(GBP_CURATED_FOLDER, file);
+      if (isManifestSelectionCompatible({
+        date,
+        service,
+        photoPath: candidate,
+        manifest: photoSelectionManifest,
+      }).ok) return candidate;
+    }
+    return null;
   } catch { return null; }
 }
 
 function resolvePhotoPath(post) {
+  const acceptAudited = (candidate) => {
+    if (!candidate || !fs.existsSync(candidate)) return null;
+    const audit = isManifestSelectionCompatible({
+      date: post.date,
+      service: post.service,
+      photoPath: candidate,
+      manifest: photoSelectionManifest,
+    });
+    if (!audit.ok) {
+      console.warn(`[photo-guard] refusing unverified/off-topic image ${candidate}: ${audit.reason}`);
+      return null;
+    }
+    return candidate;
+  };
   const photoFile = post.photo_file || '';
   if (photoFile) {
-    if (path.isAbsolute(photoFile)) { if (fs.existsSync(photoFile)) return photoFile; }
+    if (path.isAbsolute(photoFile)) {
+      const accepted = acceptAudited(photoFile);
+      if (accepted) return accepted;
+    }
     else {
       const fromGbp = path.join(GBP_PHOTO_PATH, photoFile);
-      if (fs.existsSync(fromGbp)) return fromGbp;
+      const acceptedGbp = acceptAudited(fromGbp);
+      if (acceptedGbp) return acceptedGbp;
       const fromOutputs = path.join(PROJECT_ROOT, 'outputs', photoFile);
-      if (fs.existsSync(fromOutputs)) return fromOutputs;
+      const acceptedOutputs = acceptAudited(fromOutputs);
+      if (acceptedOutputs) return acceptedOutputs;
     }
   }
   // No usable explicit photo — try the same-date curated winner (video-day fallback).
