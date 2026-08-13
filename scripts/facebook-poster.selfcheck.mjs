@@ -21,7 +21,7 @@ assert.equal(classifyDebugToken({ data: { is_valid: true, expires_at: NOW + 30 *
 // ── Caption building ──────────────────────────────────────────────────
 assert.equal(
   buildCaption({ hook: 'Sparks?', body: 'Call us.', hashtags: '#dfw', cta: 'Book now' }),
-  'Sparks?\n\nCall us.\n\n#dfw\n\nBook now',
+  'Sparks?\nCall us.\n\n#dfw\n\nBook now',
   'caption assembles hook/body/hashtags/cta',
 );
 assert.equal(buildCaption({ headline: 'Only headline' }), 'Only headline', 'falls back to headline when no body');

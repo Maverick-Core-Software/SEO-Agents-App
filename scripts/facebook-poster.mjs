@@ -189,23 +189,199 @@ function trackPostEngagement(postId, postGoal, postDay) {
   return { postId, postGoal, tracked: true };
 }
 
-export async function postFirstComment(postId, contactText) {
-  if (!contactText) return;
-  const body = new URLSearchParams({
-    message: contactText,
-    access_token: FB_PAGE_ACCESS_TOKEN,
-  });
-  const res = await fetch(
-    `https://graph.facebook.com/${GRAPH_API_VERSION}/${postId}/comments`,
-    { method: 'POST', body }
-  );
-  const json = await res.json();
-  if (json.error) {
-    hopLog('facebook-poster→graph', 'warn', `First comment failed: ${json.error.message}`, { code: json.error.code });
-    return null;
+const FIRST_COMMENT_STATE_FILE = path.join(PROJECT_ROOT, 'state', 'fb-first-comments.json');
+const PHONE_IN_TEXT_RE = /\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/;
+const CONTACT_STYLE_RE = /text us|instant quote|896-3862|863-9804/i;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function loadFirstCommentState() {
+  try {
+    if (fs.existsSync(FIRST_COMMENT_STATE_FILE)) {
+      return JSON.parse(fs.readFileSync(FIRST_COMMENT_STATE_FILE, 'utf8'));
+    }
+  } catch { /* ignore corrupt state */ }
+  return { posts: {} };
+}
+
+function saveFirstCommentState(state) {
+  try {
+    fs.mkdirSync(path.dirname(FIRST_COMMENT_STATE_FILE), { recursive: true });
+    // Keep ~90 days of success markers
+    const cutoff = Date.now() - 90 * 86400000;
+    for (const [id, entry] of Object.entries(state.posts || {})) {
+      const ts = typeof entry === 'object' ? entry.ts : entry;
+      if (!ts || ts < cutoff) delete state.posts[id];
+    }
+    fs.writeFileSync(FIRST_COMMENT_STATE_FILE, JSON.stringify(state, null, 2));
+  } catch (e) {
+    hopLog('facebook-poster', 'warn', `Could not save first-comment state: ${e.message}`);
   }
-  hopLog('facebook-poster→graph', 'info', `Contact posted as first comment on ${postId}`);
-  return json.id;
+}
+
+function resolveFirstCommentText(contactText) {
+  // Always prefer the fixed public-facing copy. Schedule CONTACT only used to
+  // be a gate; LLM-written CONTACT lines often include instructional notes.
+  const fixed = (FIRST_COMMENT || '').trim();
+  if (fixed) return fixed;
+  const raw = String(contactText || '').trim();
+  if (!raw) return '';
+  // Strip trailing "— *posted as first comment..." annotations from schedules
+  return raw.replace(/\s*[—-]\s*\*+posted as first comment[\s\S]*$/i, '').trim();
+}
+
+function isContactStyleComment(message) {
+  const msg = String(message || '');
+  return CONTACT_STYLE_RE.test(msg) || PHONE_IN_TEXT_RE.test(msg);
+}
+
+/**
+ * Does this post already have our page's contact/phone first comment?
+ * Returns { present, commentId } or { present:false, error }.
+ */
+export async function hasContactFirstComment(postId) {
+  if (!postId || !FB_PAGE_ACCESS_TOKEN) {
+    return { present: false, error: 'missing postId or token' };
+  }
+  const url = `https://graph.facebook.com/${GRAPH_API_VERSION}/${postId}/comments`
+    + `?fields=id,message,from{id}`
+    + `&order=chronological`
+    + `&filter=stream`
+    + `&limit=25`
+    + `&access_token=${encodeURIComponent(FB_PAGE_ACCESS_TOKEN)}`;
+  try {
+    const res = await fetch(url);
+    const json = await res.json();
+    if (json.error) {
+      return { present: false, error: json.error.message || JSON.stringify(json.error), code: json.error.code };
+    }
+    const comments = json.data || [];
+    const hit = comments.find((c) => {
+      const fromPage = !c.from?.id || String(c.from.id) === String(FB_PAGE_ID);
+      return fromPage && isContactStyleComment(c.message);
+    });
+    return hit
+      ? { present: true, commentId: hit.id }
+      : { present: false };
+  } catch (e) {
+    return { present: false, error: e.message };
+  }
+}
+
+/**
+ * Post (or ensure) the Grizzly contact first-comment on a live FB post.
+ *
+ * Reliability notes:
+ * - Facebook rejects comments on unpublished / still-processing media. Callers
+ *   must only invoke this for live posts; we still retry transient failures.
+ * - Graph errors used to be swallowed (return null) while reconcile marked the
+ *   row `posted` forever — one-shot, no retry. This now returns a structured
+ *   result, retries with backoff, and is idempotent via Graph read + local state.
+ *
+ * @returns {{ ok: boolean, id?: string, skipped?: boolean, reason?: string, attempts?: number, error?: string }}
+ */
+export async function postFirstComment(postId, contactText, options = {}) {
+  const {
+    retries = 4,
+    initialDelayMs = 0,
+    backoffMs = 4000,
+    skipIfPresent = true,
+    persistState = true,
+  } = options;
+
+  const message = resolveFirstCommentText(contactText);
+  if (!postId) return { ok: false, error: 'missing postId' };
+  if (!message) return { ok: false, error: 'missing first-comment text' };
+  if (!FB_PAGE_ACCESS_TOKEN) return { ok: false, error: 'FB_PAGE_ACCESS_TOKEN not set' };
+
+  if (persistState) {
+    const state = loadFirstCommentState();
+    const prior = state.posts?.[postId];
+    if (prior && (prior.ok || prior === true)) {
+      return { ok: true, skipped: true, reason: 'state_already_ok', id: prior.id || null };
+    }
+  }
+
+  if (initialDelayMs > 0) await sleep(initialDelayMs);
+
+  if (skipIfPresent) {
+    const existing = await hasContactFirstComment(postId);
+    if (existing.present) {
+      if (persistState) {
+        const state = loadFirstCommentState();
+        state.posts[postId] = { ok: true, id: existing.commentId, ts: Date.now(), source: 'preexisting' };
+        saveFirstCommentState(state);
+      }
+      hopLog('facebook-poster→graph', 'info', `Contact first comment already present on ${postId}`);
+      return { ok: true, skipped: true, reason: 'already_present', id: existing.commentId };
+    }
+  }
+
+  let lastError = null;
+  const attempts = Math.max(1, retries);
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      const body = new URLSearchParams({
+        message,
+        access_token: FB_PAGE_ACCESS_TOKEN,
+      });
+      const res = await fetch(
+        `https://graph.facebook.com/${GRAPH_API_VERSION}/${postId}/comments`,
+        { method: 'POST', body }
+      );
+      const json = await res.json();
+      if (json.error) {
+        lastError = json.error.message || JSON.stringify(json.error);
+        hopLog('facebook-poster→graph', 'warn',
+          `First comment attempt ${attempt}/${attempts} failed for ${postId}: ${lastError}`,
+          { code: json.error.code });
+      } else if (json.id) {
+        hopLog('facebook-poster→graph', 'info', `Contact posted as first comment on ${postId} (${json.id})`);
+        if (persistState) {
+          const state = loadFirstCommentState();
+          state.posts[postId] = { ok: true, id: json.id, ts: Date.now(), source: 'posted' };
+          saveFirstCommentState(state);
+        }
+        return { ok: true, id: json.id, attempts: attempt };
+      } else {
+        lastError = 'empty Graph response';
+      }
+    } catch (e) {
+      lastError = e.message || String(e);
+      hopLog('facebook-poster→graph', 'warn',
+        `First comment attempt ${attempt}/${attempts} network error for ${postId}: ${lastError}`);
+    }
+
+    if (attempt < attempts) {
+      // Exponential backoff; videos often need a few seconds after publish.
+      await sleep(backoffMs * attempt);
+    }
+  }
+
+  if (persistState) {
+    const state = loadFirstCommentState();
+    state.posts[postId] = { ok: false, error: lastError, ts: Date.now() };
+    saveFirstCommentState(state);
+  }
+  return { ok: false, error: lastError || 'unknown', attempts };
+}
+
+/**
+ * Ensure contact first-comments exist on a list of live post IDs.
+ * Safe to call repeatedly (idempotent).
+ */
+export async function ensureFirstComments(postIds, options = {}) {
+  const ids = [...new Set((postIds || []).filter(Boolean).map(String))];
+  const results = [];
+  for (const id of ids) {
+    const r = await postFirstComment(id, FIRST_COMMENT, options);
+    results.push({ postId: id, ...r });
+    // small gap between posts to stay under Graph burst limits
+    await sleep(500);
+  }
+  return results;
 }
 
 export function buildCaption(post) {
@@ -1236,11 +1412,18 @@ async function runSinglePayload(args) {
     }
     ({ id: postId, fallback: postFallback } = await graphDispatch(post, caption, videoPath, null));
     if (postFallback) hopLog('facebook-poster→graph', 'warn', `FALLBACK: ${postFallback}`);
-    if (postId && post.contact) {
-      await postFirstComment(postId, FIRST_COMMENT).catch(e =>
-        hopLog('facebook-poster→graph', 'warn', `First comment failed: ${e.message}`)
-      );
-    }
+    // Always stamp contact first-comment on live Graph posts (do not gate on
+        // schedule CONTACT — empty/missing CONTACT previously skipped this entirely).
+        if (postId) {
+          const isVideo = (post.type || '').toLowerCase() === 'video';
+          const fc = await postFirstComment(postId, FIRST_COMMENT, {
+            retries: isVideo ? 5 : 3,
+            initialDelayMs: isVideo ? 5000 : 1500,
+          });
+          if (!fc.ok) {
+            hopLog('facebook-poster→graph', 'warn', `First comment failed for ${postId}: ${fc.error}`);
+          }
+        }
     if (postId) trackPostEngagement(postId, post.post_goal, post.day);
   }
 
@@ -1335,13 +1518,19 @@ async function runWeek(args) {
       try {
         const { id, media, fallback } = await graphDispatch(post, caption, post._videoPath || null, scheduleUnix);
         // Only post the first comment on live posts — for scheduled posts,
-        // the comment is posted later by mav-bridge's fb-reconcile when the
-        // post actually goes live (Facebook rejects comments on unpublished posts).
-        if (id && post.contact && isLive) {
-          await postFirstComment(id, FIRST_COMMENT).catch(e =>
-            hopLog('facebook-poster→graph', 'warn', `First comment failed: ${e.message}`)
-          );
-        }
+                // the comment is posted later by mav-bridge's fb-reconcile when the
+                // post actually goes live (Facebook rejects comments on unpublished posts).
+                // Never gate on schedule CONTACT; fixed FIRST_COMMENT is always the copy.
+                if (id && isLive) {
+                  const isVideo = (post.type || '').toLowerCase() === 'video';
+                  const fc = await postFirstComment(id, FIRST_COMMENT, {
+                    retries: isVideo ? 5 : 3,
+                    initialDelayMs: isVideo ? 5000 : 1500,
+                  });
+                  if (!fc.ok) {
+                    hopLog('facebook-poster→graph', 'warn', `First comment failed for ${id}: ${fc.error}`);
+                  }
+                }
         if (isLive) {
           results.push({ day: post.day, date: post.date, status: 'posted', type: post.type, media, id, fallback });
           hopLog('facebook-poster→graph', 'info', `Day ${post.day} posted live (id: ${id}, media: ${media})`);

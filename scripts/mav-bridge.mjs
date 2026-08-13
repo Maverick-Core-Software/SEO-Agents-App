@@ -22,7 +22,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createClient } from '@supabase/supabase-js';
-import { checkFacebookToken, postFirstComment } from './facebook-poster.mjs';
+import { checkFacebookToken, postFirstComment, ensureFirstComments } from './facebook-poster.mjs';
 import { mediaStatusFor, bucketStatus, isStuck, describeAction, agentFor } from './lib/action-enrich.mjs';
 import { makeAlertStore } from './lib/alert-store.mjs';
 import { sendHermesAlert } from './lib/hermes-alert.mjs';
@@ -553,7 +553,7 @@ async function poll() {
       // Graph create call, so if the object fetches cleanly the post is real.
       const { data: pastFb } = await supabase
         .from('weekly_posts')
-        .select('id, post_date, platform_post_id')
+        .select('id, post_date, platform_post_id, type')
         .eq('platform', 'facebook')
         .eq('status', 'scheduled')
         .lte('post_date', todayDate);
@@ -575,13 +575,20 @@ async function poll() {
                 .update({ status: 'posted', posted_at: new Date().toISOString() })
                 .eq('id', post.id);
               console.log(`[mav-bridge][fb-reconcile] ${post.post_date} verified + marked posted`);
-              // Post the first comment now that the post is live — this was skipped
-              // at schedule time because Facebook rejects comments on unpublished posts.
-              const FB_FIRST_COMMENT = process.env.FB_FIRST_COMMENT
-                || '📲 Text us at (469) 896-3862 to get a free instant quote — calls welcome too!';
-              postFirstComment(post.platform_post_id, FB_FIRST_COMMENT).catch(e =>
-                console.error(`[mav-bridge][fb-reconcile] First comment failed for ${post.platform_post_id}: ${e.message}`)
-              );
+              // Await first-comment with retries. Previously this was fire-and-forget
+              // and postFirstComment swallowed Graph errors as null — so a too-early
+              // comment on a just-published video never retried once status flipped.
+              const isVideo = String(post.type || '').toLowerCase() === 'video';
+              const fc = await postFirstComment(post.platform_post_id, null, {
+                retries: isVideo ? 6 : 4,
+                initialDelayMs: isVideo ? 8000 : 2000,
+                backoffMs: 5000,
+              });
+              if (fc.ok) {
+                console.log(`[mav-bridge][fb-reconcile] First comment OK for ${post.platform_post_id}${fc.skipped ? ` (${fc.reason})` : ''}`);
+              } else {
+                console.error(`[mav-bridge][fb-reconcile] First comment FAILED for ${post.platform_post_id}: ${fc.error} — will retry on backfill`);
+              }
             }
           } catch (e) {
             // Network error — can't confirm. Don't flip the row either way.
@@ -594,6 +601,43 @@ async function poll() {
             .eq('id', post.id);
           console.log(`[mav-bridge][fb-reconcile] ${post.post_date} no platform_post_id — trusting schedule, marked posted`);
         }
+      }
+    }
+
+    // ── First-comment backfill (every poll) ──────
+    // Catch anything already marked posted that never got the contact comment
+    // (silent Graph failures, bridge restarts mid-fire-and-forget, etc.).
+    // Cheap after the first success: local state short-circuits.
+    if (FB_PAGE_ACCESS_TOKEN) {
+      try {
+        const lookback = new Date(Date.now() - 21 * 86400000).toISOString().slice(0, 10);
+        const { data: postedFb } = await supabase
+          .from('weekly_posts')
+          .select('id, post_date, platform_post_id, type')
+          .eq('platform', 'facebook')
+          .eq('status', 'posted')
+          .gte('post_date', lookback)
+          .not('platform_post_id', 'is', null)
+          .limit(40);
+        const ids = (postedFb || []).map((p) => p.platform_post_id).filter(Boolean);
+        if (ids.length) {
+          const results = await ensureFirstComments(ids, {
+            retries: 2,
+            initialDelayMs: 0,
+            backoffMs: 3000,
+          });
+          const failed = results.filter((r) => !r.ok);
+          const posted = results.filter((r) => r.ok && !r.skipped).length;
+          const skipped = results.filter((r) => r.ok && r.skipped).length;
+          if (posted || failed.length) {
+            console.log(`[mav-bridge][fb-first-comment] backfill: ${posted} posted, ${skipped} already-ok, ${failed.length} failed`);
+          }
+          for (const f of failed.slice(0, 5)) {
+            console.error(`[mav-bridge][fb-first-comment] still missing on ${f.postId}: ${f.error}`);
+          }
+        }
+      } catch (e) {
+        console.error(`[mav-bridge][fb-first-comment] backfill error: ${e.message}`);
       }
     }
 

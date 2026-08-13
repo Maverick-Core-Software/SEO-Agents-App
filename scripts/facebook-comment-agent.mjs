@@ -92,17 +92,29 @@ function isTokenError(error) {
 }
 
 async function graphCall(url, label) {
-  const res = await fetch(url);
-  const json = await res.json();
-  if (json.error) {
-    if (isTokenError(json.error)) {
-      hopLog('graph', 'error', 'TOKEN EXPIRED — regenerate FB_PAGE_ACCESS_TOKEN', json.error);
+  try {
+    const res = await fetch(url);
+    const text = await res.text();
+    let json;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      hopLog('graph', 'error', `${label} non-JSON response (${res.status}): ${text.slice(0, 120)}`);
       return null;
     }
-    hopLog('graph', 'error', `${label} failed: ${json.error.message}`, { code: json.error.code });
+    if (json.error) {
+      if (isTokenError(json.error)) {
+        hopLog('graph', 'error', 'TOKEN EXPIRED — regenerate FB_PAGE_ACCESS_TOKEN', json.error);
+        return null;
+      }
+      hopLog('graph', 'error', `${label} failed: ${json.error.message}`, { code: json.error.code });
+      return null;
+    }
+    return json;
+  } catch (e) {
+    hopLog('graph', 'error', `${label} network error: ${e.message}`);
     return null;
   }
-  return json;
 }
 
 // ── Fetch recent posts ──
@@ -134,15 +146,27 @@ async function fetchComments(postId) {
 async function postReply(commentId, message) {
   const url = `https://graph.facebook.com/${GRAPH_API_VERSION}/${commentId}/comments`
     + `?access_token=${FB_PAGE_ACCESS_TOKEN}`;
-  
-  const body = new URLSearchParams({ message });
-  const res = await fetch(url, { method: 'POST', body });
-  const json = await res.json();
-  if (json.error) {
-    hopLog('graph', 'error', `Reply failed: ${json.error.message}`, { commentId });
+
+  try {
+    const body = new URLSearchParams({ message });
+    const res = await fetch(url, { method: 'POST', body });
+    const text = await res.text();
+    let json;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      hopLog('graph', 'error', `Reply non-JSON response (${res.status}): ${text.slice(0, 120)}`, { commentId });
+      return null;
+    }
+    if (json.error) {
+      hopLog('graph', 'error', `Reply failed: ${json.error.message}`, { commentId });
+      return null;
+    }
+    return json.id;
+  } catch (e) {
+    hopLog('graph', 'error', `Reply network error: ${e.message}`, { commentId });
     return null;
   }
-  return json.id;
 }
 
 // ── Grok reply generation ──
@@ -244,59 +268,64 @@ async function poll() {
     return;
   }
 
-  hopLog('poll', 'info', 'Starting poll cycle');
-  const state = loadState();
-  
-  // Fetch recent posts
-  const posts = await fetchRecentPosts();
-  if (!posts.length) {
-    hopLog('poll', 'info', 'No recent posts found');
+  try {
+    hopLog('poll', 'info', 'Starting poll cycle');
+    const state = loadState();
+
+    // Fetch recent posts
+    const posts = await fetchRecentPosts();
+    if (!posts.length) {
+      hopLog('poll', 'info', 'No recent posts found');
+      saveState(state);
+      return;
+    }
+
+    hopLog('poll', 'info', `Found ${posts.length} recent posts`);
+
+    let repliedThisCycle = 0;
+    for (const post of posts) {
+      if (repliedThisCycle >= MAX_REPLIES_PER_CYCLE) {
+        hopLog('poll', 'info', `Hit max replies per cycle (${MAX_REPLIES_PER_CYCLE})`);
+        break;
+      }
+
+      const comments = await fetchComments(post.id);
+      if (!comments.length) continue;
+
+      const context = postContext(post);
+      for (const comment of comments) {
+        if (repliedThisCycle >= MAX_REPLIES_PER_CYCLE) break;
+        if (!shouldReply(comment, state, FB_PAGE_ID)) continue;
+
+        const commenterName = comment.from?.name || 'there';
+        hopLog('reply', 'info', `Replying to ${commenterName}: "${(comment.message || '').slice(0, 60)}"`);
+
+        const replyText = await generateReply(
+          comment.message || '',
+          commenterName,
+          context
+        );
+
+        const replyId = await postReply(comment.id, replyText);
+        if (replyId) {
+          state.replied[comment.id] = Date.now();
+          repliedThisCycle++;
+          hopLog('reply', 'info', `✓ Replied (${replyId}) → ${replyText.slice(0, 80)}`);
+        }
+
+        // Small delay between replies to avoid rate limiting
+        if (repliedThisCycle < MAX_REPLIES_PER_CYCLE) {
+          await new Promise(r => setTimeout(r, 2000));
+        }
+      }
+    }
+
+    hopLog('poll', 'info', `Cycle complete — ${repliedThisCycle} replies sent`);
     saveState(state);
-    return;
+  } catch (e) {
+    // Never let a transient Graph/network failure kill the PM2 process.
+    hopLog('poll', 'error', `Poll cycle crashed (will retry next interval): ${e.message}`);
   }
-
-  hopLog('poll', 'info', `Found ${posts.length} recent posts`);
-
-  let repliedThisCycle = 0;
-  for (const post of posts) {
-    if (repliedThisCycle >= MAX_REPLIES_PER_CYCLE) {
-      hopLog('poll', 'info', `Hit max replies per cycle (${MAX_REPLIES_PER_CYCLE})`);
-      break;
-    }
-
-    const comments = await fetchComments(post.id);
-    if (!comments.length) continue;
-
-    const context = postContext(post);
-    for (const comment of comments) {
-      if (repliedThisCycle >= MAX_REPLIES_PER_CYCLE) break;
-      if (!shouldReply(comment, state, FB_PAGE_ID)) continue;
-
-      const commenterName = comment.from?.name || 'there';
-      hopLog('reply', 'info', `Replying to ${commenterName}: "${(comment.message || '').slice(0, 60)}"`);
-
-      const replyText = await generateReply(
-        comment.message || '',
-        commenterName,
-        context
-      );
-
-      const replyId = await postReply(comment.id, replyText);
-      if (replyId) {
-        state.replied[comment.id] = Date.now();
-        repliedThisCycle++;
-        hopLog('reply', 'info', `✓ Replied (${replyId}) → ${replyText.slice(0, 80)}`);
-      }
-
-      // Small delay between replies to avoid rate limiting
-      if (repliedThisCycle < MAX_REPLIES_PER_CYCLE) {
-        await new Promise(r => setTimeout(r, 2000));
-      }
-    }
-  }
-
-  hopLog('poll', 'info', `Cycle complete — ${repliedThisCycle} replies sent`);
-  saveState(state);
 }
 
 // ── Health check endpoint ──
@@ -356,9 +385,13 @@ async function main() {
     hopLog('health', 'warn', `Health server failed: ${e.message} — continuing without`);
   }
 
-  // Run immediately, then poll
-  await poll();
-  setInterval(poll, POLL_MS);
+  // Run immediately, then poll. setInterval callbacks must not throw unhandled
+  // rejections or PM2 will restart-loop on transient Facebook IPv6 timeouts.
+  const safePoll = () => {
+    poll().catch((e) => hopLog('poll', 'error', `Unhandled poll rejection: ${e.message}`));
+  };
+  safePoll();
+  setInterval(safePoll, POLL_MS);
   hopLog('startup', 'info', `Polling every ${POLL_MS / 1000}s`);
 }
 
