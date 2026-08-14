@@ -100,6 +100,13 @@ function splitDayBlocks(text) {
   return starts.map((s, i) => text.slice(s, i + 1 < starts.length ? starts[i + 1] : text.length));
 }
 
+function normalizePostDate(raw) {
+  // Models sometimes emit "2026-08-17 (Monday, August 17, 2026)" — keep ISO date only.
+  const s = stripMd(raw || '').trim();
+  const m = s.match(/(\d{4}-\d{2}-\d{2})/);
+  return m ? m[1] : s;
+}
+
 function parseFacebookSchedule(text) {
   if (!text) return [];
   // Strip leading ```markdown code fence the LLM sometimes adds
@@ -110,7 +117,7 @@ function parseFacebookSchedule(text) {
     return {
       platform: 'facebook',
       day: parseInt(get('DAY')) || 0,
-      post_date: get('DATE'),
+      post_date: normalizePostDate(get('DATE')),
       type: get('TYPE').toLowerCase(),
       service: stripMd(get('SERVICE')),
       hook: stripMd(get('HOOK')),
@@ -121,7 +128,7 @@ function parseFacebookSchedule(text) {
       video_prompt: get('VIDEO_PROMPT') || null,
       status: 'pending_approval',
     };
-  }).filter(p => p.day > 0 && p.post_date);
+  }).filter(p => p.day > 0 && p.post_date && /^\d{4}-\d{2}-\d{2}$/.test(p.post_date));
 }
 
 // ─────────────────────────────────────────────
@@ -136,7 +143,7 @@ function parseGbpSchedule(text) {
     return {
       platform: 'gbp',
       day: parseInt(get('DAY')) || 0,
-      post_date: get('DATE'),
+      post_date: normalizePostDate(get('DATE')),
       type: 'photo',
       service: get('SERVICE'),
       hook: get('HEADLINE'),
@@ -147,7 +154,7 @@ function parseGbpSchedule(text) {
       video_prompt: null,
       status: 'pending_approval',
     };
-  }).filter(p => p.day > 0 && p.post_date);
+  }).filter(p => p.day > 0 && p.post_date && /^\d{4}-\d{2}-\d{2}$/.test(p.post_date));
 }
 
 // ─────────────────────────────────────────────
