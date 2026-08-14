@@ -13,9 +13,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createClient } from '@supabase/supabase-js';
 import { normalizePhotoFile } from './lib/schedule-text.mjs';
+import { sendHermesAlert } from './lib/hermes-alert.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '..');
+const APPROVAL_NOTIFY_STATE = path.join(PROJECT_ROOT, 'state', 'approval-notified.json');
 
 // Load .env
 const envPath = path.join(PROJECT_ROOT, '.env');
@@ -351,6 +353,61 @@ function mergeClassification(details, task) {
 // Main sync
 // ─────────────────────────────────────────────
 
+function loadApprovalNotifyState() {
+  try {
+    return JSON.parse(fs.readFileSync(APPROVAL_NOTIFY_STATE, 'utf8'));
+  } catch {
+    return {};
+  }
+}
+
+function markApprovalNotified(dedupeKey, meta) {
+  const state = loadApprovalNotifyState();
+  state[dedupeKey] = { at: new Date().toISOString(), ...meta };
+  fs.mkdirSync(path.dirname(APPROVAL_NOTIFY_STATE), { recursive: true });
+  fs.writeFileSync(APPROVAL_NOTIFY_STATE, JSON.stringify(state, null, 2) + '\n', 'utf8');
+}
+
+/**
+ * Fire Carter SMS when a run lands at the MCC approval gate with posts waiting.
+ * In-process (not a cron): called only from this sync path after pending_approval
+ * posts are written. Dedupes by run_id + post counts so re-syncs do not spam.
+ */
+async function notifyApprovalGate({ runId, weekOf, fbCount, gbpCount, taskCount }) {
+  const totalPosts = (fbCount || 0) + (gbpCount || 0);
+  if (totalPosts <= 0) {
+    console.log('No pending weekly posts — skipping approval SMS');
+    return { sent: false, reason: 'no_posts' };
+  }
+  const dedupeKey = `${runId}:fb${fbCount}:gbp${gbpCount}`;
+  const state = loadApprovalNotifyState();
+  if (state[dedupeKey]) {
+    console.log(`Approval SMS already sent for ${dedupeKey} at ${state[dedupeKey].at} — skip`);
+    return { sent: false, reason: 'already_notified', dedupeKey };
+  }
+
+  const shortId = String(runId).slice(0, 8);
+  const message = [
+    'SEO approval needed',
+    `Week of ${weekOf}`,
+    `Run ${shortId}`,
+    `GBP posts: ${gbpCount}`,
+    `Facebook posts: ${fbCount}`,
+    taskCount ? `Website tasks: ${taskCount}` : null,
+    'Open MCC → approve posts (nothing publishes until you approve).',
+  ].filter(Boolean).join('\n');
+
+  try {
+    await sendHermesAlert(message);
+    markApprovalNotified(dedupeKey, { runId, weekOf, fbCount, gbpCount, taskCount });
+    console.log('Approval SMS sent via Hermes (HERMES_ALERT_TO)');
+    return { sent: true, dedupeKey };
+  } catch (err) {
+    console.error(`Approval SMS failed (non-fatal): ${err.message || err}`);
+    return { sent: false, reason: 'send_failed', error: String(err.message || err) };
+  }
+}
+
 async function main() {
   // --tasks-only: re-sync website_tasks for an existing run without touching
   // weekly_posts or the run's approval status (safe after posts are approved).
@@ -359,6 +416,8 @@ async function main() {
   console.log(`Syncing week of ${weekOf} to Supabase...${tasksOnly ? ' (website tasks only)' : ''}`);
 
   let runId;
+  let fbCount = 0;
+  let gbpCount = 0;
   if (tasksOnly) {
     const { data: runData, error: runError } = await supabase
       .from('seo_runs').select('id').eq('week_of', weekOf).single();
@@ -367,7 +426,7 @@ async function main() {
     console.log(`Run ID: ${runId}`);
     await supabase.from('website_tasks').delete().eq('run_id', runId).eq('status', 'pending_approval');
   } else {
-    // Upsert seo_run row
+    // Upsert seo_run row — this is the approval gate transition.
     const { data: runData, error: runError } = await supabase
       .from('seo_runs')
       .upsert({ week_of: weekOf, status: 'pending_approval', execute_completed_at: new Date().toISOString() },
@@ -386,6 +445,7 @@ async function main() {
     // Parse and insert Facebook posts
     const fbText = readFile('facebook_posting_schedule.md');
     const fbPosts = parseFacebookSchedule(fbText);
+    fbCount = fbPosts.length;
     if (fbPosts.length) {
       const { error } = await supabase.from('weekly_posts').insert(fbPosts.map(p => ({ ...p, run_id: runId })));
       if (error) console.error('FB posts insert error:', error.message);
@@ -397,6 +457,7 @@ async function main() {
     // Parse and insert GBP posts
     const gbpText = readFile('gbp_posting_schedule.md');
     const gbpPosts = parseGbpSchedule(gbpText);
+    gbpCount = gbpPosts.length;
     if (gbpPosts.length) {
       const { error } = await supabase.from('weekly_posts').insert(gbpPosts.map(p => ({ ...p, run_id: runId })));
       if (error) console.error('GBP posts insert error:', error.message);
@@ -418,6 +479,17 @@ async function main() {
 
   console.log(`\nSync complete. Run ${runId} is pending_approval in Supabase.`);
   console.log('Open the MCC dashboard to review and approve.');
+
+  // In-process approval notification (not a cron/watchdog).
+  if (!tasksOnly) {
+    await notifyApprovalGate({
+      runId,
+      weekOf,
+      fbCount,
+      gbpCount,
+      taskCount: tasks.length,
+    });
+  }
 }
 
 main().catch(e => { console.error(e.message); process.exit(1); });
