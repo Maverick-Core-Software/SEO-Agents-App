@@ -29,6 +29,7 @@ import { sendHermesAlert } from './lib/hermes-alert.mjs';
 import { makeRunPhase } from './lib/run-phase.mjs';
 import { runGbpForApprovedRun, runDailyGbp, centralDateHour } from './lib/gbp-runner.mjs';
 import { fetchApprovedWebsiteTasks, executeNextWebsiteTask, sweepOrphanWebsiteTasks } from './lib/website-task-runner.mjs';
+import { liveRunStatus as deriveLiveRunStatus, countRunStatuses } from './lib/seo-run-status.mjs';
 
 const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -780,33 +781,17 @@ async function handleHttpRequest(req, res) {
       (postsByRun[p.run_id] = postsByRun[p.run_id] || []).push(p);
     }
 
-    // Derive the current real status of a run from its posts.
-    // seo_runs.status is only used for states that have no associated posts yet
-    // (pending_approval, executing, awaiting_prompt).
+    // Terminal post statuses (skipped/rejected/dismissed/cancelled) count as
+    // finished. Frozen rejected/dismissed/cancelled runs map to incomplete, not
+    // partial. Counts are windowed to ~28 days (see seo-run-status.mjs).
     function liveRunStatus(run) {
-      const runPosts = postsByRun[run.id] || [];
-      // These statuses are in-flight — trust the run record.
-      if (['pending_approval', 'executing', 'awaiting_prompt'].includes(run.status)) return run.status;
-      // If there are no posts, the run record is the best we have.
-      if (!runPosts.length) return run.status;
-      const hasCurrentError = runPosts.some(p => ['error', 'needs_verification'].includes(p.status));
-      const allDone = runPosts.every(p => ['posted', 'done', 'scheduled'].includes(p.status));
-      if (hasCurrentError) return 'error';
-      if (allDone) return 'done';
-      return 'executing';
+      return deriveLiveRunStatus(run, postsByRun[run.id] || []);
     }
 
     const latest = runs[0] || null;
     const latestLive = latest ? liveRunStatus(latest) : 'idle';
 
-    const statusCounts = { complete: 0, partial: 0, blocked: 0, incomplete: 0 };
-    for (const r of runs) {
-      const ls = liveRunStatus(r);
-      if (ls === 'done') statusCounts.complete++;
-      else if (['posting', 'executing'].includes(ls)) statusCounts.partial++;
-      else if (ls === 'error') statusCounts.blocked++;
-      else statusCounts.incomplete++;
-    }
+    const { statusCounts } = countRunStatuses(runs, postsByRun);
 
     // Faults: only current post-level errors, not the frozen run-level error field.
         // Prefer recent rows (24h) so historical noise does not stick on the dashboard forever.

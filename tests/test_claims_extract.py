@@ -473,17 +473,55 @@ class TestMalformedBlocks:
 
 
 class TestDuplicateClaimIds:
-    def test_duplicate_claim_ids_in_same_report_are_rejected(self):
-        block_a = _make_block(claim_id="claim_3333333333333333", statement="First occurrence")
-        block_b = _make_block(claim_id="claim_3333333333333333", statement="Second occurrence")
+    def test_redundant_duplicate_claim_ids_are_warning_not_hard_error(self):
+        """Trailing summary re-lists of the same Claim ID must not hard-fail finalize.
+
+        Models frequently emit a "Claim Blocks Summary" that repeats the same
+        IDs/URIs. Keep the first unit and emit a warning only.
+        """
+        block_a = _make_block(
+            claim_id="claim_3333333333333333",
+            statement="First occurrence",
+            source_uri="https://example.com/a",
+        )
+        # Same ID + same URI — mimics summary re-list
+        block_b = _make_block(
+            claim_id="claim_3333333333333333",
+            statement="First occurrence",
+            source_uri="https://example.com/a",
+        )
+        result = extract_claims_from_report(
+            _wrap_report("website_report.md", block_a + "\n\n" + block_b),
+            "website_report.md",
+            "run-001",
+        )
+        assert len(result["evidence"]) == 1
+        assert any(d["code"] == "duplicate_claim_id_redundant" for d in result["diagnostics"])
+        assert not any(d["code"] == "duplicate_claim_id" and d["severity"] == "error" for d in result["diagnostics"])
+
+    def test_distinct_duplicate_claim_ids_are_disambiguated(self):
+        """Different content under the same Claim ID is reassigned, not rejected."""
+        block_a = _make_block(
+            claim_id="claim_3333333333333333",
+            statement="First occurrence",
+            source_uri="https://example.com/a",
+        )
+        block_b = _make_block(
+            claim_id="claim_3333333333333333",
+            statement="Second occurrence with different evidence",
+            source_uri="https://example.com/b",
+        )
         result = extract_claims_from_report(
             _wrap_report("website_report.md", block_a + "\n\n" + block_b),
             "website_report.md",
             "run-001",
         )
         assert len(result["evidence"]) == 2
-        assert any(d["code"] == "duplicate_claim_id" for d in result["diagnostics"])
-        assert all(ev["status"] == "rejected" for ev in result["evidence"])
+        ids = {ev["claim_id"] for ev in result["evidence"]}
+        assert "claim_3333333333333333" in ids
+        assert len(ids) == 2
+        assert any(d["code"] == "disambiguated_duplicate_claim_id" for d in result["diagnostics"])
+        assert not any(d["severity"] == "error" and d["code"] == "duplicate_claim_id" for d in result["diagnostics"])
 
 
 # ---------------------------------------------------------------------------

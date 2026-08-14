@@ -146,26 +146,79 @@ def is_timestamp_with_timezone(value: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def _claim_id_line_matches(text: str) -> list[re.Match[str]]:
+    """Return matches for full ``**Claim ID:** …`` lines (never mid-value)."""
+    return list(
+        re.compile(
+            r"^\s*\*\*Claim ID(?::\*\*|\*\*:)[^\n]*$",
+            re.MULTILINE,
+        ).finditer(text)
+    )
+
+
+def _metadata_region_end(text: str, claim_start: int, limit: int) -> int:
+    """Return index just after consecutive claim metadata field lines.
+
+    Starts at a Claim ID line and consumes following ``**Label:**`` lines
+    (allowing blank lines between fields). Stops before free-form prose or the
+    next claim so trailing "Claim Blocks Summary" re-lists and section text do
+    not bleed into the previous claim's field values.
+    """
+    field_line = re.compile(
+        r"^[ \t]*(?:\d+[\.\)][ \t]*)?(?:-[ \t]*)?\*\*[^:*\n]+(?::\*\*|\*\*:)"
+    )
+    # Always consume the Claim ID line itself.
+    first_nl = text.find("\n", claim_start)
+    pos = limit if first_nl < 0 or first_nl >= limit else first_nl + 1
+    while pos < limit:
+        nl = text.find("\n", pos)
+        line_end = limit if nl < 0 or nl >= limit else nl + 1
+        line = text[pos:line_end].rstrip("\r\n")
+        if not line.strip():
+            # Permit blank lines only when the next non-empty line is still a field.
+            peek = line_end
+            while peek < limit and text[peek] in "\r\n":
+                peek += 1
+            if peek >= limit:
+                return pos
+            peek_nl = text.find("\n", peek)
+            peek_line = text[peek : peek_nl if 0 <= peek_nl < limit else limit]
+            if field_line.match(peek_line):
+                pos = line_end
+                continue
+            return pos
+        if field_line.match(line):
+            pos = line_end
+            continue
+        return pos
+    return limit
+
+
 def _split_into_blocks(text: str) -> list[str]:
     """Split report text into candidate claim blocks.
 
-    A block begins with a line containing '**Claim ID:**' and ends at the next
-    such line or end of document. The statement text preceding the metadata
-    block is preserved.
+    A block begins at a full ``**Claim ID:**`` line and includes following
+    metadata fields only. Free-form statement text immediately preceding the
+    Claim ID line (after the previous claim's metadata) is preserved.
     """
     if not text:
         return []
-    marker = re.compile(r"^\s*\*\*Claim ID(?::\*\*|\*\*:)\s*", re.MULTILINE)
-    matches = list(marker.finditer(text))
+    matches = _claim_id_line_matches(text)
     if not matches:
         return []
     blocks: list[str] = []
     for i, match in enumerate(matches):
-        prev_end = matches[i - 1].end() if i > 0 else 0
-        start = match.start()
-        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
-        statement = text[prev_end:start].strip()
-        body = text[start:end]
+        next_start = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        meta_end = _metadata_region_end(text, match.start(), next_start)
+        body = text[match.start() : meta_end].rstrip()
+        if i == 0:
+            stmt_region = text[0 : match.start()]
+        else:
+            prev_meta_end = _metadata_region_end(
+                text, matches[i - 1].start(), match.start()
+            )
+            stmt_region = text[prev_meta_end : match.start()]
+        statement = stmt_region.strip()
         if statement:
             blocks.append(f"{statement}\n\n{body}")
         else:
@@ -198,6 +251,18 @@ def _extract_field(block: str, label: str) -> str | None:
         start = m.end()
         end = matches[i + 1].start() if i + 1 < len(matches) else len(block)
         value = block[start:end].strip()
+        # Stop before free-form prose / next section so Relation and similar
+        # trailing fields do not swallow the following claim's statement.
+        value = re.split(r"\n(?=#{1,6}\s|\S[^\n]{0,80}\n\n)", value, maxsplit=1)[0].strip()
+        # Prefer the first non-empty line for single-line fields; multi-line
+        # excerpts keep additional lines until a blank line.
+        if label.lower() not in {"evidence excerpt", "excerpt", "negative findings"}:
+            first_line = value.split("\n", 1)[0].strip()
+            value = first_line
+        else:
+            # Cut excerpt/findings at a blank line followed by non-field prose.
+            parts = re.split(r"\n\s*\n", value, maxsplit=1)
+            value = parts[0].strip()
         # Remove trailing bold markers that may have bled in
         value = re.sub(r"\s*\*\*[^*]*$", "", value).strip()
         # Strip inline markdown emphasis
@@ -549,9 +614,12 @@ def parse_claim_block(
     elif not source_uri:
         raw_kind = (source_kind_raw or "").strip().lower()
         if raw_kind in {"unknown", "", "n/a", "na", "none"}:
+            # Truncated claim blocks (report cut mid-field, often with a missing
+            # END marker) used to hard-fail finalize. Keep the unit provisional
+            # with a warning so the rest of the run can still promote.
             diags.append(
                 _diag(
-                    "error",
+                    "warning",
                     "missing_source_uri_and_kind",
                     "No Source URI and no usable Source Kind; evidence is provisional",
                     report=report_name,
@@ -583,15 +651,46 @@ def parse_claim_block(
 
     has_excerpt = bool(evidence_excerpt and evidence_excerpt.strip())
     if not has_excerpt and source_mode != "unavailable":
-        diags.append(
-            _diag(
-                "warning",
-                "missing_evidence_excerpt",
-                "No evidence excerpt provided",
-                report=report_name,
-                claim_id=claim_id,
+        # Recover usable excerpt text from nearby fields so missing LLM
+        # "Evidence Excerpt" lines do not leave the evidence unit empty.
+        # Still emit an advisory diagnostic so quality can be monitored.
+        recovered_from = ""
+        if (
+            negative_findings
+            and negative_findings.strip()
+            and negative_findings.strip().lower()
+            not in {"none identified", "none", "n/a", "na"}
+        ):
+            evidence_excerpt = negative_findings.strip()
+            recovered_from = "negative_findings"
+        elif statement.strip():
+            evidence_excerpt = statement.strip()[:500]
+            recovered_from = "statement"
+        elif source_uri:
+            evidence_excerpt = f"Source: {source_uri.strip()}"
+            recovered_from = "source_uri"
+
+        if recovered_from:
+            has_excerpt = True
+            diags.append(
+                _diag(
+                    "warning",
+                    "excerpt_recovered",
+                    f"No Evidence Excerpt field; recovered excerpt from {recovered_from}",
+                    report=report_name,
+                    claim_id=claim_id,
+                )
             )
-        )
+        else:
+            diags.append(
+                _diag(
+                    "warning",
+                    "missing_evidence_excerpt",
+                    "No evidence excerpt provided",
+                    report=report_name,
+                    claim_id=claim_id,
+                )
+            )
 
     # Negative findings
     negative_findings_present = bool(
@@ -713,7 +812,13 @@ def parse_claim_block(
 
 
 def validate_report_markers(text: str, report_name: str) -> tuple[bool, str, list[dict[str, Any]]]:
-    """Check [START:X] / [END:X] markers for specialist reports."""
+    """Check [START:X] / [END:X] markers for specialist reports.
+
+    A report is parseable when the START marker is present (or the report is
+    not a marker-required specialist report). Missing END alone is advisory —
+    the body is treated as extending to EOF. Only missing *both* markers is a
+    hard diagnostic.
+    """
     diags: list[dict[str, Any]] = []
     marker_name, _ = RESEARCH_REPORTS.get(report_name, (None, ""))
     if not marker_name:
@@ -730,7 +835,10 @@ def validate_report_markers(text: str, report_name: str) -> tuple[bool, str, lis
     if not has_end:
         # Missing end marker is non-fatal — the report body extends to EOF.
         diags.append(_diag("warning", "missing_end_marker", f"Missing {end}", report=report_name))
-    return not diags, marker_name, diags
+    # Parseable when START is present (END is optional). No-start still allows
+    # best-effort claim extraction but marker_ok is False.
+    marker_ok = has_start
+    return marker_ok, marker_name, diags
 
 
 def _strip_report_markers(text: str, report_name: str) -> str:
@@ -802,22 +910,52 @@ def extract_claims_from_report(
         if ev is None or claim is None:
             continue
         if claim.claim_id in seen_ids:
+            # Models often re-list the same claim blocks in a trailing
+            # "Claim Blocks Summary" section. When the re-list matches the
+            # original (same type + URI), treat it as redundant — warning only,
+            # keep the first unit. Different content under the same ID is
+            # auto-disambiguated so finalize is not hard-blocked by LLM ID reuse.
+            existing_ev = evidence_by_id.get(claim.claim_id)
+            existing_claim = claim_by_id.get(claim.claim_id)
+            same_uri = (ev.source.uri or "") == (
+                (existing_ev.source.uri if existing_ev else "") or ""
+            )
+            same_type = bool(existing_claim) and claim.claim_type == existing_claim.claim_type
+            same_statement = bool(existing_claim) and (
+                (claim.statement or "").strip() == (existing_claim.statement or "").strip()
+            )
+            if same_uri and (same_type or same_statement):
+                diagnostics.append(
+                    _diag(
+                        "warning",
+                        "duplicate_claim_id_redundant",
+                        (
+                            f"Redundant re-list of Claim ID '{claim.claim_id}' in report "
+                            f"(same type/URI); keeping first occurrence"
+                        ),
+                        report=report_name,
+                        claim_id=claim.claim_id,
+                    )
+                )
+                continue
+
+            original_id = claim.claim_id
+            disambiguated = f"claim_{_stable_hash(f'{original_id}|{ev.source.uri}|{claim.statement}|{seq}')}"
             diagnostics.append(
                 _diag(
-                    "error",
-                    "duplicate_claim_id",
-                    f"Duplicate Claim ID '{claim.claim_id}' in report",
+                    "warning",
+                    "disambiguated_duplicate_claim_id",
+                    (
+                        f"Duplicate Claim ID '{original_id}' reassigned to "
+                        f"'{disambiguated}' (distinct content under same id)"
+                    ),
                     report=report_name,
-                    claim_id=claim.claim_id,
+                    claim_id=disambiguated,
                 )
             )
-            # Mark both occurrences as rejected due to duplication
-            ev.status = "rejected"
-            claim.status = "rejected"
-            if claim.claim_id in evidence_by_id:
-                evidence_by_id[claim.claim_id].status = "rejected"
-            if claim.claim_id in claim_by_id:
-                claim_by_id[claim.claim_id].status = "rejected"
+            claim.claim_id = disambiguated
+            ev.claim_id = disambiguated
+
         seen_ids.add(claim.claim_id)
         evidence_list.append(ev)
         claims.append(claim)

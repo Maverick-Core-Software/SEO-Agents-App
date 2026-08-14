@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -553,6 +554,8 @@ class TestValidateJsonCases:
         """Valid research-only run with populated evidence."""
         output_dir = tmp_path / "outputs"
         output_dir.mkdir(parents=True, exist_ok=True)
+        # Use a fresh timestamp so the 30-day live freshness gate cannot flake.
+        fresh_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
         self._setup_validate(
             output_dir,
             manifest={
@@ -560,7 +563,7 @@ class TestValidateJsonCases:
                 "topic": "research test",
                 "dry_run": False,
                 "research_only": True,
-                "started_at": "2026-07-14T00:00:00Z",
+                "started_at": fresh_at,
             },
             evidence={
                 "run_id": "research-only-001",
@@ -575,7 +578,7 @@ class TestValidateJsonCases:
                         "kind": "live_page",
                         "uri": "https://example.com",
                         "title": "Homepage",
-                        "retrieved_at": "2026-07-14T00:00:00Z",
+                        "retrieved_at": fresh_at,
                         "authority_rank": 0.9,
                         "access_class": "observed",
                     },
@@ -591,7 +594,7 @@ class TestValidateJsonCases:
                         "access": 1.0,
                         "basis": "observed",
                     },
-                    "freshness": {"captured_at": "2026-07-14T00:00:00Z", "valid_until": None, "supersedes": []},
+                    "freshness": {"captured_at": fresh_at, "valid_until": None, "supersedes": []},
                     "contradiction_ids": [],
                     "supporting_report": "website_report.md",
                     "status": "confirmed",
