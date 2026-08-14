@@ -7,14 +7,21 @@
 /** Rolling window for statusCounts so historical audit noise does not dominate. */
 export const STATUS_COUNTS_WINDOW_MS = 28 * 24 * 60 * 60 * 1000;
 
-/** Posts that finished successfully (including intentional skips). */
-export const TERMINAL_SUCCESS = new Set(['posted', 'done', 'scheduled', 'skipped']);
+/** Posts that finished successfully (including intentional skips / native schedule). */
+export const TERMINAL_SUCCESS = new Set([
+  'posted',
+  'done',
+  'scheduled',
+  'scheduled_native',
+  'skipped',
+]);
 
 /** All closed post statuses — nothing left for the bridge to do. */
 export const TERMINAL_CLOSED = new Set([
   'posted',
   'done',
   'scheduled',
+  'scheduled_native',
   'skipped',
   'rejected',
   'dismissed',

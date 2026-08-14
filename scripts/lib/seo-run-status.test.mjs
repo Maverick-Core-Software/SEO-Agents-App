@@ -33,6 +33,15 @@ describe('liveRunStatus', () => {
     assert.equal(bucketStatusCount(ls), 'complete');
   });
 
+  it('treats scheduled_native GBP rows as finished (not partial)', () => {
+    const ls = liveRunStatus(
+      { id: 'r2b', status: 'done' },
+      [{ status: 'posted' }, ...Array.from({ length: 6 }, () => ({ status: 'scheduled_native' }))],
+    );
+    assert.equal(ls, 'done');
+    assert.equal(bucketStatusCount(ls), 'complete');
+  });
+
   it('does not call partial for dismissed/cancelled posts', () => {
     assert.equal(
       liveRunStatus({ id: 'r3', status: 'done' }, [{ status: 'dismissed' }]),
