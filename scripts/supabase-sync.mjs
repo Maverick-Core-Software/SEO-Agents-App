@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { createClient } from '@supabase/supabase-js';
 import { normalizePhotoFile } from './lib/schedule-text.mjs';
 import { sendHermesAlert } from './lib/hermes-alert.mjs';
-import { parseWebsiteTasks } from './lib/parse-website-tasks.mjs';
+import { parseWebsiteTasks, stripCodeFence } from './lib/parse-website-tasks.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '..');

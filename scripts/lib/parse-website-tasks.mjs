@@ -39,7 +39,7 @@ export function isOwnerWaitStatus(status) {
   return false;
 }
 
-function stripCodeFence(text) {
+export function stripCodeFence(text) {
   return text.replace(/^```(?:markdown)?\s*/i, '').replace(/\s*```\s*$/, '').trim();
 }
 
