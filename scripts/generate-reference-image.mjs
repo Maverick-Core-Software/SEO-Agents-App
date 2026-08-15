@@ -13,7 +13,9 @@
  *   node generate-reference-image.mjs --service "panel-upgrade" --output assets/reference-images/panel-upgrade.jpg --dry-run
  *
  * Env:
- *   GEMINI_API_KEY  - required for Gemini image generation API
+ *   GEMINI_API_KEY   - primary image backend (gemini-2.5-flash-image)
+ *   VENICE_API_KEY   - secondary fallback (Venice /image/generate, flux-2-pro)
+ *   FAL_KEY          - last-resort fallback (fal.run FLUX schnell)
  */
 
 import fs from 'node:fs';
@@ -218,6 +220,57 @@ async function generateImageViaFAL(prompt, aspectRatio = '9:16') {
 }
 
 // ---------------------------------------------------------------------------
+// Secondary fallback: Venice image generation (/image/generate, OpenAI-style)
+// ---------------------------------------------------------------------------
+
+/**
+ * Generate an image using the Venice API (https://api.venice.ai/api/v1/image/generate).
+ * Verified live 2026-08-15: qwen-image-3 uses `aspect_ratio` (not width/height);
+ * response shape is { images: ["<raw-base64>", ...] }; output bytes are WebP.
+ *
+ * @param {string} prompt - text description of the desired image
+ * @param {string} aspectRatio - '9:16' for vertical
+ * @returns {Buffer} - raw image bytes (WebP)
+ */
+async function generateImageViaVenice(prompt, aspectRatio = '9:16') {
+  const veniceKey = process.env.VENICE_API_KEY || '';
+  if (!veniceKey) {
+    throw new Error('VENICE_API_KEY not set — cannot use Venice fallback');
+  }
+
+  const model = process.env.VENICE_IMAGE_MODEL || 'flux-2-pro';
+  const body = JSON.stringify({
+    model,
+    prompt,
+    aspect_ratio: aspectRatio,
+    hide_watermark: true,
+  });
+
+  console.error(`Generating image via Venice (${model}, ${aspectRatio})...`);
+
+  const res = await httpsRequest('https://api.venice.ai/api/v1/image/generate', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${veniceKey}`,
+      'Content-Length': Buffer.byteLength(body),
+    },
+  }, body);
+
+  if (res.status !== 200) {
+    const msg = res.body?.error || JSON.stringify(res.body).slice(0, 400);
+    throw new Error(`Venice image generation failed (HTTP ${res.status}): ${msg}`);
+  }
+
+  const first = res.body?.images?.[0];
+  const b64 = typeof first === 'string' ? first : first?.data;
+  if (!b64) {
+    throw new Error('Venice returned no image data');
+  }
+  return Buffer.from(b64, 'base64');
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -257,7 +310,7 @@ async function main() {
       service: args.service || null,
       aspect_ratio: args.aspectRatio,
       output: args.output,
-      backend: GEMINI_API_KEY ? 'gemini-imagen' : 'fal-flux',
+      backend: GEMINI_API_KEY ? 'gemini-imagen' : (process.env.VENICE_API_KEY ? 'venice-flux' : 'fal-flux'),
       message: 'Dry run — no API call made',
     }));
     return;
@@ -266,20 +319,24 @@ async function main() {
   fs.mkdirSync(path.dirname(path.resolve(args.output)), { recursive: true });
 
   try {
-    let imageBuffer;
+    // Try Gemini → Venice → FAL.ai in order
+    const backends = [];
+    if (GEMINI_API_KEY) backends.push({ name: 'gemini', fn: () => generateImageViaGemini(prompt, args.aspectRatio) });
+    if (process.env.VENICE_API_KEY) backends.push({ name: 'venice', fn: () => generateImageViaVenice(prompt, args.aspectRatio) });
+    backends.push({ name: 'fal', fn: () => generateImageViaFAL(prompt, args.aspectRatio) });
 
-    // Try Gemini first, fall back to FAL.ai
-    if (GEMINI_API_KEY) {
+    let imageBuffer;
+    let lastErr;
+    for (const b of backends) {
       try {
-        imageBuffer = await generateImageViaGemini(prompt, args.aspectRatio);
-      } catch (geminiErr) {
-        console.error(`Gemini image generation failed: ${geminiErr.message}`);
-        console.error('Falling back to FAL.ai FLUX...');
-        imageBuffer = await generateImageViaFAL(prompt, args.aspectRatio);
+        imageBuffer = await b.fn();
+        break;
+      } catch (err) {
+        console.error(`${b.name} image generation failed: ${err.message}`);
+        lastErr = err;
       }
-    } else {
-      imageBuffer = await generateImageViaFAL(prompt, args.aspectRatio);
     }
+    if (!imageBuffer) throw lastErr;
 
     fs.writeFileSync(args.output, imageBuffer);
     const stats = fs.statSync(args.output);
