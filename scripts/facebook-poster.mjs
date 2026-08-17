@@ -436,9 +436,12 @@ export function parseScheduleText(text) {
       return stripMd(lines.join('\n').trim());
     };
     const type = get('TYPE').toLowerCase();
+    // DATE lines often look like "2026-08-17 (Monday, August 17, 2026)" — keep ISO only.
+    const dateRaw = get('DATE');
+    const dateIso = (dateRaw.match(/\d{4}-\d{2}-\d{2}/) || [dateRaw.replace(/\s*\(.*$/, '').trim()])[0];
     return {
       day: parseInt(get('DAY')) || 0,
-      date: get('DATE'),
+      date: dateIso,
       type,
       service: get('SERVICE'),
       post_goal: get('POST_GOAL') || '',
