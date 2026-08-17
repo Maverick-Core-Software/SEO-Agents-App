@@ -687,6 +687,17 @@ function curatedPhotosForPost(post, max = 4) {
 }
 
 function resolveSlideshowPhotos(post) {
+  // Explicit multi PHOTO_FILE list (same syntax as carousel)
+  const raw = post.photo_file || '';
+  if (raw && /[,|;]/.test(raw)) {
+    const parts = raw.split(/[,|;]+/).map((s) => s.trim()).filter(Boolean);
+    const resolved = [];
+    for (const part of parts) {
+      const p = resolvePhotoPath({ ...post, photo_file: part });
+      if (p && !resolved.includes(p)) resolved.push(p);
+    }
+    if (resolved.length) return resolved.slice(0, 6);
+  }
   const photos = curatedPhotosForPost(post, 4);
   if (photos.length) return photos;
   const single = resolvePhotoPath(post);

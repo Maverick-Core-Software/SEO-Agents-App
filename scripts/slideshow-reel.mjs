@@ -21,7 +21,7 @@ const DEFAULT_SCHEDULE = path.join(PROJECT_ROOT, 'outputs', 'facebook_posting_sc
 const DEFAULT_OUTPUT_DIR = process.env.FB_VIDEO_OUTPUT_DIR
   || path.join(PROJECT_ROOT, 'outputs', 'fb-videos');
 const DEFAULT_AUDIO = process.env.FB_SLIDESHOW_AUDIO
-  || path.join(PROJECT_ROOT, 'assets', 'audio', 'slideshow-bed.mp3');
+  || path.join(PROJECT_ROOT, 'assets', 'audio', 'upbeat-1.mp3');
 
 const FONT = 'Arial';
 const FONT_PATH = 'C\\:/Windows/Fonts/arialbd.ttf';
@@ -29,8 +29,8 @@ const W = 1080;
 const H = 1920;
 const FPS = 30;
 // Faster beats: ~2.4s per caption line (was ~4s).
-const BEAT_SEC = Number(process.env.FB_SLIDESHOW_BEAT_SEC || 2.4);
-const MIN_SEG_SEC = Number(process.env.FB_SLIDESHOW_MIN_SEG_SEC || 2.8);
+const BEAT_SEC = Number(process.env.FB_SLIDESHOW_BEAT_SEC || 2.7);
+const MIN_SEG_SEC = Number(process.env.FB_SLIDESHOW_MIN_SEG_SEC || 3.0);
 // Amber / electric gold — reads well on job-site photos
 const TEXT_COLOR = process.env.FB_SLIDESHOW_TEXT_COLOR || '0xFFD166';
 const TEXT_OUTLINE = process.env.FB_SLIDESHOW_TEXT_OUTLINE || 'black';
@@ -140,10 +140,15 @@ function ensureSlideshowBed(audioPath, durationSec) {
 }
 
 function buildDrawtextFilters(textItems) {
+  // Full-width caption band + amber text so copy stays readable on any photo
+  // (drawtext's own box is easy to lose on busy panels; drawbox is solid).
   const vfParts = [];
-  const fontSize = 58;
-  const lineHeight = 72;
-  const maxCharsPerLine = 24;
+  const fontSize = 56;
+  const lineHeight = 68;
+  const maxCharsPerLine = 26;
+  const bandPad = 28;
+  const bandY = Math.round(H * 0.68); // lower third
+  const bandH = Math.round(H * 0.22);
 
   for (const t of textItems) {
     const words = String(t.text || '').split(' ');
@@ -160,21 +165,26 @@ function buildDrawtextFilters(textItems) {
     if (current) lines.push(current);
 
     const safe = (s) => s.replace(/\\/g, '\\\\\\\\').replace(/'/g, "'\\\\\\''").replace(/:/g, '\\\\:');
-    // Lower-third style: more “ad-like” than plain top white captions
-    const blockH = lines.length * lineHeight;
-    const startY = Math.round(H * 0.62 - blockH / 2);
+    const enable = `enable='between(t,${t.start.toFixed(2)},${t.end.toFixed(2)})'`;
+    // Solid readable plate across the width (not a thin wrap box)
+    vfParts.push(
+      `drawbox=x=0:y=${bandY}:w=${W}:h=${bandH}:color=black@0.72:t=fill:${enable}`,
+    );
+    // Optional top accent bar (brand energy)
+    vfParts.push(
+      `drawbox=x=0:y=${bandY}:w=${W}:h=6:color=0xFFD166@0.95:t=fill:${enable}`,
+    );
 
+    const blockH = lines.length * lineHeight;
+    const startY = bandY + Math.round((bandH - blockH) / 2);
     for (let li = 0; li < lines.length; li++) {
       const y = startY + li * lineHeight;
-      const enable = `enable='between(t,${t.start.toFixed(2)},${t.end.toFixed(2)})'`;
       const txt = safe(lines[li]);
-      // Thick outline via borderw, then amber fill on dark plate
       vfParts.push(
         `drawtext=${FONT_SPEC}:text='${txt}':fontsize=${fontSize}:`
-        + `fontcolor=${TEXT_COLOR}:borderw=5:bordercolor=${TEXT_OUTLINE}:`
+        + `fontcolor=${TEXT_COLOR}:borderw=4:bordercolor=black:`
         + `x=(w-text_w)/2:y=${y}:`
-        + `box=1:boxcolor=black@0.68:boxborderw=20:`
-        + `shadowcolor=black@0.95:shadowx=5:shadowy=5:`
+        + `shadowcolor=black@0.9:shadowx=3:shadowy=3:`
         + enable,
       );
     }
@@ -220,7 +230,7 @@ export function buildSlideshowReel(opts) {
       '-y', '-loop', '1', '-t', String(segDur), '-i', photos[i],
       '-vf',
       `scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},`
-      + `zoompan=z='min(zoom+0.0015,1.12)':d=1:s=${W}x${H}:fps=${FPS},format=yuv420p`,
+      + `zoompan=z='min(zoom+0.0012,1.10)':d=1:s=${W}x${H}:fps=${FPS},format=yuv420p`,
       '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p',
       segPath,
     ], { timeout: 120000, stdio: 'pipe' });
