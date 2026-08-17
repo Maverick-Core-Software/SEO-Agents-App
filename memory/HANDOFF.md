@@ -1,9 +1,9 @@
 # SEO Agents App — Handoff State
 
-**Last updated:** 2026-08-17  
-**Branch:** `main` (pushed)  
-**Latest relevant commit:** `c0e13c8` — slideshow 2.7s beats, gentler 1.10x zoom; ship bed audio  
-**Prior FB media stack:** `fb879f4` … `045edfe` (real photos, carousel Graph, first-comment queue, boost week parse)
+**Last updated:** 2026-08-17 (Meta Ads API path implemented; live spend gated)  
+**Branch:** `main`  
+**Latest relevant commit:** (pending) Meta Marketing API boost via mav-bridge  
+**Prior:** `c0e13c8` slideshow polish; `fb879f4`…`045edfe` real media stack
 
 **Repo:** `C:\Workspace\Active\SEO-Agents-App`  
 **Remote:** `Maverick-Core-Software/SEO-Agents-App`  
@@ -43,47 +43,20 @@
 Schedule file: `outputs/facebook_posting_schedule.md` (**gitignored**).  
 Boost plan: **$50 on Day 1 only** ($25×2d). Ledger eligible after week-header parse fix; **boost was not auto-applied** for this week via Ads UI yet.
 
-### Boost today (problem to replace next session)
-- **Current path:** Claude/cron + Playwright **Boost UI** runbook (`FB-BOOST-RUNBOOK.md` + `fb-boost-ledger.mjs` $50 cap). Fragile.
-- **Desired path (NEXT SESSION):** Meta **Marketing API** boosts driven from **mav-bridge**, still gated by ledger.
+### Boost automation (implemented, spend gated)
+- **Primary:** `scripts/fb-boost-api.mjs` + `scripts/lib/fb-boost-marketing.mjs`
+- **Orchestration:** mav-bridge daily tick (after FB reconcile, ≥9am CT)
+- **Money gate:** `fb-boost-ledger.mjs` eligible → reserve → publish|fail
+- **Live spend off until:** `FB_BOOST_API=1` + `FB_AD_ACCOUNT_ID` + ads token
+- **Rollback:** Playwright UI steps still in `FB-BOOST-RUNBOOK.md`
 
----
-
-## NEXT SESSION — Meta Ads API automation (primary goal)
-
-### Objective
-Replace Claude UI boost cron with programmatic boosts via Marketing API, orchestrated from **mav-bridge**, keeping `fb-boost-ledger.mjs` as the money gate.
-
-### Suggested design
-1. **Inputs:** schedule BOOST summary + live `platform_post_id` (Graph) + week ledger.
-2. **API shape (typical):**  
-   - Ad creative from organic post: `object_story_id` = `{page_id}_{post_id}` (or effective object story id for reels — verify for video/reel objects).  
-   - Campaign (or reuse standing campaign) → Ad set (budget, schedule, geo **Dallas + 15 mi**, ages/interests from schedule) → Ad.  
-3. **Wire into mav-bridge:** after FB reconcile marks post live (or daily eligible check), if `fb-boost-ledger eligible` → Marketing API create → `ledger reserve` → on success `ledger publish` + SMS notify.  
-4. **Hard rules (preserve):** never spend without ledger reserve; $50/week cap; one boost per eligible pick; no double-boost; fail closed on ambiguous summary.
-
-### Prerequisites to gather next session
-- [ ] Meta ad account id (`act_…`)
-- [ ] Token/app with `ads_management` (+ pages as needed); long-lived system user preferred
-- [ ] Confirm reel/video posts are boostable via `object_story_id` vs need `video_id` creative path
-- [ ] Payment method on ad account; prepaid balance behavior
-- [ ] Env keys (proposed): `FB_AD_ACCOUNT_ID`, `FB_ADS_ACCESS_TOKEN` (or scoped from existing page token if capable), optional `FB_BOOST_CAMPAIGN_ID`
-
-### Files to touch (expected)
-- **New:** `scripts/fb-boost-api.mjs` (or `scripts/lib/fb-boost-marketing.mjs`)
-- **Update:** `scripts/mav-bridge.mjs` — call after reconcile / daily
-- **Update:** `scripts/fb-boost-ledger.mjs` — keep as gate; maybe `eligible` already fixed for `## Week of …`
-- **Update:** `FB-BOOST-RUNBOOK.md` — API path primary; Playwright Claude path rollback only
-- **Env:** `.env.example` document new keys (never commit secrets)
-
-### Out of scope for next session unless asked
-- Replacing organic post pipeline
-- Changing $50 weekly policy
-- Instagram dual placement (optional later)
-
-### Rollback
-- Keep Playwright runbook as manual/Claude fallback
-- Ledger refuse = no spend
+### NEXT — credentials + first live boost
+1. Add `FB_AD_ACCOUNT_ID=act_…` and `FB_ADS_ACCESS_TOKEN` (ads_management) to `.env`
+2. Set `FB_BOOST_API=1`
+3. `node scripts/fb-boost-api.mjs status` then `run --dry-run` then `run`
+4. Week of 2026-08-17: Day 1 still eligible ($50) if not boosted via UI yet
+5. Confirm reel `object_story_id` accepted by Marketing API on first live create
+6. Restart mav-bridge after env change so PM2 picks up keys
 
 ---
 
@@ -95,6 +68,8 @@ node scripts/facebook-poster.mjs --schedule-all --time 09:00 --dry-run
 node scripts/facebook-poster.mjs --backfill-comments
 node scripts/fb-boost-ledger.mjs eligible
 node scripts/fb-boost-ledger.mjs status
+node scripts/fb-boost-api.mjs status
+node scripts/fb-boost-api.mjs run --dry-run
 # Slideshow only:
 node scripts/slideshow-reel.mjs --day 1 --dry-run
 ```
@@ -117,13 +92,13 @@ node scripts/slideshow-reel.mjs --day 1 --dry-run
 
 1. **Manual schedule-all** without Supabase still works for first comments only if queue/drain runs.
 2. **Photo selection manifest** soft-warns on explicit curated files (allowed).
-3. **Day 1 boost for week of 8/17** still needs application (API next session or one-shot UI).
+3. **Day 1 boost for week of 8/17** still needs application once ad credentials are set (`fb-boost-api.mjs run`).
 4. Unrelated dirty tree: knowledge baseline archive files — leave alone.
 5. AI video only if `FB_MEDIA_MODE=ai` (opt-in).
+6. Page token alone **cannot** list ad accounts — need ads_management token / system user.
 
 ---
 
 ## Session note pointer
 
-Brain vault session + project brief updated 2026-08-17 for this handoff. Start next chat with:  
-**“Implement Meta Ads API boost via mav-bridge; follow SEO-Agents-App memory/HANDOFF.md NEXT SESSION.”**
+Code path for Marketing API boosts is in-tree. Next chat: wire credentials and run first live boost (or dry-run verify).

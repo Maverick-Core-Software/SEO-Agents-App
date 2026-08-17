@@ -1,15 +1,140 @@
 # FB Boost Runbook — weekly automated boost application
 
-Procedure for the `fb-boost-weekly` scheduled task (daily, 10:00 AM). It reads
-the crew's boost recommendation from `outputs/facebook_posting_schedule.md` and
-applies it through the Facebook Boost UI. **This spends real money.** Every
-dollar must pass through `scripts/fb-boost-ledger.mjs` before Publish is
-clicked — the ledger enforces the hard $50/week cap in code.
+**Primary path (2026-08-17+):** Meta **Marketing API** via `scripts/fb-boost-api.mjs`,
+driven daily from **mav-bridge** after Facebook reconcile. Ledger-gated.
+
+**Rollback path:** Playwright Boost UI (steps below) if the API path is broken
+or credentials are not ready. Claude/`fb-boost-weekly` cron may still use UI.
+
+**This spends real money.** Every dollar must pass through
+`scripts/fb-boost-ledger.mjs` before any ad is created or Publish is clicked —
+the ledger enforces the hard $50/week cap in code.
 
 Carter's standing authorization (2026-08-02 session): apply the crew's
 recommended boost each week automatically, within the $50 weekly cap, with an
 SMS confirmation after every publish. No per-boost chat approval is needed —
 the ledger + the gates below are the approval.
+
+---
+
+## Primary path — Marketing API (`fb-boost-api.mjs`)
+
+### One-time setup
+1. Create / note the Grizzly **ad account** id (`act_…`) in Meta Business Suite.
+2. Issue a long-lived token (system user preferred) with `ads_management` and
+   page access for `FB_PAGE_ID`. Prefer a dedicated `FB_ADS_ACCESS_TOKEN`; the
+   page token is only a fallback if it can manage ads.
+3. In repo `.env` (never commit secrets):
+   ```
+   FB_BOOST_API=1
+   FB_AD_ACCOUNT_ID=act_…
+   FB_ADS_ACCESS_TOKEN=…
+   ```
+
+**Two tokens, two jobs (2026-08-17).** The run needs *both*
+`FB_ADS_ACCESS_TOKEN` and `FB_PAGE_ACCESS_TOKEN`. Page reads
+(`/{page}/published_posts`, post-exists verify) require a **Page** token —
+a system-user ads token gets `(#210) A page access token is required`. Campaign
+/ ad set / creative / ad writes and `/search?type=adinterest` require the **ads**
+token. `readBoostConfig` exposes both (`cfg.token`, `cfg.pageToken`);
+`fb-boost-api.mjs` builds a separate `pageClient`. `pageToken` falls back to
+`token` so the old single-token setup still works. Do **not** replace
+`FB_PAGE_ACCESS_TOKEN` with a system-user page token — the `seo-boost` system
+user has `pages_read_engagement` but **not** `pages_manage_posts`, so the poster
+would break.
+4. Optional: `FB_BOOST_CAMPAIGN_ID` to reuse a standing campaign.
+
+**Ad account time zone is `America/Los_Angeles`, the pipeline schedules on
+`America/Chicago`.** `act_30224457` was created 2008-08-10 with `timezone_id 1`.
+Currency and time zone are **create-only** in the Marketing API and locked in
+the UI once an account has spend — there is no setting to change, and the Ad
+account setup page no longer displays one. Accepted as-is on 2026-08-17.
+
+Consequence: Meta's budget day rolls over at **10pm Central**, not midnight, so
+a `$25/day` budget is attributed on Pacific day boundaries. This does **not**
+weaken the cap — `fb-boost-ledger.mjs` reserves before any create and is
+timezone-independent, and ad sets carry explicit `start_time`/`end_time` so Meta
+prorates partial days. Only spend *attribution by calendar day* shifts 2 hours.
+
+If it ever needs fixing, change the budget-boundary math to
+`America/Los_Angeles` to match the account. Do **not** create a replacement ad
+account for this — that costs a re-claim into the portfolio, re-assigning
+`seo-boost`, re-adding billing, and losing delivery history.
+5. Confirm payment method / prepaid funds ≥ next boost total (same Rule 5 spirit
+   as the UI path — API will fail closed if Meta rejects billing).
+
+### Daily automation
+mav-bridge (after 9:00 America/Chicago, once per day) runs:
+
+```
+node scripts/fb-boost-api.mjs run
+```
+
+Pipeline (fail closed at each gate):
+1. `fb-boost-ledger.mjs eligible` — schedule + summary + $50 cap
+2. Resolve live Graph post (date + caption tokens; `--force-post` override)
+3. Verify object exists
+4. `ledger reserve` **before** any Marketing API create
+5. Campaign (or reuse) → ad set (Dallas + 20 mi, ages/interests) → creative
+   (`object_story_id`) → ad `ACTIVE`
+6. `ledger publish` + Hermes SMS
+
+### Ad set shape — do not change without checking a working boost
+
+Went live 2026-08-17. The ad set **must** carry all three of these together:
+
+```
+objective         OUTCOME_ENGAGEMENT     (campaign)
+optimization_goal POST_ENGAGEMENT
+destination_type  ON_POST
+promoted_object   {"page_id": FB_PAGE_ID}
+```
+
+`destination_type: ON_POST` is the load-bearing one. It sets the conversion
+location to the post. Drop it and Meta guesses, and fails in one of two ways
+that look unrelated:
+
+- with `promoted_object` → `(#100) subcode 2490408` "Performance goal isn't
+  available … with your campaign objective"
+- without `promoted_object` → `(#100) subcode 1487888` "Tracking Pixel Required"
+
+Both are really the same missing field. Two live runs burned on this.
+
+Also: `targeting.targeting_automation.advantage_audience = 0`. Advantage+
+audience is **on by default** and caps `age_min` at 25, which rejects the 28-65
+range with subcode `1870188`. (The Boost UI dodges this by sending `age_min 25`
+plus `age_range [28,65]`; we opt out instead and get real 28+ targeting.)
+
+**`execution_options: ['validate_only']` is not trustworthy here** — it passed a
+config that then failed on real create. Verify against a real boost's ad set
+instead: `GET /<adset_id>?fields=optimization_goal,billing_event,destination_type,promoted_object,targeting`.
+
+Failed runs leave an orphan campaign (and sometimes an ad set) behind, because
+creation is not transactional. Neither delivers without an ad, so neither
+spends, but check `/<act>/campaigns` after any failure and set stragglers to
+`DELETED`.
+
+### Manual commands
+```
+node scripts/fb-boost-api.mjs status
+node scripts/fb-boost-api.mjs resolve-post
+node scripts/fb-boost-api.mjs run --dry-run
+node scripts/fb-boost-api.mjs run --force-post 108252941997164_…
+# Live (only when FB_BOOST_API=1 and ad account configured):
+node scripts/fb-boost-api.mjs run
+```
+
+Dry-run never reserves and never creates ads. Without `FB_BOOST_API=1` the run
+exits with code 2 (config) even if eligible.
+
+### Disable
+- `FB_BOOST_API=0` (or unset) — API will not spend
+- `MAV_BRIDGE_FB_BOOST=0` — bridge skips the daily tick entirely
+- Ledger `REFUSED` — no spend
+
+---
+
+## Rollback path — Boost UI (Playwright / Claude)
 
 ## Hard rules — never violate
 
@@ -18,7 +143,7 @@ the ledger + the gates below are the approval.
 2. **Never boost a post you have not verified live** via the Graph API.
 3. **Never exceed the schedule's stated boost for a post** (daily × days). If
    the schedule is ambiguous about amounts, escalate instead of guessing.
-4. **Location is always Dallas + 15 mi** (Carter's standing override) — ignore
+4. **Location is always Dallas + 20 mi** (Carter's standing override) — ignore
    the schedule's Rowlett/other center. Ages and interests come from the
    schedule's BOOST_TARGETING.
 5. If the UI does not match this runbook in a way you can't confidently adapt
@@ -125,7 +250,7 @@ facebook-poster):
        3.5 s → ArrowDown → Enter. "United States" in the list is the country
        group HEADER, not a chip — only actual chips have Remove buttons.
        Radius slider (`aria-label` "Change radius"): focus + ArrowLeft/Right
-       to **15 mi** — it defaults to **25 mi**, so this is never a no-op.
+       to **20 mi** — it defaults to **25 mi**, so this is never a no-op.
        Whether "United States" is a removable chip varies: on 8/07 it was one,
        and adding Dallas replaced it automatically with no explicit remove.
        Confirm the final chip list is exactly the location you intended.
@@ -172,7 +297,7 @@ facebook-poster):
      Visa on file only charges past the prepaid balance).
 5. Verify the on-page **Payment summary** shows exactly
    `$<daily> a day x <days> days` / total = reserved amount, and Audience
-   details show Dallas (+15 mi) + expected ages/interests. Screenshot to
+   details show Dallas (+20 mi) + expected ages/interests. Screenshot to
    `outputs/`.
 6. Click **Publish** (bottom-right `role=button`). Success = "Ad in review"
    dialog: "Your ad is being created", Status: In review, with matching Total

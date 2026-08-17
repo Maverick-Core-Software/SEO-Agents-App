@@ -1,6 +1,30 @@
 # SEO Agents App — Journal
 
 
+## 2026-08-17 — Meta Marketing API boost path (ledger-gated, spend off until credentials)
+
+**Agent:** Grok  
+**Outcome:** Primary boost path is now Marketing API + mav-bridge, not Playwright UI.
+
+### Shipped
+- `scripts/lib/fb-boost-marketing.mjs` — targeting, object_story_id, Graph client, createOrganicBoost
+- `scripts/fb-boost-api.mjs` — eligible → resolve live post → reserve → API → publish + SMS
+- `scripts/mav-bridge.mjs` — daily tick after FB reconcile calls `fb-boost-api.mjs run`
+- `FB-BOOST-RUNBOOK.md` — API primary; UI rollback
+- `.env.example` — `FB_BOOST_API`, `FB_AD_ACCOUNT_ID`, `FB_ADS_ACCESS_TOKEN`, geo/age knobs
+- Unit tests: `scripts/lib/fb-boost-marketing.test.mjs` (11 pass)
+- Dry-run verified: resolves Day 1 reel `108252941997164_1037482872404941`, plan $25×2d Dallas+15mi
+
+### Still blocked on credentials (no live spend)
+- Page token cannot list ad accounts
+- Need `FB_AD_ACCOUNT_ID` + `FB_ADS_ACCESS_TOKEN` (ads_management) + `FB_BOOST_API=1`
+- Then: `node scripts/fb-boost-api.mjs run` (or wait for mav-bridge daily tick)
+
+### Safety
+- Never reserves without eligible; never creates ads before reserve
+- Soft-skips (exit 0) when API disabled/missing config so bridge does not fault-alert
+
+
 ## 2026-08-17 — Facebook real-media + first-comment + slideshow polish; handoff to Meta Ads API
 
 **Agent:** Grok (manual-fb-posts / SEO-Agents-App)

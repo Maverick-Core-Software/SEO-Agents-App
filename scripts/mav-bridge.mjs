@@ -70,6 +70,10 @@ const GRAPH_API_VERSION = process.env.FB_GRAPH_API_VERSION || 'v22.0';
 const FB_PAGE_ACCESS_TOKEN = process.env.FB_PAGE_ACCESS_TOKEN || process.env.FB_ACCESS_TOKEN || '';
 // Auto-execute approved website tasks by priority (enabled by default; set to '0' to disable)
 const WEBSITE_AUTO_EXEC = (process.env.MAV_WEBSITE_AUTO_EXEC || '1').toLowerCase() !== '0';
+// Marketing API boosts (ledger-gated). Off until FB_BOOST_API=1 + ad account configured.
+// Set MAV_BRIDGE_FB_BOOST=0 to disable the daily bridge call entirely.
+const FB_BOOST_BRIDGE_ON = (process.env.MAV_BRIDGE_FB_BOOST || '1').toLowerCase() !== '0';
+const FB_BOOST_API_PATH = path.join(PROJECT_ROOT, 'scripts', 'fb-boost-api.mjs');
 
 if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
   console.error('[mav-bridge] SUPABASE_URL or SUPABASE_SERVICE_KEY not set — exiting');
@@ -601,6 +605,36 @@ async function poll() {
             .update({ status: 'posted', posted_at: new Date().toISOString() })
             .eq('id', post.id);
           console.log(`[mav-bridge][fb-reconcile] ${post.post_date} no platform_post_id — trusting schedule, marked posted`);
+        }
+      }
+
+      // ── Facebook boost via Marketing API (ledger-gated) ──
+      // Replaces the Claude Playwright Boost UI cron as the primary path.
+      // fb-boost-api.mjs enforces: eligible → live verify → reserve → Ads API → publish.
+      // Soft skips (not eligible / API disabled) exit 0 — do not use runPhase/hopError.
+      if (FB_BOOST_BRIDGE_ON) {
+        try {
+          const { stdout, stderr } = await execFileAsync(process.execPath, [FB_BOOST_API_PATH, 'run'], {
+            cwd: PROJECT_ROOT,
+            timeout: 3 * 60 * 1000,
+            maxBuffer: 4 * 1024 * 1024,
+            encoding: 'utf8',
+            windowsHide: true,
+            env: process.env,
+          });
+          const line = (stdout || '').trim().split(/\r?\n/).filter(Boolean).pop() || '';
+          let summary = line.slice(0, 400);
+          try {
+            const j = JSON.parse(line);
+            summary = j.boost_applied
+              ? `applied ${j.pick?.key} ad=${j.created?.ad_id}`
+              : `skip: ${j.reason || j.stage}${j.eligible === false ? ' (not eligible)' : ''}`;
+          } catch { /* raw line ok */ }
+          console.log(`[mav-bridge][fb-boost] ${summary}`);
+          if (stderr) console.log(`[mav-bridge][fb-boost] stderr: ${stderr.slice(0, 300)}`);
+        } catch (e) {
+          const detail = [e.message, e.stdout, e.stderr].filter(Boolean).join(' | ').slice(0, 500);
+          console.error(`[mav-bridge][fb-boost] failed: ${detail}`);
         }
       }
     }
