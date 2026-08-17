@@ -504,33 +504,48 @@ function curatedPhotoForDate(date, service) {
 }
 
 function resolvePhotoPath(post) {
-  const acceptAudited = (candidate) => {
+  // Explicit PHOTO_FILE from the schedule is trusted when the file exists on disk
+  // in curated/GBP libraries (crew/human-picked). Manifest audit is a soft
+  // warning only for those explicit picks so carousel/slideshow weeks don't
+  // collapse to text when the pick pipeline hasn't re-manifested every file.
+  const acceptExplicit = (candidate) => {
     if (!candidate || !fs.existsSync(candidate)) return null;
-    const audit = isManifestSelectionCompatible({
-      date: post.date,
-      service: post.service,
-      photoPath: candidate,
-      manifest: photoSelectionManifest,
-    });
-    if (!audit.ok) {
-      console.warn(`[photo-guard] refusing unverified/off-topic image ${candidate}: ${audit.reason}`);
-      return null;
+    if (photoSelectionManifest?.length) {
+      const audit = isManifestSelectionCompatible({
+        date: post.date,
+        service: post.service,
+        photoPath: candidate,
+        manifest: photoSelectionManifest,
+      });
+      if (!audit.ok) {
+        hopLog('facebook-poster', 'warn',
+          `[photo-guard] explicit PHOTO_FILE not in manifest (${audit.reason}) — allowing ${path.basename(candidate)}`);
+      }
     }
     return candidate;
   };
-  const photoFile = post.photo_file || '';
-  if (photoFile) {
-    if (path.isAbsolute(photoFile)) {
-      const accepted = acceptAudited(photoFile);
+  const photoFile = (post.photo_file || '').trim();
+  // Multi-file PHOTO_FILE is handled by resolveCarouselPhotos — take first only here.
+  const firstFile = photoFile && /[,|;]/.test(photoFile)
+    ? photoFile.split(/[,|;]+/)[0].trim()
+    : photoFile;
+  if (firstFile) {
+    if (path.isAbsolute(firstFile)) {
+      const accepted = acceptExplicit(firstFile);
       if (accepted) return accepted;
-    }
-    else {
-      const fromGbp = path.join(GBP_PHOTO_PATH, photoFile);
-      const acceptedGbp = acceptAudited(fromGbp);
-      if (acceptedGbp) return acceptedGbp;
-      const fromOutputs = path.join(PROJECT_ROOT, 'outputs', photoFile);
-      const acceptedOutputs = acceptAudited(fromOutputs);
-      if (acceptedOutputs) return acceptedOutputs;
+    } else {
+      const basenames = [firstFile, path.basename(firstFile)];
+      for (const name of basenames) {
+        const candidates = [
+          path.join(GBP_CURATED_FOLDER, name),
+          path.join(GBP_PHOTO_PATH, name),
+          path.join(PROJECT_ROOT, 'outputs', name),
+        ];
+        for (const c of candidates) {
+          const accepted = acceptExplicit(c);
+          if (accepted) return accepted;
+        }
+      }
     }
   }
   // No usable explicit photo — try the same-date curated winner (video-day fallback).
@@ -570,8 +585,17 @@ function curatedPhotosForPost(post, max = 4) {
       .sort();
     if (!files.length && post.service) {
       const slug = post.service.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+      // Match on meaningful tokens (not only the full slug) so
+      // "Federal Pacific / Zinsco Panel Replacement" hits federal-pacific-zinsco-*.
+      const tokens = slug.split('-').filter((t) => t.length >= 4);
       files = fs.readdirSync(GBP_CURATED_FOLDER)
-        .filter((f) => /\.(jpe?g|png|webp)$/i.test(f) && f.toLowerCase().includes(slug))
+        .filter((f) => {
+          if (!/\.(jpe?g|png|webp)$/i.test(f)) return false;
+          const low = f.toLowerCase();
+          if (low.includes(slug)) return true;
+          const hits = tokens.filter((t) => low.includes(t)).length;
+          return hits >= Math.min(2, tokens.length);
+        })
         .sort()
         .slice(-max);
     }
@@ -884,7 +908,14 @@ function resolveCarouselPhotos(post) {
     for (const part of parts) {
       const probe = { ...post, photo_file: part };
       const p = resolvePhotoPath(probe);
-      if (p) resolved.push(p);
+      if (p && !resolved.includes(p)) resolved.push(p);
+    }
+    if (resolved.length >= 2) return resolved.slice(0, 10);
+    // If only one explicit resolved, still try curated fill
+    const fill = curatedPhotosForPost(post, 6);
+    for (const p of fill) {
+      if (!resolved.includes(p)) resolved.push(p);
+      if (resolved.length >= 6) break;
     }
     if (resolved.length >= 2) return resolved.slice(0, 10);
   }
