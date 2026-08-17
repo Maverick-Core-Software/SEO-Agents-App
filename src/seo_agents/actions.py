@@ -649,13 +649,13 @@ def parse_facebook_post_actions(run_id: str = "") -> list[dict[str, Any]]:
             "due_window": post.get("date") or "",
             "steps": [
                 "Review post hook, body, and hashtags.",
-                "For video posts: verify Gemini video prompt before publishing.",
+                "For slideshow/photo posts: verify real job photos and on-screen text (no AI video).",
                 "Publish to Facebook Page after approval.",
             ],
             "dependencies": ["Owner approval", "Facebook Page Access Token"],
             "verification_checklist": [
                 "Confirm post is visible on Facebook Business Page.",
-                "For video posts: confirm video rendered correctly.",
+                "For slideshow posts: confirm Ken Burns reel uses real photos and readable overlays.",
             ],
             "post": post,
             "approval_required": True,

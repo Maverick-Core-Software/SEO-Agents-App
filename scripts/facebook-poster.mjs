@@ -31,12 +31,14 @@
  *   FB_PAGE_ID            — numeric Facebook Page ID
  *   FB_PAGE_ACCESS_TOKEN  — long-lived Page Access Token
  * Optional env:
+ *   FB_MEDIA_MODE         — "real" (default): still photos + Ken Burns slideshow Reels from
+ *                           real job photos. "ai": legacy Grok/Veo generative video for TYPE video.
  *   FB_USE_PLAYWRIGHT     — "1" to use Playwright browser automation instead of the Graph API
  *   FB_PAGE_URL           — page URL for Playwright (falls back to https://facebook.com/<FB_PAGE_ID>)
  *   FB_GRAPH_API_VERSION  — Graph API version (default v22.0)
- *   FB_VIDEO_OUTPUT_DIR   — where Gemini videos are saved (default outputs/fb-videos)
- *   GEMINI_VIDEO_GENERATOR — path to gemini-video-generator.mjs
- *   GBP_PHOTO_PATH        — folder of GBP post photos used as video fallback
+ *   FB_VIDEO_OUTPUT_DIR   — where Reels/slideshows are saved (default outputs/fb-videos)
+ *   GEMINI_VIDEO_GENERATOR — path to gemini-video-generator.mjs (only when FB_MEDIA_MODE=ai)
+ *   GBP_PHOTO_PATH        — folder of GBP post photos used as photo / slideshow source
  */
 
 import fs from 'node:fs';
@@ -48,6 +50,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { normalizePhotoFile } from './lib/schedule-text.mjs';
 import { loadPhotoSelectionManifest, isManifestSelectionCompatible } from './lib/photo-selection.mjs';
 import { postProcessVideo, enhanceVideo } from './video-postprocess.mjs';
+import { buildSlideshowReel, parseOnScreenText } from './slideshow-reel.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -82,11 +85,11 @@ const FB_PAGE_URL = process.env.FB_PAGE_URL
   || (FB_PAGE_ID ? `https://www.facebook.com/${FB_PAGE_ID}` : '');
 const VIDEO_OUTPUT_DIR = process.env.FB_VIDEO_OUTPUT_DIR
   || path.join(PROJECT_ROOT, 'outputs', 'fb-videos');
-// Backend for video generation: 'xai' (Grok Imagine, default) or 'gemini' (Veo 3).
-// Veo 3 was renderering brand text and phone numbers directly into the frame
-// with garbled spelling ("Eleecrtral Sollutions", "(169) 865-9804") because
-// video models can't reliably draw text on curved surfaces. Grok Imagine is
-// the current default; we composite the real brand + phone via ffmpeg after.
+// Media policy: "real" (default) = still photos + Ken Burns slideshows from job
+// photos. "ai" = legacy generative video (Grok Imagine / Veo) for TYPE video.
+const MEDIA_MODE = (process.env.FB_MEDIA_MODE || 'real').toLowerCase();
+// Backend for AI video generation (only when FB_MEDIA_MODE=ai):
+// 'xai' (Grok Imagine, default) or 'gemini' (Veo 3).
 const VIDEO_BACKEND = (process.env.FB_VIDEO_BACKEND || 'xai').toLowerCase();
 const GEMINI_VIDEO_GEN = process.env.GEMINI_VIDEO_GENERATOR
   || path.join(__dirname, 'gemini-video-generator.mjs');
@@ -464,6 +467,8 @@ function curatedPhotoForDate(date, service) {
   // not text. Prefer a file whose slug matches the post's service type; if
   // multiple services share a date, fall back to the first match.
   if (!date) return null;
+  // Schedule DATE fields sometimes include a human parenthetical.
+  date = String(date).replace(/\s*\(.*$/, '').trim();
   try {
     const files = fs.readdirSync(GBP_CURATED_FOLDER)
       .filter(f => f.startsWith(`${date}-`) && /\.(jpe?g|png|webp)$/i.test(f))
@@ -532,6 +537,144 @@ function resolvePhotoPath(post) {
 function resolveVideoPath(post) {
   const slug = (post.date || post.day || new Date().toISOString().slice(0, 10)).toString().replace(/\s/g, '-');
   return path.join(VIDEO_OUTPUT_DIR, `fb-video-${slug}.mp4`);
+}
+
+function resolveSlideshowPath(post) {
+  const slug = (post.date || post.day || new Date().toISOString().slice(0, 10)).toString().replace(/\s/g, '-');
+  return path.join(VIDEO_OUTPUT_DIR, `fb-reel-${slug}.mp4`);
+}
+
+function isMotionType(type) {
+  const t = (type || '').toLowerCase();
+  return t === 'video' || t === 'slideshow';
+}
+
+/** Under FB_MEDIA_MODE=real, TYPE video|slideshow → photo slideshow Reel (no AI). */
+function wantsSlideshow(post) {
+  if (MEDIA_MODE === 'ai') return false;
+  return isMotionType(post.type);
+}
+
+function curatedPhotosForPost(post, max = 4) {
+  // Prefer same-date curated winners (gbp-photo-pick). If the selection
+  // manifest is empty/missing, date-prefixed curated files are still trusted —
+  // they only land in GBP_CURATED_FOLDER via the pick pipeline.
+  const date = (post.date || '').replace(/\s*\(.*$/, '').trim();
+  if (!date) return [];
+  try {
+    let files = fs.readdirSync(GBP_CURATED_FOLDER)
+      .filter((f) => f.startsWith(`${date}-`) && /\.(jpe?g|png|webp)$/i.test(f))
+      .sort();
+    if (!files.length && post.service) {
+      const slug = post.service.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+      files = fs.readdirSync(GBP_CURATED_FOLDER)
+        .filter((f) => /\.(jpe?g|png|webp)$/i.test(f) && f.toLowerCase().includes(slug))
+        .sort()
+        .slice(-max);
+    }
+    const out = [];
+    const manifestEmpty = !photoSelectionManifest || photoSelectionManifest.length === 0;
+    for (const file of files) {
+      if (out.length >= max) break;
+      const candidate = path.join(GBP_CURATED_FOLDER, file);
+      if (manifestEmpty) {
+        out.push(candidate);
+        continue;
+      }
+      const audit = isManifestSelectionCompatible({
+        date: post.date,
+        service: post.service,
+        photoPath: candidate,
+        manifest: photoSelectionManifest,
+      });
+      if (audit.ok) out.push(candidate);
+    }
+    // Date-prefixed curated files with no matching manifest entry: still allow
+    // them for slideshow (same trust boundary as pre-manifest video fallback).
+    if (!out.length && files.length) {
+      for (const file of files.slice(0, max)) {
+        out.push(path.join(GBP_CURATED_FOLDER, file));
+      }
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+function resolveSlideshowPhotos(post) {
+  const photos = curatedPhotosForPost(post, 4);
+  if (photos.length) return photos;
+  const single = resolvePhotoPath(post);
+  return single ? [single] : [];
+}
+
+/**
+ * Prepare motion media for posts. Default FB_MEDIA_MODE=real builds Ken Burns
+ * slideshows from real photos. FB_MEDIA_MODE=ai keeps the legacy generative path.
+ */
+async function prepareMotionMedia(posts) {
+  const motionPosts = posts.filter((p) => isMotionType(p.type));
+  if (!motionPosts.length) return;
+
+  if (MEDIA_MODE === 'ai') {
+    hopLog('facebook-poster', 'info', 'FB_MEDIA_MODE=ai — generative video backend');
+    await generateAllVideos(posts);
+    for (const p of posts) {
+      if (isMotionType(p.type)) p._videoPath = resolveVideoPath(p);
+    }
+    return;
+  }
+
+  hopLog('facebook-poster', 'info',
+    'FB_MEDIA_MODE=real — still photos + Ken Burns slideshows (no AI video)');
+  fs.mkdirSync(VIDEO_OUTPUT_DIR, { recursive: true });
+
+  for (const post of motionPosts) {
+    const outPath = resolveSlideshowPath(post);
+    if (fs.existsSync(outPath)) {
+      hopLog('facebook-poster', 'info',
+        `Day ${post.day}: reusing slideshow ${path.basename(outPath)}`);
+      post._videoPath = outPath;
+      post.type = 'video';
+      continue;
+    }
+    const photos = resolveSlideshowPhotos(post);
+    if (!photos.length) {
+      hopLog('facebook-poster', 'warn',
+        `Day ${post.day}: no photos for slideshow — will fall back to still/text`);
+      continue;
+    }
+    try {
+      const textItems = parseOnScreenText(post.on_screen_text);
+      // If the schedule left ON_SCREEN_TEXT blank, use hook + short body beats.
+      if (!textItems.length && post.hook) {
+        textItems.push({ start: 0, end: 3, text: String(post.hook).slice(0, 80) });
+        if (post.service) {
+          textItems.push({ start: 3, end: 7, text: String(post.service).slice(0, 60) });
+        }
+      }
+      const result = buildSlideshowReel({
+        photos,
+        textItems,
+        outPath,
+        workDir: VIDEO_OUTPUT_DIR,
+      });
+      if (result.status !== 'success') {
+        hopLog('facebook-poster', 'warn',
+          `Day ${post.day}: slideshow failed (${result.message}) — photo/text fallback`);
+        continue;
+      }
+      post._videoPath = outPath;
+      post.type = 'video'; // Graph path uploads video for motion posts
+      hopLog('facebook-poster', 'info',
+        `Day ${post.day}: slideshow ready (${result.photos} photos, ${result.duration}s, `
+        + `${(result.sizeBytes / 1e6).toFixed(1)} MB)`);
+    } catch (e) {
+      hopLog('facebook-poster', 'warn',
+        `Day ${post.day}: slideshow error (${e.message.slice(0, 120)}) — photo/text fallback`);
+    }
+  }
 }
 
 function dateTimeToUnix(dateStr, timeStr) {
@@ -685,6 +828,70 @@ async function graphPostPhoto(photoPath, caption, scheduleUnix) {
   return (await graphParse('photo', res)).id;
 }
 
+/**
+ * Multi-photo carousel: upload unpublished photos, then attach them to a feed post.
+ * Graph requires ≥2 unpublished media_fbids on /feed with attached_media[n].
+ */
+async function graphPostCarousel(photoPaths, caption, scheduleUnix) {
+  const paths = (photoPaths || []).filter((p) => p && fs.existsSync(p)).slice(0, 10);
+  if (paths.length < 2) {
+    throw new Error(`Carousel needs ≥2 photos (got ${paths.length})`);
+  }
+  if (!caption || !caption.trim()) {
+    throw new Error('Refusing to post carousel: caption is empty.');
+  }
+  const mediaIds = [];
+  for (const photoPath of paths) {
+    const form = new FormData();
+    form.append('published', 'false');
+    form.append('temporary', 'true');
+    form.append('access_token', FB_PAGE_ACCESS_TOKEN);
+    form.append('source', new Blob([fs.readFileSync(photoPath)]), path.basename(photoPath));
+    const res = await fetch(
+      `https://graph.facebook.com/${GRAPH_API_VERSION}/${FB_PAGE_ID}/photos`,
+      { method: 'POST', body: form },
+    );
+    const json = await graphParse('carousel photo upload', res);
+    if (!json.id) throw new Error(`Carousel photo upload returned no id for ${path.basename(photoPath)}`);
+    mediaIds.push(json.id);
+  }
+  const body = new URLSearchParams();
+  body.append('message', caption);
+  body.append('access_token', FB_PAGE_ACCESS_TOKEN);
+  mediaIds.forEach((id, i) => {
+    body.append(`attached_media[${i}]`, JSON.stringify({ media_fbid: id }));
+  });
+  if (scheduleUnix) {
+    body.append('published', 'false');
+    body.append('scheduled_publish_time', String(scheduleUnix));
+  }
+  const feedRes = await fetch(
+    `https://graph.facebook.com/${GRAPH_API_VERSION}/${FB_PAGE_ID}/feed`,
+    { method: 'POST', body },
+  );
+  return (await graphParse('carousel feed', feedRes)).id;
+}
+
+function resolveCarouselPhotos(post) {
+  // Explicit multi-path PHOTO_FILE: "a.jpg, b.jpg" or pipe-separated
+  const raw = post.photo_file || '';
+  if (raw && /[,|;]/.test(raw)) {
+    const parts = raw.split(/[,|;]+/).map((s) => s.trim()).filter(Boolean);
+    const resolved = [];
+    for (const part of parts) {
+      const probe = { ...post, photo_file: part };
+      const p = resolvePhotoPath(probe);
+      if (p) resolved.push(p);
+    }
+    if (resolved.length >= 2) return resolved.slice(0, 10);
+  }
+  const curated = curatedPhotosForPost(post, 6);
+  if (curated.length >= 2) return curated.slice(0, 6);
+  const single = resolvePhotoPath(post);
+  if (single && curated.length === 1 && curated[0] !== single) return [single, curated[0]];
+  return curated.length >= 2 ? curated : (single ? [single] : []);
+}
+
 async function graphPostVideo(videoPath, caption, scheduleUnix) {
   // Single-request upload via multipart form. The older resumable/chunked
   // (upload_phase start→transfer→finish) path returns {"success":true} with no
@@ -714,18 +921,44 @@ async function graphPostVideo(videoPath, caption, scheduleUnix) {
 // (e.g. 'video→photo', 'video→text', 'photo→text').
 async function graphDispatch(post, caption, videoPath, scheduleUnix) {
   return withTokenRetry(`day ${post.day ?? '?'} (${post.type})`, async () => {
-    if (post.type === 'video' && videoPath && fs.existsSync(videoPath)) {
+    if (isMotionType(post.type) && videoPath && fs.existsSync(videoPath)) {
       hopLog('facebook-poster→graph', 'info', `Uploading video (${(fs.statSync(videoPath).size / 1e6).toFixed(1)} MB)`);
       return { id: await graphPostVideo(videoPath, caption, scheduleUnix), media: 'video', fallback: null };
     }
+    // Multi-photo carousel (TYPE carousel, or photo day with ≥2 curated stills when forced)
+    if ((post.type || '').toLowerCase() === 'carousel') {
+      const photos = resolveCarouselPhotos(post);
+      if (photos.length >= 2) {
+        hopLog('facebook-poster→graph', 'info',
+          `Uploading carousel (${photos.length} photos): ${photos.map((p) => path.basename(p)).join(', ')}`);
+        return {
+          id: await graphPostCarousel(photos, caption, scheduleUnix),
+          media: 'carousel',
+          fallback: null,
+        };
+      }
+      hopLog('facebook-poster→graph', 'warn',
+        `Carousel needs ≥2 photos (got ${photos.length}) — falling back to single photo/text`);
+    }
     const fullPhotoPath = resolvePhotoPath(post);
     if (fullPhotoPath) {
-      const fallback = post.type === 'video' ? 'video→photo' : null;
-      if (fallback) hopLog('facebook-poster→graph', 'info', `Video unavailable — falling back to photo: ${path.basename(fullPhotoPath)}`);
+      const fallback = isMotionType(post.type)
+        ? 'video→photo'
+        : (post.type || '').toLowerCase() === 'carousel'
+          ? 'carousel→photo'
+          : null;
+      if (fallback) hopLog('facebook-poster→graph', 'info', `Media fallback (${fallback}): ${path.basename(fullPhotoPath)}`);
       else hopLog('facebook-poster→graph', 'info', `Uploading photo: ${path.basename(fullPhotoPath)}`);
       return { id: await graphPostPhoto(fullPhotoPath, caption, scheduleUnix), media: 'photo', fallback };
     }
-    const fallback = post.type === 'video' ? 'video→text' : post.photo_file ? 'photo→text' : null;
+    const t = (post.type || '').toLowerCase();
+    const fallback = isMotionType(post.type)
+      ? 'video→text'
+      : t === 'carousel'
+        ? 'carousel→text'
+        : post.photo_file
+          ? 'photo→text'
+          : null;
     if (post.photo_file) hopLog('facebook-poster→graph', 'warn', `Photo not found: ${post.photo_file} — posting as text`);
     return { id: await graphPostText(caption, scheduleUnix), media: 'text', fallback };
   });
@@ -1376,20 +1609,51 @@ async function runSinglePayload(args) {
     };
   }
 
-  // Resolve / generate the video file for video posts.
+  // Resolve motion media (slideshow by default; AI only when FB_MEDIA_MODE=ai).
   let videoPath = post.video_file || null;
-  if (type === 'video' && !videoPath) {
-    videoPath = resolveVideoPath(post);
-    if (!fs.existsSync(videoPath)) {
-      const prompt = await generateCinematicPrompt(post);
-      if (!prompt) throw new Error('video_prompt or video_file required for video posts (no XAI_API_KEY to generate one)');
-      hopLog('facebook-poster', 'info', `Generating video via ${VIDEO_BACKEND}: ${prompt.slice(0, 80)}...`);
-      try {
-        const referenceImage = resolveReferenceImage(post);
-        generateGeminiVideo(prompt, videoPath, { referenceImage });
-      } catch (e) {
-        hopLog('facebook-poster→gemini', 'warn', `video generation failed (${e.message.slice(0, 120)}) — will fall back to photo/text`);
-        videoPath = null;
+  if (isMotionType(type) && !videoPath) {
+    if (wantsSlideshow(post)) {
+      videoPath = resolveSlideshowPath(post);
+      if (!fs.existsSync(videoPath)) {
+        const photos = resolveSlideshowPhotos(post);
+        if (photos.length) {
+          try {
+            const textItems = parseOnScreenText(post.on_screen_text);
+            if (!textItems.length && post.hook) {
+              textItems.push({ start: 0, end: 3, text: String(post.hook).slice(0, 80) });
+            }
+            const result = buildSlideshowReel({
+              photos,
+              textItems,
+              outPath: videoPath,
+              workDir: VIDEO_OUTPUT_DIR,
+            });
+            if (result.status !== 'success') videoPath = null;
+            else hopLog('facebook-poster', 'info',
+              `Slideshow ready (${result.photos} photos): ${path.basename(videoPath)}`);
+          } catch (e) {
+            hopLog('facebook-poster', 'warn',
+              `slideshow failed (${e.message.slice(0, 120)}) — photo/text fallback`);
+            videoPath = null;
+          }
+        } else {
+          videoPath = null;
+        }
+      }
+      if (videoPath && fs.existsSync(videoPath)) post.type = 'video';
+    } else {
+      videoPath = resolveVideoPath(post);
+      if (!fs.existsSync(videoPath)) {
+        const prompt = await generateCinematicPrompt(post);
+        if (!prompt) throw new Error('video_prompt or video_file required for video posts (no XAI_API_KEY to generate one)');
+        hopLog('facebook-poster', 'info', `Generating video via ${VIDEO_BACKEND}: ${prompt.slice(0, 80)}...`);
+        try {
+          const referenceImage = resolveReferenceImage(post);
+          generateGeminiVideo(prompt, videoPath, { referenceImage });
+        } catch (e) {
+          hopLog('facebook-poster→gemini', 'warn', `video generation failed (${e.message.slice(0, 120)}) — will fall back to photo/text`);
+          videoPath = null;
+        }
       }
     }
   }
@@ -1473,8 +1737,7 @@ async function runWeek(args) {
     };
   }
 
-  await generateAllVideos(posts);
-  for (const p of posts) if (p.type === 'video') p._videoPath = resolveVideoPath(p);
+  await prepareMotionMedia(posts);
 
   const results = [];
   const nowUnix = Math.floor(Date.now() / 1000);
