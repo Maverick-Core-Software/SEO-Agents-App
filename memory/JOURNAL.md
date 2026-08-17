@@ -1,5 +1,33 @@
 # SEO Agents App — Journal
 
+
+## 2026-08-17 — Facebook real-media + first-comment + slideshow polish; handoff to Meta Ads API
+
+**Agent:** Grok (manual-fb-posts / SEO-Agents-App)
+**Outcome:** AI video default replaced with real photos + Ken Burns slideshows + Graph carousels. First-comment reliability fixed for manual schedules. Slideshow captions/audio polished; beat 2.7s / zoom 1.10 shipped. Week of 8/17 scheduled; Monday live (re-posted for inspect). Boost still ledger/UI — **next session: Marketing API via mav-bridge**.
+
+### Shipped (main, pushed through `c0e13c8`)
+- `FB_MEDIA_MODE=real` default; crew Day1 slideshow / photo|carousel / photo|text
+- `slideshow-reel.mjs` exportable Ken Burns + caption band + bed audio (`assets/audio/*`)
+- Graph carousel multi-photo; curated PHOTO_FILE resolution
+- First-comment: live stamp + `state/fb-pending-first-comments.json` + `--backfill-comments` + mav-bridge drain
+- Boost ledger parses `## Week of …` headers
+- Defaults: **2.7s** caption beat, Ken Burns max **1.10**
+
+### Ops facts
+- Page `108252941997164` Grizzly Electrical Solutions
+- Schedule file gitignored: `outputs/facebook_posting_schedule.md`
+- Day1 boost $50 eligible but not auto-spent via Ads API yet
+- Monday polished reel left live for inspection; speed/zoom change is for **next** builds only
+
+### Next session (do not lose)
+1. Meta Marketing API boost automation
+2. Drive from **mav-bridge** after post live / eligible
+3. Keep `fb-boost-ledger.mjs` hard $50 gate
+4. Retire Claude Playwright boost cron as primary path
+5. Read `memory/HANDOFF.md` section **NEXT SESSION — Meta Ads API**
+
+
 ## 2026-07-14 — Evidence-First Build Handoff (Complete)
 
 **Executor:** Local Qwen (qwen3.6-35b-a3b) via Orca pi terminal
