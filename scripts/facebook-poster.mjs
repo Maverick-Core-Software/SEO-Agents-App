@@ -193,6 +193,7 @@ function trackPostEngagement(postId, postGoal, postDay) {
 }
 
 const FIRST_COMMENT_STATE_FILE = path.join(PROJECT_ROOT, 'state', 'fb-first-comments.json');
+const PENDING_FIRST_COMMENT_FILE = path.join(PROJECT_ROOT, 'state', 'fb-pending-first-comments.json');
 const PHONE_IN_TEXT_RE = /\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/;
 const CONTACT_STYLE_RE = /text us|instant quote|896-3862|863-9804/i;
 
@@ -384,6 +385,62 @@ export async function ensureFirstComments(postIds, options = {}) {
     // small gap between posts to stay under Graph burst limits
     await sleep(500);
   }
+  return results;
+}
+
+function loadPendingFirstComments() {
+  try {
+    if (fs.existsSync(PENDING_FIRST_COMMENT_FILE)) {
+      return JSON.parse(fs.readFileSync(PENDING_FIRST_COMMENT_FILE, 'utf8'));
+    }
+  } catch { /* ignore */ }
+  return { pending: {} };
+}
+
+function savePendingFirstComments(state) {
+  try {
+    fs.mkdirSync(path.dirname(PENDING_FIRST_COMMENT_FILE), { recursive: true });
+    fs.writeFileSync(PENDING_FIRST_COMMENT_FILE, JSON.stringify(state, null, 2));
+  } catch (e) {
+    hopLog('facebook-poster', 'warn', `Could not save pending first-comment queue: ${e.message}`);
+  }
+}
+
+/** Queue a first-comment for after a scheduled post goes live (Graph rejects early). */
+export function queuePendingFirstComment(postId, meta = {}) {
+  if (!postId) return;
+  const state = loadPendingFirstComments();
+  state.pending[String(postId)] = {
+    ...meta,
+    queuedAt: new Date().toISOString(),
+  };
+  savePendingFirstComments(state);
+  hopLog('facebook-poster', 'info', `Queued first-comment for scheduled post ${postId}`);
+}
+
+/**
+ * Drain local pending first-comment queue (no Supabase required).
+ * Call after publish day, or via: node facebook-poster.mjs --backfill-comments
+ */
+export async function drainPendingFirstComments(options = {}) {
+  const state = loadPendingFirstComments();
+  const entries = Object.entries(state.pending || {});
+  const results = [];
+  for (const [postId, meta] of entries) {
+    const isVideo = /video|slideshow|reel/i.test(String(meta?.type || meta?.media || ''));
+    const r = await postFirstComment(postId, FIRST_COMMENT, {
+      retries: isVideo ? 6 : 4,
+      initialDelayMs: isVideo ? 3000 : 500,
+      backoffMs: 4000,
+      ...options,
+    });
+    results.push({ postId, ...r, meta });
+    if (r.ok) {
+      delete state.pending[postId];
+    }
+    await sleep(400);
+  }
+  savePendingFirstComments(state);
   return results;
 }
 
@@ -1819,7 +1876,7 @@ async function runWeek(args) {
                 // post actually goes live (Facebook rejects comments on unpublished posts).
                 // Never gate on schedule CONTACT; fixed FIRST_COMMENT is always the copy.
                 if (id && isLive) {
-                  const isVideo = (post.type || '').toLowerCase() === 'video';
+                  const isVideo = isMotionType(post.type) || media === 'video';
                   const fc = await postFirstComment(id, FIRST_COMMENT, {
                     retries: isVideo ? 5 : 3,
                     initialDelayMs: isVideo ? 5000 : 1500,
@@ -1827,6 +1884,16 @@ async function runWeek(args) {
                   if (!fc.ok) {
                     hopLog('facebook-poster→graph', 'warn', `First comment failed for ${id}: ${fc.error}`);
                   }
+                } else if (id && !isLive) {
+                  // Graph rejects comments on unpublished scheduled posts. Queue
+                  // locally so --backfill-comments / daily drain can stamp them
+                  // even when Supabase reconcile never saw these IDs (manual runs).
+                  queuePendingFirstComment(id, {
+                    day: post.day,
+                    date: post.date,
+                    type: post.type,
+                    media,
+                  });
                 }
         if (isLive) {
           results.push({ day: post.day, date: post.date, status: 'posted', type: post.type, media, id, fallback });
@@ -1857,6 +1924,7 @@ function parseArgs(argv) {
   const args = {
     payloadText: '', dryRun: false, auth: false, checkToken: false,
     scheduleAll: false, postTime: '09:00', startDay: 1, endDay: 999,
+    backfillComments: false,
   };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--payload') args.payloadText = argv[++i] || '';
@@ -1864,6 +1932,7 @@ function parseArgs(argv) {
     else if (argv[i] === '--auth') args.auth = true;
     else if (argv[i] === '--check-token') args.checkToken = true;
     else if (argv[i] === '--schedule-all') args.scheduleAll = true;
+    else if (argv[i] === '--backfill-comments') args.backfillComments = true;
     else if (argv[i] === '--time') args.postTime = argv[++i] || '09:00';
     else if (argv[i] === '--start-day') args.startDay = parseInt(argv[++i] || '1');
     else if (argv[i] === '--end-day') args.endDay = parseInt(argv[++i] || '999');
@@ -1876,11 +1945,15 @@ async function main() {
   let result;
   if (args.auth) result = await runAuth();
   else if (args.checkToken) result = await runCheckToken();
+  else if (args.backfillComments) {
+    const drained = await drainPendingFirstComments();
+    result = { status: 'ok', action: 'backfill-comments', results: drained };
+  }
   else if (args.payloadText) result = await runSinglePayload(args);
   else result = await runWeek(args);
 
   // stdout is the machine-readable contract for callers (actions.py / mav-bridge).
-  console.log(JSON.stringify(result, null, args.payloadText || args.auth || args.checkToken ? 0 : 2));
+  console.log(JSON.stringify(result, null, args.payloadText || args.auth || args.checkToken || args.backfillComments ? 0 : 2));
   if (result.status === 'error' || result.status === 'expired') process.exitCode = 1;
 }
 

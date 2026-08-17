@@ -22,7 +22,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createClient } from '@supabase/supabase-js';
-import { checkFacebookToken, postFirstComment, ensureFirstComments } from './facebook-poster.mjs';
+import { checkFacebookToken, postFirstComment, ensureFirstComments, drainPendingFirstComments } from './facebook-poster.mjs';
 import { mediaStatusFor, bucketStatus, isStuck, describeAction, agentFor } from './lib/action-enrich.mjs';
 import { makeAlertStore } from './lib/alert-store.mjs';
 import { sendHermesAlert } from './lib/hermes-alert.mjs';
@@ -639,6 +639,17 @@ async function poll() {
         }
       } catch (e) {
         console.error(`[mav-bridge][fb-first-comment] backfill error: ${e.message}`);
+      }
+      // Local pending queue (manual schedule-all / Graph schedules without Supabase rows)
+      try {
+        const drained = await drainPendingFirstComments({ retries: 2, initialDelayMs: 0, backoffMs: 3000 });
+        const posted = drained.filter((r) => r.ok && !r.skipped).length;
+        const failed = drained.filter((r) => !r.ok);
+        if (posted || failed.length) {
+          console.log(`[mav-bridge][fb-first-comment] pending-queue: ${posted} posted, ${failed.length} still waiting/failed`);
+        }
+      } catch (e) {
+        console.error(`[mav-bridge][fb-first-comment] pending-queue error: ${e.message}`);
       }
     }
 

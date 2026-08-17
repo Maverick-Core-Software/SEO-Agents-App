@@ -63,8 +63,10 @@ function scheduleWeekStart() {
   // Match explicit Start Date field
   let m = text.match(/\*\*Start Date:\*\*\s*(\d{4}-\d{2}-\d{2})/);
   if (m) return m[1];
-  // Match "Week of August 7–12, 2026" — extract start date from first day
-  m = text.match(/\*\*Week of\s+(\w+)\s+(\d{1,2})[–-]\d{1,2},?\s*(\d{4})/i);
+  // Match "Week of August 7–12, 2026" in bold OR heading form:
+  //   **Week of August 17–22, 2026**
+  //   ## Week of August 17–22, 2026
+  m = text.match(/(?:\*\*|##\s*)Week of\s+(\w+)\s+(\d{1,2})[–-]\d{1,2},?\s*(\d{4})/i);
   if (m) {
     const months = { january:'01', february:'02', march:'03', april:'04', may:'05', june:'06',
                      july:'07', august:'08', september:'09', october:'10', november:'11', december:'12' };
