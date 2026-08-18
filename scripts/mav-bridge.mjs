@@ -622,10 +622,12 @@ async function poll() {
             windowsHide: true,
             env: process.env,
           });
-          const line = (stdout || '').trim().split(/\r?\n/).filter(Boolean).pop() || '';
-          let summary = line.slice(0, 400);
+          // fb-boost-api.mjs pretty-prints its result, so parse the whole payload —
+          // taking the last line only ever yields the closing brace.
+          const raw = (stdout || '').trim();
+          let summary = (raw.split(/\r?\n/).filter(Boolean).pop() || '').slice(0, 400);
           try {
-            const j = JSON.parse(line);
+            const j = JSON.parse(raw);
             summary = j.boost_applied
               ? `applied ${j.pick?.key} ad=${j.created?.ad_id}`
               : `skip: ${j.reason || j.stage}${j.eligible === false ? ' (not eligible)' : ''}`;
