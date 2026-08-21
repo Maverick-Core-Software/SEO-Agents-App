@@ -40,6 +40,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { normalizePhotoFile } from './lib/schedule-text.mjs';
+import { defaultGbpPhotoDirs, resolveWritableCuratedFolder } from './lib/gbp-paths.mjs';
 import {
   derivePostServiceType,
   serviceSlug,
@@ -81,10 +82,9 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
 // down — it just uses the last-synced library (172 photos) instead of silently
 // failing or falling back to a stale 33-photo subset.
 const DRIVE_FOLDER = process.env.GBP_PHOTOS_FOLDER || 'H:\\My Drive\\GBP Photos';
-const LOCAL_CACHE = process.env.GBP_PHOTOS_LOCAL_CACHE
-  || 'C:\\Workspace\\Shared\\Assets\\Media\\Grizzly\\GBP Post Photos';
+const { localCache: LOCAL_CACHE, curatedPreferred: CURATED_PREFERRED } = defaultGbpPhotoDirs(process.env);
 const PHOTOS_FOLDER = LOCAL_CACHE; // what discovery actually scans
-const CURATED_FOLDER = process.env.GBP_CURATED_FOLDER || 'E:\\Media\\Grizzly\\Curated';
+let CURATED_FOLDER = CURATED_PREFERRED;
 const CACHE_FILE = process.env.GBP_PHOTO_CACHE || path.join(PROJECT_ROOT, 'state', 'photo-cache.json');
 const SELECTION_MANIFEST_FILE = process.env.GBP_PHOTO_SELECTION_MANIFEST
   || path.join(PROJECT_ROOT, 'state', 'photo-selection-manifest.json');
@@ -381,6 +381,21 @@ async function main() {
     process.exit(1);
   }
 
+  if (!dryRun) {
+    try {
+      CURATED_FOLDER = resolveWritableCuratedFolder({
+        curatedPreferred: CURATED_PREFERRED,
+        localCache: LOCAL_CACHE,
+      });
+    } catch (e) {
+      console.error(e.message || e);
+      process.exit(1);
+    }
+    if (CURATED_FOLDER !== CURATED_PREFERRED) {
+      console.warn(`Curated folder not writable (${CURATED_PREFERRED}) — using ${CURATED_FOLDER}`);
+    }
+  }
+
   console.log(`\n=== GBP Weekly Photo Pick ===`);
   console.log(`Source (local cache): ${PHOTOS_FOLDER}`);
   console.log(`Drive source:        ${DRIVE_FOLDER}`);
@@ -530,7 +545,14 @@ async function main() {
   }
 
   // ── Step 6: Copy winners to Curated ──────────────────────────────────────
-  if (!dryRun) fs.mkdirSync(CURATED_FOLDER, { recursive: true });
+  if (!dryRun) {
+    try {
+      fs.mkdirSync(CURATED_FOLDER, { recursive: true });
+    } catch (e) {
+      console.error(`Could not create curated folder ${CURATED_FOLDER}: ${e.message}`);
+      process.exit(1);
+    }
+  }
 
   const usedFilenames = new Set();
   const selectionManifest = loadPhotoSelectionManifest(SELECTION_MANIFEST_FILE)

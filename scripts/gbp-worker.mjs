@@ -22,7 +22,7 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createClient } from '@supabase/supabase-js';
 import { makeRunPhase } from './lib/run-phase.mjs';
-import { centralDateHour, runGbpForApprovedRun, runDailyGbp, markGbpPostedAndArchive } from './lib/gbp-runner.mjs';
+import { centralDateHour, runGbpForApprovedRun, runDailyGbp, markGbpPostedAndArchive, gbpVerifyDisposition } from './lib/gbp-runner.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '..');
@@ -41,7 +41,12 @@ const SUPABASE_URL = process.env.SUPABASE_URL || '';
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY || '';
 const POLL_INTERVAL_MS = parseInt(process.env.GBP_WORKER_POLL_MS || process.env.MAV_BRIDGE_POLL_MS || '30000');
 const SEO_AGENTS_EXE = process.env.SEO_AGENTS_EXE
-  || 'C:\\Users\\carte\\AppData\\Local\\Programs\\Python\\Python312\\Scripts\\seo-agents.exe';
+  || [
+    path.join(PROJECT_ROOT, '.venv', 'Scripts', 'seo-agents.exe'),
+    path.join(PROJECT_ROOT, '.venv', 'bin', 'seo-agents'),
+    'C:\\Users\\carte\\AppData\\Local\\Programs\\Python\\Python312\\Scripts\\seo-agents.exe',
+  ].find((p) => fs.existsSync(p))
+  || path.join(PROJECT_ROOT, '.venv', 'Scripts', 'seo-agents.exe');
 // GBP_POSTER selects the posting engine: 'playwright' (default while project
 // quota stays 0) or 'api' (direct REST via gbp-api-poster.mjs once quota >0).
 const GBP_MODE = (process.env.GBP_POSTER || 'playwright').toLowerCase();
@@ -220,27 +225,45 @@ async function poll() {
           [GBP_VERIFY_PATH, '--date', String(item.date).slice(0, 10), '--headless', '--once'],
           PROJECT_ROOT);
 
-        if (r.ok) {
-          try {
-            const lastLine = (r.stdout || '').trim().split('\n').filter(l => l.startsWith('{')).pop();
-            if (lastLine) {
-              const parsed = JSON.parse(lastLine);
-              if (parsed.verified > 0) {
-                // Verification succeeded — remove from queue
-                verifyQueue = verifyQueue.filter(q => q.postId !== item.postId);
-                await log(item.runId, 'gbp', 'info', `Verification confirmed for ${item.date}`);
-                // For natively scheduled days this is the first moment we know the
-                // post is live, so Excel Posted=TRUE + photo archiving happen here.
-                // For driver-posted days it already ran — a harmless no-op re-stamp
-                // (photo already moved → skipped).
-                await markGbpPostedAndArchive({ postDate: String(item.date).slice(0, 10), exitCode: 0, runId: item.runId, env: process.env, log });
-                continue;
-              }
-            }
-          } catch { /* parse failure — treat as unverified */ }
+        const { data: rowNow } = await supabase
+          .from('weekly_posts')
+          .select('status, platform_post_id')
+          .eq('id', item.postId)
+          .maybeSingle();
+        const disposition = gbpVerifyDisposition({
+          ok: r.ok,
+          exitCode: r.exitCode,
+          stdout: r.stdout,
+          currentStatus: rowNow?.status,
+          platformPostId: rowNow?.platform_post_id,
+        });
+
+        if (disposition.action === 'confirmed') {
+          verifyQueue = verifyQueue.filter(q => q.postId !== item.postId);
+          await log(item.runId, 'gbp', 'info', `Verification confirmed for ${item.date}`);
+          await supabase.from('weekly_posts')
+            .update({ status: 'posted', error: null })
+            .eq('id', item.postId);
+          await markGbpPostedAndArchive({ postDate: String(item.date).slice(0, 10), exitCode: 0, runId: item.runId, env: process.env, log });
+          continue;
         }
 
-        // Not verified yet
+        if (disposition.action === 'crash') {
+          await log(item.runId, 'gbp', 'warn',
+            `Verify crashed for ${item.date} (attempt ${item.attempt}): ${disposition.error}`);
+          if (isLast) {
+            await supabase.from('weekly_posts')
+              .update({ status: disposition.status, error: disposition.error })
+              .eq('id', item.postId);
+            verifyQueue = verifyQueue.filter(q => q.postId !== item.postId);
+            await log(item.runId, 'gbp', 'warn',
+              `Verify still crashing after ${VERIFY_MAX_ATTEMPTS} attempts for ${item.date} — left ${disposition.status}, not error`);
+          } else {
+            item.nextAt = now + VERIFY_RETRY_INTERVAL_MS;
+          }
+          continue;
+        }
+
         if (isLast) {
           await log(item.runId, 'gbp', 'warn',
             `Verification failed after ${VERIFY_MAX_ATTEMPTS} attempts for ${item.date} — marking error`);

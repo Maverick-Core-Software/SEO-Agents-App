@@ -6,6 +6,8 @@ import {
   gbpNeedsVerificationMessage,
   gbpDailyStatusForExit,
   gbpScheduleStatusForExit,
+  gbpVerifyDisposition,
+  isAbnormalExit,
   centralDateHour,
   runDailyGbp,
   runGbpForApprovedRun,
@@ -34,6 +36,23 @@ assert.equal(gbpDailyStatusForExit(3, {}).archive, false);
 assert.deepEqual(gbpDailyStatusForExit(4, {}), { status: 'pending_approval', error: null, archive: false, platform_post_id: null });
 assert.equal(gbpDailyStatusForExit(1, {}).status, 'error');
 assert.equal(gbpDailyStatusForExit(1, {}).archive, false);
+assert.equal(isAbnormalExit(3221226505), true);
+assert.equal(isAbnormalExit(1), false);
+assert.equal(gbpDailyStatusForExit(3221226505, { result: 'posted', verified: true, postUrl: 'u' }).status, 'posted');
+assert.equal(gbpDailyStatusForExit(3221226505, { result: 'posted', verified: false }).status, 'needs_verification');
+assert.equal(gbpDailyStatusForExit(3221226505, {}).status, 'needs_verification');
+assert.equal(gbpVerifyDisposition({
+  ok: false, exitCode: 3221226505, stdout: '{"result":"complete","verified":1}\n', currentStatus: 'posted',
+}).action, 'confirmed');
+assert.equal(gbpVerifyDisposition({
+  ok: false, exitCode: 3221226505, stdout: '', currentStatus: 'posted',
+}).status, 'posted');
+assert.equal(gbpVerifyDisposition({
+  ok: false, exitCode: 3221226505, stdout: '', currentStatus: 'needs_verification',
+}).action, 'crash');
+assert.equal(gbpVerifyDisposition({
+  ok: true, exitCode: 0, stdout: '{"result":"complete","verified":0,"failed":1}\n', currentStatus: 'posted',
+}).action, 'miss');
 
 // centralDateHour: 2026-06-27 14:30 UTC is 09:30 CDT (UTC-5 in June)
 const { todayDate, cstHour } = centralDateHour(new Date('2026-06-27T14:30:00Z'));
@@ -55,6 +74,7 @@ assert.deepEqual(gbpScheduleStatusForExit(4, {}),
   { status: 'pending_approval', error: null });
 assert.deepEqual(gbpScheduleStatusForExit(1, {}),
   { status: 'scheduled', error: null });
+assert.equal(gbpScheduleStatusForExit(3221226505, {}).status, 'scheduled_native');
 
 console.log('ok gbpScheduleStatusForExit');
 
@@ -167,13 +187,13 @@ console.log('ok gbp-runner orchestration');
   });
 
   const approveIdx = calls.findIndex(c =>
-    c.args?.[0] === 'mark-gbp-approved' && c.args.includes('2026-07-10'));
+    c.args?.includes('--approve-dates') && c.args.includes('2026-07-10'));
   const driverIdx = calls.findIndex(c => c.args?.[0] === 'C:/fake/driver.mjs');
   assert.ok(approveIdx !== -1, 'mark-gbp-approved must include Day 1 post_date');
   assert.ok(driverIdx !== -1, 'Day 1 driver should run');
   assert.ok(approveIdx < driverIdx, 'Day 1 approval must be stamped before the driver runs');
   // Day 2 must still be approved too (same call or a later one).
-  assert.ok(calls.some(c => c.args?.[0] === 'mark-gbp-approved' && c.args.includes('2026-07-11')),
+  assert.ok(calls.some(c => c.args?.includes('--approve-dates') && c.args.includes('2026-07-11')),
     'mark-gbp-approved must still cover Days 2-7');
 }
 

@@ -33,18 +33,40 @@ export function gbpNeedsVerificationMessage(parsed = {}) {
   return `GBP post was submitted but not verified after ${attempts} 60-second snapshot checks. Check manually before retrying.${suffix}`;
 }
 
+// Playwright/Chromium abort (e.g. Windows STATUS_STACK_BUFFER_OVERRUN = 3221226505)
+// plus node using -1 when execFile's e.code is not a number.
+export function isAbnormalExit(exitCode) {
+  if (typeof exitCode !== 'number' || Number.isNaN(exitCode)) return true;
+  if (exitCode < 0) return true;
+  if (exitCode > 255) return true;
+  return false;
+}
+
+export function gbpCrashUnverifiedMessage(exitCode) {
+  return `GBP poster/verify crashed (exit ${exitCode}) — treat as unverified. Check the live listing before retrying; do not auto-repost.`;
+}
+
 // Map a driver exit code to the weekly_posts update intent. `archive: true` means
 // the caller should also run markGbpPostedAndArchive. Exit codes (driver.mjs):
 //   0 = posted+verified, 3 = submitted-unverified, 4 = approval-gate-unset, else = error.
+// Driver JSON wins over a crashed exit: last week's live posts were marked error
+// because context.close() aborted after a successful submit/verify emit.
 export function gbpDailyStatusForExit(exitCode, parsed = {}) {
-  if (exitCode === 0) {
+  const result = String(parsed.result || '').toLowerCase();
+  if (parsed.verified === true || (exitCode === 0 && result !== 'failed' && result !== 'needs_approval' && result !== 'policy_violation')) {
     return { status: 'posted', error: null, archive: true, platform_post_id: parsed.postUrl || null };
+  }
+  if (result === 'posted' || result === 'schedule_unconfirmed') {
+    return { status: 'needs_verification', error: gbpNeedsVerificationMessage(parsed), archive: false, platform_post_id: parsed.postUrl || null };
   }
   if (exitCode === 3) {
     return { status: 'needs_verification', error: gbpNeedsVerificationMessage(parsed), archive: false, platform_post_id: null };
   }
-  if (exitCode === 4) {
+  if (exitCode === 4 || result === 'needs_approval') {
     return { status: 'pending_approval', error: null, archive: false, platform_post_id: null };
+  }
+  if (isAbnormalExit(exitCode)) {
+    return { status: 'needs_verification', error: gbpCrashUnverifiedMessage(exitCode), archive: false, platform_post_id: null };
   }
   return { status: 'error', error: null, archive: false, platform_post_id: null };
 }
@@ -52,19 +74,43 @@ export function gbpDailyStatusForExit(exitCode, parsed = {}) {
 // Map driver exit code to the scheduled-post update intent. Duplicate-guard rule:
 // exit 3 (submitted-but-unconfirmed) MUST NEVER fall back to 'scheduled' — a repost
 // of an already-scheduled day would double-post. Instead it stays scheduled_native
-// so the daily verification sweep confirms it.
+// so the daily verification sweep confirms it. A process crash is the same class:
+// we may have already clicked Post.
 export function gbpScheduleStatusForExit(exitCode, parsed = {}) {
-  if (exitCode === 0) {
+  const result = String(parsed.result || '').toLowerCase();
+  if (exitCode === 0 || result === 'scheduled_native') {
     return { status: 'scheduled_native', error: null };
   }
-  if (exitCode === 3) {
+  if (exitCode === 3 || result === 'schedule_unconfirmed' || result === 'posted') {
     return { status: 'scheduled_native', error: 'GBP schedule submitted but unconfirmed (composer error after Post click) — daily verification will confirm or alert.' };
   }
-  if (exitCode === 4) {
+  if (exitCode === 4 || result === 'needs_approval') {
     return { status: 'pending_approval', error: null };
+  }
+  if (isAbnormalExit(exitCode)) {
+    return { status: 'scheduled_native', error: gbpCrashUnverifiedMessage(exitCode) };
   }
   // else → fallback to old daily-post path
   return { status: 'scheduled', error: null };
+}
+
+// Worker verify-queue outcome. A Chromium abort after a live match must not
+// flip the row to error (last week's false "GBP failed" alerts).
+export function gbpVerifyDisposition({ ok, exitCode, stdout, currentStatus, platformPostId } = {}) {
+  const parsed = parseDriverJson(stdout);
+  const alreadyLive = Boolean(platformPostId) || parsed.verified > 0
+    || (Array.isArray(parsed.details) && parsed.details.some((d) => d?.verified));
+  if (alreadyLive) {
+    return { action: 'confirmed', parsed };
+  }
+  const crashed = parsed.result === 'fatal'
+    || isAbnormalExit(exitCode)
+    || (!ok && parsed.result !== 'complete' && parsed.result !== 'no_posts');
+  if (crashed) {
+    const status = currentStatus === 'posted' ? 'posted' : 'needs_verification';
+    return { action: 'crash', status, parsed, error: gbpCrashUnverifiedMessage(exitCode) };
+  }
+  return { action: 'miss', parsed };
 }
 
 // Derive the Central-time (DST-aware) date + hour from a UTC instant. Used to gate
@@ -185,8 +231,9 @@ export async function runGbpForApprovedRun({ runId, gbpPosts, deps }) {
     else await log(runId, 'gbp', 'info', 'Photo curation complete');
   }
 
-  // 1. Sync schedule -> Excel workbook.
-  const sync = await runPhase(runId, 'gbp', paths.seoAgentsExe, ['sync-gbp-schedule'], projectRoot);
+  // 1. Sync schedule -> Excel workbook (Node; do not depend on the Python CLI).
+  const syncScript = paths.syncGbpSchedule || path.join(projectRoot, 'scripts', 'sync-gbp-schedule.mjs');
+  const sync = await runPhase(runId, 'gbp', 'node', [syncScript], projectRoot);
   if (!sync.ok) {
     await log(runId, 'gbp', 'error', `sync-gbp-schedule failed: ${sync.error}`);
     await supabase.from('weekly_posts').update({ status: 'error', error: sync.error })
@@ -195,11 +242,11 @@ export async function runGbpForApprovedRun({ runId, gbpPosts, deps }) {
   }
 
   // 2. Propagate the weekly approval into the workbook gate for ALL days, including
-  // Day 1 — sync-gbp-schedule writes "Needs approval" for un-posted rows, so without
-  // this the Day-1 driver exits 4 (pending_approval) every time.
-  const dateArgs = gbpPosts.map(p => p.post_date).filter(Boolean).flatMap(d => ['--date', d]);
-  if (dateArgs.length) {
-    const appr = await runPhase(runId, 'gbp', paths.seoAgentsExe, ['mark-gbp-approved', ...dateArgs], projectRoot);
+  // Day 1 — sync writes "Needs approval" for un-posted rows, so without this the
+  // Day-1 driver exits 4 (pending_approval) every time.
+  const dates = gbpPosts.map(p => p.post_date).filter(Boolean);
+  if (dates.length) {
+    const appr = await runPhase(runId, 'gbp', 'node', [syncScript, '--approve-dates', ...dates], projectRoot);
     if (!appr.ok) await log(runId, 'gbp', 'warn', `mark-gbp-approved failed (posts may block on approval gate): ${appr.error}`);
   }
 
@@ -221,7 +268,7 @@ export async function runGbpForApprovedRun({ runId, gbpPosts, deps }) {
   for (const post of later) {
     await log(runId, 'gbp', 'info', `Scheduling GBP for ${post.post_date} (Day ${post.day})...`);
     const r = await runPhase(runId, 'gbp', 'node', [paths.gbpPoster, '--date', post.post_date, '--schedule'], projectRoot);
-    const { status, error } = gbpScheduleStatusForExit(r.exitCode);
+    const { status, error } = gbpScheduleStatusForExit(r.exitCode, parseDriverJson(r.stdout));
     await supabase.from('weekly_posts').update({ status, error }).eq('id', post.id);
     const lvl = status !== 'scheduled_native' ? 'warn' : 'info';
     await log(runId, 'gbp', lvl, `Day ${post.day} ${post.post_date} → ${status} (exit ${r.exitCode}${error ? ': ' + error.slice(0, 80) : ''})`);

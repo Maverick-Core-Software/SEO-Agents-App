@@ -226,15 +226,16 @@ async function verifyOnePost(page, post, supabase) {
     const postUrl = await extractPostUrl(page, snippet);
     log(`  FOUND ${post.post_date}${postUrl ? ` → ${postUrl}` : ' (no URL extracted)'}`);
 
-    // Update Supabase
+    // Update Supabase — a live match is posted, even if the row was previously error.
     const update = {
+      status: 'posted',
+      error: null,
       platform_post_id: postUrl || 'verified-no-url',
+      media_status: 'photo',
     };
     if (!post.posted_at) {
       update.posted_at = new Date().toISOString();
     }
-    // Set media_status for GBP posts (always photo)
-    update.media_status = 'photo';
 
     await supabase.from('weekly_posts').update(update).eq('id', post.id);
 
@@ -265,27 +266,20 @@ async function main() {
       .from('weekly_posts')
       .select('id, run_id, post_date, status, body, hook, platform_post_id, posted_at')
       .eq('platform', 'gbp')
-      .eq('post_date', args.date)
-      .in('status', ['posted', 'needs_verification']);
+      .eq('post_date', args.date);
     posts = data || [];
   } else {
     const { data } = await supabase
       .from('weekly_posts')
       .select('id, run_id, post_date, status, body, hook, platform_post_id, posted_at')
       .eq('platform', 'gbp')
-      .in('status', ['posted', 'needs_verification'])
-      .or(`platform_post_id.is.null,and(posted_at.gte.${cutoff})`);
-    // Also grab needs_verification regardless of date (they're already flagged)
-    const { data: nv } = await supabase
-      .from('weekly_posts')
-      .select('id, run_id, post_date, status, body, hook, platform_post_id, posted_at')
-      .eq('platform', 'gbp')
-      .eq('status', 'needs_verification')
+      .in('status', ['posted', 'needs_verification', 'error'])
       .gte('post_date', cutoff.slice(0, 10));
-    // Merge, deduplicate by id
-    const map = new Map();
-    for (const p of [...(data || []), ...(nv || [])]) map.set(p.id, p);
-    posts = [...map.values()];
+    posts = (data || []).filter((p) =>
+      p.status === 'needs_verification'
+      || p.status === 'error'
+      || !p.platform_post_id
+    );
   }
 
   if (!posts.length) {
@@ -309,6 +303,7 @@ async function main() {
   const page = await context.newPage();
 
   const results = { verified: 0, failed: 0, errors: [], details: [] };
+  let fatal = null;
 
   try {
     await navigateToPosts(page);
@@ -343,17 +338,28 @@ async function main() {
     log(`Fatal error: ${msg}`);
     await saveDebugScreenshot(page, 'fatal-error').catch(() => {});
     results.errors.push({ error: msg });
-    // Re-throw session/captcha errors so exit code signals the problem
-    if (/session expired|sign in|captcha|accounts\.google\.com/i.test(msg)) {
-      throw e;
-    }
-  } finally {
-    await context.close();
+    fatal = e;
   }
 
-  // Report
+  // Emit BEFORE context.close() — Chromium persistent-context teardown has
+  // aborted with STATUS_STACK_BUFFER_OVERRUN after a live match, and the
+  // worker used to treat the missing JSON as a failed post.
   log(`Done: ${results.verified} verified, ${results.failed} not found/error`);
-  emit({ result: 'complete', ...results });
+  if (fatal && /session expired|sign in|captcha|accounts\.google\.com/i.test(String(fatal.message || fatal))) {
+    emit({ result: 'fatal', error: String(fatal.message || fatal), ...results });
+  } else {
+    emit({ result: fatal ? 'fatal' : 'complete', ...results, error: fatal ? String(fatal.message || fatal) : undefined });
+  }
+
+  try {
+    await context.close();
+  } catch (e) {
+    log(`context.close failed: ${e.message || e}`);
+  }
+
+  if (fatal && /session expired|sign in|captcha|accounts\.google\.com/i.test(String(fatal.message || fatal))) {
+    throw fatal;
+  }
 }
 
 main().catch((e) => {

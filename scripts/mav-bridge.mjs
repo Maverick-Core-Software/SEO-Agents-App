@@ -49,7 +49,12 @@ const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY || '';
 const POLL_INTERVAL_MS = parseInt(process.env.MAV_BRIDGE_POLL_MS || '30000');
 const BRIDGE_PORT = parseInt(process.env.MAV_BRIDGE_PORT || '8790');
 const SEO_AGENTS_EXE = process.env.SEO_AGENTS_EXE
-  || 'C:\\Users\\carte\\AppData\\Local\\Programs\\Python\\Python312\\Scripts\\seo-agents.exe';
+  || [
+    path.join(PROJECT_ROOT, '.venv', 'Scripts', 'seo-agents.exe'),
+    path.join(PROJECT_ROOT, '.venv', 'bin', 'seo-agents'),
+    'C:\\Users\\carte\\AppData\\Local\\Programs\\Python\\Python312\\Scripts\\seo-agents.exe',
+  ].find((p) => fs.existsSync(p))
+  || path.join(PROJECT_ROOT, '.venv', 'Scripts', 'seo-agents.exe');
 const PENDING_PROMPT_FILE = path.join(PROJECT_ROOT, 'outputs', 'pending_prompt.json');
 const GBP_MODE = (process.env.GBP_POSTER || 'api').toLowerCase();
 const GBP_POSTER_PATH = GBP_MODE === 'playwright'

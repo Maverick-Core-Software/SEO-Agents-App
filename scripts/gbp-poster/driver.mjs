@@ -6,6 +6,7 @@ import os from 'os';
 import { fileURLToPath, pathToFileURL } from 'url';
 import assert from 'node:assert/strict';
 import { checkPostPolicy, formatViolations } from './policy-check.mjs';
+import { defaultGbpPhotoDirs, resolveGbpImagePath } from '../lib/gbp-paths.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 
@@ -528,22 +529,19 @@ async function main() {
     payload.ctaUrl = resolveCtaUrl(payload, config);
     if (!payload.caption) throw new Error(`Post ${args.date} has no caption/body text.`);
 
-    // If workbook image path is missing/stale, fall back to the curated folder by date prefix.
-    // gbp-photo-pick.mjs renames photos as {date}-{service}.{ext} but only updates the markdown
-    // schedule — not the Excel workbook — so workbook paths can lag behind curation.
-    if (payload.imagePath && !fs.existsSync(payload.imagePath)) {
-        const curatedDir = config.curated_photo_folder || '';
-        if (curatedDir && fs.existsSync(curatedDir)) {
-            const prefix = `${payload.date}-`;
-            const candidates = fs.readdirSync(curatedDir)
-                .filter(f => f.toLowerCase().startsWith(prefix.toLowerCase()))
-                .sort();
-            if (candidates.length > 0) {
-                const fallback = path.join(curatedDir, candidates[0]);
-                console.warn(`[driver] Workbook image not found (${payload.imagePath}) → curated fallback: ${fallback}`);
-                payload.imagePath = fallback;
-            }
+    // Workbook paths often point at E:\Media\Grizzly\Curated which may not be
+    // mounted. Resolve against the local photo cache before failing.
+    {
+        const dirs = defaultGbpPhotoDirs(process.env);
+        const resolved = resolveGbpImagePath(payload.imagePath, {
+            date: payload.date,
+            curatedPreferred: config.curated_photo_folder || dirs.curatedPreferred,
+            localCache: dirs.localCache,
+        });
+        if (resolved && resolved !== payload.imagePath) {
+            console.warn(`[driver] Workbook image not found (${payload.imagePath}) → ${resolved}`);
         }
+        payload.imagePath = resolved;
     }
 
     if (payload.imagePath && !fs.existsSync(payload.imagePath)) {
@@ -635,12 +633,16 @@ async function main() {
             process.exitCode = 3;
         }
     } catch (e) {
-        if (args.schedule && e.submitted) {
-            // Duplicate guard: the Post click already happened, so this must never
-            // fall back to a live re-post. Exit 3 → runner marks scheduled_native
-            // with an error note; daily verification confirms or alerts.
-            emitResult({ result: 'schedule_unconfirmed', date: payload.date, scheduledTime: '9:00 AM', verified: false, postUrl: null, error: String(e.message || e) });
-            console.error(`Schedule submit clicked but composer errored (${e.message || e}). Do NOT retry — daily verification will confirm or alert.`);
+        if (e.submitted) {
+            // Duplicate guard: the Post click already happened. Never retry.
+            // Schedule → scheduled_native; live → needs_verification (exit 3).
+            if (args.schedule) {
+                emitResult({ result: 'schedule_unconfirmed', date: payload.date, scheduledTime: '9:00 AM', verified: false, postUrl: null, error: String(e.message || e) });
+                console.error(`Schedule submit clicked but composer errored (${e.message || e}). Do NOT retry — daily verification will confirm or alert.`);
+            } else {
+                emitResult({ result: 'posted', date: payload.date, verified: false, postUrl: null, error: String(e.message || e) });
+                console.error(`Post submit clicked but composer errored (${e.message || e}). Do NOT retry — check GBP before posting again.`);
+            }
             process.exitCode = 3;
         } else {
             const reason = classifyFailure(e.message);
@@ -651,7 +653,11 @@ async function main() {
             process.exitCode = 1;
         }
     } finally {
-        await context.close();
+        try {
+            await context.close();
+        } catch (closeErr) {
+            console.error(`browser context close failed: ${closeErr.message || closeErr}`);
+        }
     }
 }
 
