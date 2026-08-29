@@ -52,6 +52,9 @@ const SEED = parseInt(argValue('--seed', '42'), 10);
 const KEY = argValue('--key') || '';
 const noThink = process.argv.includes('--no-think');
 
+// Models that actually answered, as reported by the endpoint itself.
+const servingModels = new Set();
+
 const MANIFEST = path.join(PROJECT_ROOT, 'state', 'electrical-backfill.json');
 const MIN_SCORE = parseInt(process.env.ELECTRICAL_BACKFILL_MIN_SCORE || '40', 10);
 
@@ -131,6 +134,10 @@ async function classify(imagePath) {
   const res = await fetch(URL_ + '/chat/completions', { method: 'POST', headers, body: JSON.stringify(body) });
   const j = await res.json();
   if (j.error) throw new Error(j.error.message || JSON.stringify(j.error));
+  // The endpoint may serve whatever model is loaded regardless of what was asked
+  // for -- request qwen, get nemotron. Record what actually answered so results
+  // are never attributed to the wrong model.
+  if (j.model) servingModels.add(j.model);
   const text = j.choices?.[0]?.message?.content ?? '';
   const m = text.match(/\{[\s\S]*\}/);
   if (!m) throw new Error('no JSON in reply: ' + text.slice(0, 120).replace(/\n/g, ' '));
@@ -196,6 +203,22 @@ for (const item of sample) {
 
 const pct = (n) => scored ? ((n / scored) * 100).toFixed(1) + '%' : 'n/a';
 console.log('\n');
+const served = [...servingModels];
+console.log(`Actually served by:  ${served.join(', ') || '(endpoint reported no model)'}`);
+// A provider resolving an alias to a pinned snapshot (gpt-4o -> gpt-4o-2024-08-06)
+// is the same model and must not raise a false alarm. Only a genuinely different
+// name means something else answered.
+const norm = (x) => String(x).toLowerCase().replace(/[^a-z0-9]/g, '');
+const sameModel = served.length === 1
+  && (norm(served[0]).startsWith(norm(MODEL)) || norm(MODEL).startsWith(norm(served[0])));
+if (served.length === 1 && !sameModel) {
+  console.log(`
+  !! You asked for "${MODEL}" but "${served[0]}" answered.`);
+  console.log('  !! These numbers describe that model, not the one you requested.');
+  console.log('  !! Load the intended model and re-run before drawing conclusions.');
+} else if (served.length > 1) {
+  console.log('  !! The serving model CHANGED mid-run. Results mix backends and are not usable.');
+}
 console.log(`Scored:              ${scored}`);
 console.log(`Parse failures:      ${parseFail}${parseFail ? '   <-- model is wrapping prose around the JSON' : ''}`);
 console.log(`Request errors:      ${errors}`);
