@@ -23,7 +23,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+
+import { resolveCommenterName, stripUnknownNames } from './lib/comment-name-guard.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -170,11 +172,22 @@ async function postReply(commentId, message) {
 }
 
 // ── Grok reply generation ──
-async function generateReply(commentText, commenterName, postCaption) {
+// `name` is the resolved commenter name: { known, full, first }. When Facebook
+// withholds `from` (the normal case for real customers) we must not hand the
+// model a placeholder or ask it for a first name — it will invent one.
+export async function generateReply(commentText, name, postCaption) {
+  const greet = (suffix) => (name.known ? `Thanks, ${name.first}! ${suffix}` : `Thanks! ${suffix}`).trim();
+
   if (!XAI_API_KEY) {
     hopLog('xai', 'warn', 'No XAI_API_KEY — using fallback reply');
-    return `Thanks, ${commenterName.split(' ')[0]}! We appreciate it.`;
+    return greet('We appreciate it.');
   }
+
+  const nameRule = name.known
+    ? `- The commenter's first name is "${name.first}". You may use it once, naturally. Never use any other name.`
+    : `- You do NOT know who wrote this comment. Never use a name, never guess one, never invent one.
+- Do not open with "Hey <name>" or any other name. Address them directly as "you", or just start the sentence.
+- Any name appearing in the post caption belongs to someone else, NOT the commenter. Never reuse it.`;
 
   try {
     const res = await fetch('https://api.x.ai/v1/chat/completions', {
@@ -195,7 +208,7 @@ async function generateReply(commentText, commenterName, postCaption) {
 RULES:
 - Be warm, human, and conversational. Sound like a real person, not a bot.
 - 1-2 sentences max. Never write paragraphs.
-- Use the commenter's first name naturally (not forced).
+${nameRule}
 - Match their energy: if they're excited, be excited back. If they ask a question, answer helpfully.
 - Never use exclamation points back-to-back.
 - Never say "Thank you for your comment" or "We appreciate your feedback" — that's bot language.
@@ -205,7 +218,9 @@ RULES:
           },
           {
             role: 'user',
-            content: `Post topic: ${postCaption.slice(0, 200)}\n\nComment from ${commenterName}: "${commentText}"\n\nWrite a short, natural reply:`,
+            content: `Post topic: ${postCaption.slice(0, 200)}\n\n`
+              + (name.known ? `Comment from ${name.full}: ` : 'Comment (author unknown): ')
+              + `"${commentText}"\n\nWrite a short, natural reply:`,
           },
         ],
       }),
@@ -214,17 +229,27 @@ RULES:
     const json = await res.json();
     if (json.error) {
       hopLog('xai', 'error', `Grok reply gen failed: ${json.error.message}`);
-      return `Thanks, ${commenterName.split(' ')[0]}!`;
+      return greet('');
     }
 
     const reply = json.choices?.[0]?.message?.content?.trim();
-    if (!reply) return `Appreciate it, ${commenterName.split(' ')[0]}!`;
+    if (!reply) return name.known ? `Appreciate it, ${name.first}!` : 'Appreciate it!';
 
     // Safety: strip any phone numbers the model might hallucinate
-    return reply.replace(/\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/g, '');
+    const noPhone = reply.replace(/\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/g, '');
+
+    // Safety: never address the customer by a name we did not actually get
+    // from Graph. This is the backstop for the prompt rules above.
+    const { text, stripped } = stripUnknownNames(noPhone, name.first);
+    if (stripped) {
+      hopLog('xai', 'warn', 'Model used a name we do not have — stripped before posting', {
+        before: noPhone.slice(0, 120), after: text.slice(0, 120),
+      });
+    }
+    return text;
   } catch (e) {
     hopLog('xai', 'error', `Grok API error: ${e.message}`);
-    return `Thanks, ${commenterName.split(' ')[0]}!`;
+    return greet('');
   }
 }
 
@@ -297,12 +322,12 @@ async function poll() {
         if (repliedThisCycle >= MAX_REPLIES_PER_CYCLE) break;
         if (!shouldReply(comment, state, FB_PAGE_ID)) continue;
 
-        const commenterName = comment.from?.name || 'there';
-        hopLog('reply', 'info', `Replying to ${commenterName}: "${(comment.message || '').slice(0, 60)}"`);
+        const name = resolveCommenterName(comment, FB_PAGE_ID);
+        hopLog('reply', 'info', `Replying to ${name.known ? name.full : '(name withheld by Graph)'}: "${(comment.message || '').slice(0, 60)}"`);
 
         const replyText = await generateReply(
           comment.message || '',
-          commenterName,
+          name,
           context
         );
 
@@ -395,7 +420,11 @@ async function main() {
   hopLog('startup', 'info', `Polling every ${POLL_MS / 1000}s`);
 }
 
-main().catch(e => {
-  hopLog('startup', 'fatal', `Crash: ${e.message}`, e.stack);
-  process.exit(1);
-});
+// Only auto-start when run directly (PM2 entrypoint); importing this module
+// for tests/harnesses must not spin up polling or the health server.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch(e => {
+    hopLog('startup', 'fatal', `Crash: ${e.message}`, e.stack);
+    process.exit(1);
+  });
+}
