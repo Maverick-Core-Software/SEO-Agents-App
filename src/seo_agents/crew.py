@@ -12,7 +12,7 @@ from pathlib import Path
 from crewai import Agent, Crew, LLM, Process, Task
 from crewai_tools import ScrapeWebsiteTool, SerpApiGoogleSearchTool
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
 
 
 class TaskCompletion(BaseModel):
@@ -198,22 +198,138 @@ def _llm_kwargs(tier: str) -> dict:
     return kwargs
 
 
-def build_research_llm() -> LLM:
-    load_dotenv()
+# Substrings that mean "this provider is not answering right now" — a different
+# provider is worth trying. Deliberately excludes context-length and schema
+# errors: those follow the request, not the vendor, so failing over just burns
+# the fallback's credits on the same failure.
+_PROVIDER_DOWN_MARKERS = (
+    "rate limit",
+    "ratelimit",
+    "too many requests",
+    "insufficient",          # insufficient credits / quota / balance
+    "quota",
+    "payment required",
+    "billing",
+    "overloaded",
+    "service unavailable",
+    "bad gateway",
+    "gateway timeout",
+    "internal server error",
+    "connection error",
+    "connection refused",
+    "connection reset",
+    "timed out",
+    "timeout",
+    "apiconnectionerror",
+    "authenticationerror",   # a revoked/expired key looks like an outage to us
+    "permission denied",
+)
+
+_PROVIDER_DOWN_STATUS = {401, 402, 403, 408, 429, 500, 502, 503, 504, 529}
+
+
+def _is_provider_down(exc: BaseException) -> bool:
+    """True when *exc* looks like provider unavailability rather than a bad request."""
+    status = getattr(exc, "status_code", None) or getattr(exc, "http_status", None)
+    if isinstance(status, int) and status in _PROVIDER_DOWN_STATUS:
+        return True
+    blob = f"{type(exc).__name__} {exc}".lower()
+    return any(marker in blob for marker in _PROVIDER_DOWN_MARKERS)
+
+
+# crewai.LLM is a factory: LLM(...) returns a provider-specific subclass
+# (OpenAICompletion, AnthropicCompletion, ...), so failover cannot be added by
+# subclassing LLM. Instead we build the concrete instance normally and retarget
+# it to a cached subclass of its own type that overrides call(). No pydantic
+# fields change, so the model stays valid and every isinstance check CrewAI
+# makes still passes.
+_FAILOVER_CLASS_CACHE: dict[type, type] = {}
+
+
+def _failover_class(base: type) -> type:
+    """Return (and cache) a subclass of *base* whose call() fails over."""
+    cached = _FAILOVER_CLASS_CACHE.get(base)
+    if cached is not None:
+        return cached
+
+    class _FailoverLLM(base):  # type: ignore[misc, valid-type]
+        """Retries once on a second provider when the first one is down.
+
+        Mirrors the withRetry proxy in grizzly-hcp (src/agent/model-router.ts):
+        the primary is tried first, and only provider-availability failures fall
+        through. Everything else propagates unchanged.
+
+        The failover is logged rather than silent — a crew quietly running on
+        the backup provider for a week is its own kind of outage.
+        """
+
+        def call(self, *args, **kwargs):  # type: ignore[override]
+            try:
+                return super().call(*args, **kwargs)
+            except Exception as exc:
+                pair = self.__dict__.get("_seo_failover")
+                if pair is None or not _is_provider_down(exc):
+                    raise
+                fallback, tier = pair
+                print(
+                    f"[seo-agents] {tier} primary provider unavailable "
+                    f"({type(exc).__name__}: {exc}); failing over to "
+                    f"{fallback.model}",
+                    flush=True,
+                )
+                return fallback.call(*args, **kwargs)
+
+    _FailoverLLM.__name__ = f"Failover{base.__name__}"
+    _FAILOVER_CLASS_CACHE[base] = _FailoverLLM
+    return _FailoverLLM
+
+
+def _attach_failover(primary: LLM, fallback: LLM | None, tier: str) -> LLM:
+    """Give *primary* a one-shot fallback. Unconfigured fallback = no change."""
+    if fallback is None:
+        return primary
+    object.__setattr__(primary, "__class__", _failover_class(type(primary)))
+    primary.__dict__["_seo_failover"] = (fallback, tier)
+    return primary
+
+
+def _build_fallback_llm(tier: str) -> LLM | None:
+    """Build the CREWAI_<TIER>_FALLBACK_* provider, or None when unconfigured."""
+    model = os.getenv(f"CREWAI_{tier}_FALLBACK_MODEL")
+    if not model:
+        return None
+    kwargs: dict = {}
+    api_base = os.getenv(f"CREWAI_{tier}_FALLBACK_API_BASE")
+    if api_base:
+        kwargs["base_url"] = api_base
+        kwargs["api_key"] = os.getenv(f"CREWAI_{tier}_FALLBACK_API_KEY", "local")
+        kwargs["provider"] = os.getenv(f"CREWAI_{tier}_FALLBACK_PROVIDER", "openai")
+    max_tokens = os.getenv(f"CREWAI_{tier}_MAX_TOKENS")
+    if max_tokens:
+        kwargs["max_tokens"] = int(max_tokens)
     return LLM(
-        model=os.getenv("CREWAI_RESEARCH_MODEL", "openai/gpt-4o-mini"),
+        model=model,
         temperature=float(os.getenv("CREWAI_TEMPERATURE", "0.2")),
-        **_llm_kwargs("RESEARCH"),
+        **kwargs,
     )
+
+
+def _build_tier_llm(tier: str, default_model: str) -> LLM:
+    load_dotenv()
+    primary = LLM(
+        model=os.getenv(f"CREWAI_{tier}_MODEL", default_model),
+        temperature=float(os.getenv("CREWAI_TEMPERATURE", "0.2")),
+        **_llm_kwargs(tier),
+    )
+    return _attach_failover(primary, _build_fallback_llm(tier), tier)
+
+
+def build_research_llm() -> LLM:
+    return _build_tier_llm("RESEARCH", "openai/gpt-4o-mini")
 
 
 def build_exec_llm() -> LLM:
-    load_dotenv()
-    return LLM(
-        model=os.getenv("CREWAI_EXEC_MODEL", "openai/gpt-4o"),
-        temperature=float(os.getenv("CREWAI_TEMPERATURE", "0.2")),
-        **_llm_kwargs("EXEC"),
-    )
+    return _build_tier_llm("EXEC", "openai/gpt-4o")
 
 
 # ---------------------------------------------------------------------------
