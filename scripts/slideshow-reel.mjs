@@ -12,11 +12,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { defaultGbpPhotoDirs } from './lib/gbp-paths.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PROJECT_ROOT = path.resolve(__dirname, '..');
-const DEFAULT_CURATED = process.env.GBP_CURATED_FOLDER || 'E:\\Media\\Grizzly\\Curated';
+const DEFAULT_CURATED = defaultGbpPhotoDirs(process.env).curatedPreferred;
 const DEFAULT_SCHEDULE = path.join(PROJECT_ROOT, 'outputs', 'facebook_posting_schedule.md');
 const DEFAULT_OUTPUT_DIR = process.env.FB_VIDEO_OUTPUT_DIR
   || path.join(PROJECT_ROOT, 'outputs', 'fb-videos');

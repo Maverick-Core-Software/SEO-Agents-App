@@ -27,13 +27,14 @@
  *   node scripts/fb-photo-rewrite.mjs --dry-run  Show decisions, change nothing.
  *
  * Env (from .env):
- *   GBP_CURATED_FOLDER   Where gbp-photo-pick copies winners (default E:\Media\Grizzly\Curated)
+ *   GBP_CURATED_FOLDER   Where gbp-photo-pick copies winners (default: the Curated folder under the local GBP cache)
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { normalizePhotoFile } from './lib/schedule-text.mjs';
+import { defaultGbpPhotoDirs } from './lib/gbp-paths.mjs';
 import {
   derivePostServiceType,
   loadPhotoSelectionManifest,
@@ -53,7 +54,7 @@ if (fs.existsSync(envPath)) {
   }
 }
 
-const CURATED_FOLDER = process.env.GBP_CURATED_FOLDER || 'E:\\Media\\Grizzly\\Curated';
+const CURATED_FOLDER = defaultGbpPhotoDirs(process.env).curatedPreferred;
 const SELECTION_MANIFEST_FILE = process.env.GBP_PHOTO_SELECTION_MANIFEST
   || path.join(PROJECT_ROOT, 'state', 'photo-selection-manifest.json');
 const SCHEDULE_FILE = path.join(PROJECT_ROOT, 'outputs', 'facebook_posting_schedule.md');

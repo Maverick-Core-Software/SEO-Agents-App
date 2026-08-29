@@ -5,7 +5,9 @@ import path from 'node:path';
 
 export const DEFAULT_GBP_LOCAL_CACHE =
   'C:\\Workspace\\Shared\\Assets\\Media\\Grizzly\\GBP Post Photos';
-export const DEFAULT_GBP_CURATED_FOLDER = 'E:\\Media\\Grizzly\\Curated';
+// Curated lives under the local cache; E: was a drive letter that no longer exists
+// on this box (2026-08-29). resolveWritableCuratedFolder still falls back if absent.
+export const DEFAULT_GBP_CURATED_FOLDER = path.join(DEFAULT_GBP_LOCAL_CACHE, 'Curated');
 
 export function defaultGbpPhotoDirs(env = process.env) {
   return {

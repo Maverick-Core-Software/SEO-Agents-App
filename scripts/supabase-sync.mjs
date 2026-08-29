@@ -221,6 +221,43 @@ async function notifyApprovalGate({ runId, weekOf, fbCount, gbpCount, taskCount 
   }
 }
 
+/**
+ * Same transition as mav-bridge POST /seo/actions/approve, minus the HTTP hop.
+ * Returns true only if the seo_run actually moved pending_approval -> approved.
+ */
+async function autoApproveRun(runId) {
+  const now = new Date().toISOString();
+  const { data: run, error: runErr } = await supabase.from('seo_runs')
+    .update({ status: 'approved', approved_at: now })
+    .eq('id', runId).eq('status', 'pending_approval')
+    .select().maybeSingle();
+  if (runErr) { console.error(`Auto-approve seo_run error: ${runErr.message}`); return false; }
+  if (!run) { console.error('Auto-approve: run was not pending_approval'); return false; }
+  const { error: postsErr } = await supabase.from('weekly_posts')
+    .update({ status: 'approved', approved_at: now })
+    .eq('run_id', runId).eq('status', 'pending_approval');
+  if (postsErr) { console.error(`Auto-approve weekly_posts error: ${postsErr.message}`); return false; }
+  return true;
+}
+
+async function notifyAutoApproved({ runId, weekOf, fbCount, gbpCount, taskCount }) {
+  const message = [
+    'SEO week auto-approved',
+    `Week of ${weekOf}`,
+    `Run ${String(runId).slice(0, 8)}`,
+    `GBP posts: ${gbpCount}`,
+    `Facebook posts: ${fbCount}`,
+    taskCount ? `Website tasks awaiting approval in MCC: ${taskCount}` : null,
+    'Publishing via mav-bridge — no action needed.',
+  ].filter(Boolean).join('\n');
+  try {
+    await sendHermesAlert(message);
+    console.log('Auto-approve notice sent via Hermes (HERMES_ALERT_TO)');
+  } catch (err) {
+    console.error(`Auto-approve notice failed (non-fatal): ${err.message || err}`);
+  }
+}
+
 async function main() {
   // --tasks-only: re-sync website_tasks for an existing run without touching
   // weekly_posts or the run's approval status (safe after posts are approved).
@@ -290,6 +327,19 @@ async function main() {
     else console.log(`Synced ${tasks.length} website tasks`);
   }
 
+  // SEO_AUTO_APPROVE=1: skip the MCC gate for posts. Mirrors POST /seo/actions/approve
+  // in mav-bridge (seo_runs -> approved, this run's pending weekly_posts -> approved).
+  // Website tasks stay pending_approval — they still need a human in MCC.
+  const autoApprove = !tasksOnly && /^(1|true|yes)$/i.test(process.env.SEO_AUTO_APPROVE || '');
+  if (autoApprove) {
+    const approved = await autoApproveRun(runId);
+    if (approved) {
+      console.log(`\nSync complete. Run ${runId} AUTO-APPROVED (SEO_AUTO_APPROVE=1) — mav-bridge will publish.`);
+      await notifyAutoApproved({ runId, weekOf, fbCount, gbpCount, taskCount: tasks.length });
+      return;
+    }
+    console.error('Auto-approve failed — leaving run at the MCC approval gate.');
+  }
   console.log(`\nSync complete. Run ${runId} is pending_approval in Supabase.`);
   console.log('Open the MCC dashboard to review and approve.');
 

@@ -51,6 +51,7 @@ import { normalizePhotoFile } from './lib/schedule-text.mjs';
 import { loadPhotoSelectionManifest, isManifestSelectionCompatible } from './lib/photo-selection.mjs';
 import { postProcessVideo, enhanceVideo } from './video-postprocess.mjs';
 import { buildSlideshowReel, parseOnScreenText } from './slideshow-reel.mjs';
+import { defaultGbpPhotoDirs } from './lib/gbp-paths.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -519,7 +520,7 @@ export function parseScheduleText(text) {
   }).filter(p => p.day > 0 && p.type !== 'skip').sort((a, b) => a.day - b.day);
 }
 
-const GBP_CURATED_FOLDER = process.env.GBP_CURATED_FOLDER || 'E:\\Media\\Grizzly\\Curated';
+const GBP_CURATED_FOLDER = defaultGbpPhotoDirs(process.env).curatedPreferred;
 
 function curatedPhotoForDate(date, service) {
   // gbp-photo-pick copies winners as `${date}-${slug}.<ext>`. For a FB video day
