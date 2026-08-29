@@ -34,7 +34,13 @@ class _ProviderError(Exception):
 
 @pytest.fixture
 def failover_env(monkeypatch):
-    """Point RESEARCH at a primary and a fallback, both unreachable by design."""
+    """Point RESEARCH at a primary and a fallback, both unreachable by design.
+
+    build_*_llm calls load_dotenv(), so without this stub a developer's real
+    .env leaks into the test: deleting CREWAI_RESEARCH_FALLBACK_MODEL would be
+    silently undone by the value on disk.
+    """
+    monkeypatch.setattr("seo_agents.crew.load_dotenv", lambda *a, **k: False)
     monkeypatch.setenv("CREWAI_RESEARCH_MODEL", PRIMARY)
     monkeypatch.setenv("CREWAI_RESEARCH_API_BASE", "https://primary.invalid/v1")
     monkeypatch.setenv("CREWAI_RESEARCH_API_KEY", "primary-key")
