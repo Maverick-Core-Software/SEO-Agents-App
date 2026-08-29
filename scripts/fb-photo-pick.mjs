@@ -69,6 +69,19 @@ const POOLS = [
 // How many photos each post type wants.
 const WANTED = { slideshow: 4, carousel: 3, photo: 1 };
 
+// When the library has no photo of the post's own service type, fall back to a
+// type that still illustrates the copy. The EV posts are the reason this exists:
+// Grizzly has zero EV-charger photos, but those posts are about whether your
+// PANEL can carry a charger ("send us a photo of your panel"), so panel imagery
+// is correct rather than merely tolerable. Pass --no-fallback to disable.
+const FALLBACK_TYPES = {
+  'ev-charger': ['panel'],
+  generator: ['panel'],
+  outlet: ['wiring', 'panel'],
+  wiring: ['panel'],
+};
+const allowFallback = !process.argv.includes('--no-fallback');
+
 function loadPool() {
   const out = [];
   const seen = new Set();
@@ -162,9 +175,21 @@ async function main() {
     const wantType = derivePostServiceType({ service: post.service, topic: post.service });
     const slug = serviceSlug(post.service);
 
-    const picks = pool
-      .filter((p) => p.score >= MIN_SCORE && p.serviceType === wantType && !used.has(p.usable.toLowerCase()))
+    const pickFor = (type) => pool
+      .filter((p) => p.score >= MIN_SCORE && p.serviceType === type && !used.has(p.usable.toLowerCase()))
       .slice(0, want);
+
+    let picks = pickFor(wantType);
+    let usedType = wantType;
+    if (!picks.length && allowFallback) {
+      for (const alt of (FALLBACK_TYPES[wantType] || [])) {
+        picks = pickFor(alt);
+        if (picks.length) { usedType = alt; break; }
+      }
+      if (picks.length) {
+        console.log(`      (no ${wantType} photos in the library — falling back to ${usedType})`);
+      }
+    }
 
     if (!picks.length) {
       console.log(`  ${post.date} [${post.type}] ${post.service} → NO ${wantType} photos available, leaving as-is`);
@@ -192,6 +217,7 @@ async function main() {
         sourcePath: pick.srcPath,
         sourceFilename: path.basename(pick.srcPath),
         photoServiceType: pick.serviceType,
+        fallbackFrom: usedType === wantType ? null : wantType,
         score: pick.score,
         tags: pick.tags,
         selectedAt: new Date().toISOString(),
@@ -199,7 +225,7 @@ async function main() {
       });
     }
 
-    console.log(`  ${post.date} [${post.type}] ${post.service} → ${picks.length}/${want} ${wantType} photos`);
+    console.log(`  ${post.date} [${post.type}] ${post.service} → ${picks.length}/${want} ${usedType} photos${usedType === wantType ? '' : ' (fallback)'}`);
     for (const pick of picks) console.log(`      ${pick.score}  ${path.basename(pick.srcPath)}`);
     matched++;
 
