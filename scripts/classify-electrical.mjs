@@ -54,6 +54,12 @@ const sinceMs = sinceArg ? new Date(sinceArg + 'T00:00:00Z').getTime() : 0;
 // ── config ────────────────────────────────────────────────────────────────
 const VISION_URL = (process.env.ELECTRICAL_VISION_URL || 'http://127.0.0.1:8082/v1').replace(/\/$/, '');
 const VISION_MODEL = process.env.ELECTRICAL_VISION_MODEL || 'gemma-3-12b-it';
+// Set ELECTRICAL_VISION_API_KEY to talk to a hosted OpenAI-compatible endpoint
+// (e.g. ELECTRICAL_VISION_URL=https://api.openai.com/v1, MODEL=gpt-4o). Unset for
+// a local server, which needs no auth.
+const VISION_API_KEY = process.env.ELECTRICAL_VISION_API_KEY
+  || (/api\.openai\.com/.test(VISION_URL) ? process.env.OPENAI_API_KEY : '')
+  || '';
 const ICLOUD_DIR = process.env.ICLOUD_PHOTOS_DIR || 'C:\\Users\\carte\\Pictures\\iCloud Photos';
 const BACKFILL_DIR = process.env.ELECTRICAL_BACKFILL_DIR || 'C:\\Workspace\\Shared\\Assets\\Media\\Grizzly\\Backfill';
 const { localCache: GBP_CACHE } = defaultGbpPhotoDirs(process.env);
@@ -72,6 +78,24 @@ function loadManifest() {
 function saveManifest(m) {
   fs.mkdirSync(path.dirname(MANIFEST), { recursive: true });
   fs.writeFileSync(MANIFEST, JSON.stringify(m, null, 2));
+}
+
+// Many files in the library carry a .heic extension but hold JPEG bytes (67 of the
+// first 176 scanned on 2026-08-29). Trust the magic bytes, not the extension --
+// heic-convert throws 'input buffer is not a HEIC image' on those otherwise.
+function isKnownRaster(buf) {
+  return (buf[0] === 0x89 && buf[1] === 0x50)
+    || (buf[0] === 0xFF && buf[1] === 0xD8)
+    || (buf[0] === 0x52 && buf[1] === 0x49);
+}
+function isHeicBuffer(buf) {
+  if (buf.length < 12) return false;
+  if (buf.toString('ascii', 4, 8) !== 'ftyp') return false;
+  return /^(heic|heix|hevc|hevx|mif1|msf1|heim|heis|hevm|hevs)$/
+    .test(buf.toString('ascii', 8, 12));
+}
+function needsHeicDecode(buf, ext) {
+  return isHeicBuffer(buf) || (/^\.hei[cf]$/i.test(ext) && !isKnownRaster(buf));
 }
 
 function detectMime(buf) {
@@ -141,7 +165,7 @@ async function classifyPhoto(imagePath) {
   let buf = fs.readFileSync(imagePath);
   let mime = detectMime(buf);
 
-  if (ext === '.heic' || ext === '.heif') {
+  if (needsHeicDecode(buf, ext)) {
     if (!heicConvert) throw new Error('heic-convert not installed');
     buf = Buffer.from(await heicConvert({ buffer: buf, format: 'JPEG', quality: 0.85 }));
     mime = 'image/jpeg';
@@ -151,7 +175,9 @@ async function classifyPhoto(imagePath) {
 
   const res = await fetch(VISION_URL + '/chat/completions', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: VISION_API_KEY
+      ? { 'Content-Type': 'application/json', Authorization: 'Bearer ' + VISION_API_KEY }
+      : { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       model: VISION_MODEL,
       max_tokens: 200,
@@ -230,7 +256,7 @@ async function main() {
   console.log('Mode:        ' + mode);
   console.log('Source:      ' + SOURCE);
   console.log('Destination: ' + DEST);
-  console.log('Vision:      ' + VISION_MODEL + ' @ ' + VISION_URL);
+  console.log('Vision:      ' + VISION_MODEL + ' @ ' + VISION_URL + (VISION_API_KEY ? ' (authenticated)' : ''));
   console.log('Min score:   ' + MIN_SCORE);
   console.log('Delete src:  ' + (doDelete ? 'YES' : 'no'));
   if (dryRun) console.log('(dry run — no copy, no delete)\n');
@@ -283,9 +309,10 @@ async function main() {
         fs.mkdirSync(DEST, { recursive: true });
         const dest = uniqueDest(f, DEST);
         const srcExt = path.extname(f).toLowerCase();
-        if (/^\.hei[cf]$/i.test(srcExt)) {
+        const srcBuf = fs.readFileSync(f);
+        if (needsHeicDecode(srcBuf, srcExt)) {
           if (!heicConvert) throw new Error('heic-convert unavailable for copy');
-          const jpeg = Buffer.from(await heicConvert({ buffer: fs.readFileSync(f), format: 'JPEG', quality: 0.9 }));
+          const jpeg = Buffer.from(await heicConvert({ buffer: srcBuf, format: 'JPEG', quality: 0.9 }));
           fs.writeFileSync(dest, jpeg);
         } else {
           fs.copyFileSync(f, dest);
