@@ -7,4 +7,7 @@ export default defineConfig({
     // Tailscale Serve proxies as https://cmb-workbench.tailf72e3f.ts.net:5188
     allowedHosts: ['.tailf72e3f.ts.net'],
   },
+  preview: {
+    allowedHosts: ['.tailf72e3f.ts.net'],
+  },
 });

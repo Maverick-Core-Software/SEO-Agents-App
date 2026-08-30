@@ -1,5 +1,15 @@
 # SEO Agents App — Journal
 
+## 2026-08-30 — Marketing Control operator-truth + Tailscale; next = weekly harden
+
+**Agent:** Grok 4.6 (cockle worktree) + Pi DeepSeek Flash workers S1–S7
+**Outcome:** Phase 1 dashboard tells the truth on live data. Weekly engine rot (stale GBP errors, undrained website tasks) is the next session.
+
+- Reviewed latest commits vs MCC `:3000` + Supabase. Sunday-week Today hid the 8/29 GBP Recessed Lighting failure.
+- Flash workers: run-anchored posts, pending split, owner-wait, DONE labels, live detail, calendar task dates, operations faults.
+- Verified: 64 tests, production build, live UI crawl, Tailscale Serve `https://cmb-workbench.tailf72e3f.ts.net:5188/`.
+- Pickup: `docs/NEXT-SESSION.md`.
+
 
 ## 2026-08-17 — Meta Marketing API boost path (ledger-gated, spend off until credentials)
 
