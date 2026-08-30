@@ -1,29 +1,10 @@
 import { supabase, isSupabaseAvailable } from '../supabase.js';
 import { liveRunStatus, bucketStatusCount } from './status.js';
+import { wrapReadOnly, READ_ONLY } from './guard.js';
 
-export const READ_ONLY = 'READ_ONLY';
-
-const MUTATIONS = new Set(['insert', 'update', 'delete', 'upsert', 'rpc']);
+export { wrapReadOnly, READ_ONLY };
 
 const EMPTY_HEALTH = { run: null, posts: [], live: 'idle', bucket: 'incomplete' };
-
-export function wrapReadOnly(target) {
-  if (target == null || (typeof target !== 'object' && typeof target !== 'function')) {
-    return target;
-  }
-  return new Proxy(target, {
-    get(obj, prop) {
-      if (typeof prop === 'string' && MUTATIONS.has(prop)) {
-        throw new Error(READ_ONLY);
-      }
-      const value = obj[prop];
-      if (typeof value === 'function') {
-        return (...args) => wrapReadOnly(value.apply(obj, args));
-      }
-      return value;
-    },
-  });
-}
 
 export function readFrom(table) {
   if (!supabase) throw new Error('NOT_CONFIGURED');
