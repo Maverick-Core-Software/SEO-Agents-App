@@ -62,9 +62,13 @@ function weekCounts(posts) {
   return counts;
 }
 
-function itemDate(row) {
+function itemDate(row, posts) {
   if (row?.due_date) return String(row.due_date).slice(0, 10);
   if (row?.post_date) return String(row.post_date).slice(0, 10);
+  if (row?.run_id) {
+    const match = (posts || []).find((p) => p.run_id === row.run_id && p.post_date);
+    if (match) return String(match.post_date).slice(0, 10);
+  }
   if (row?.week_of) return String(row.week_of).slice(0, 10);
   if (row?.created_at) return String(row.created_at).slice(0, 10);
   return '';
@@ -138,7 +142,7 @@ function PostChip({ post }) {
 function WeekCard({ weekStart, posts, tasks, isCurrent }) {
   const days = [0, 1, 2, 3, 4, 5, 6].map((n) => addDays(weekStart, n));
   const weekPosts = posts.filter((p) => inWeek(String(p.post_date || ''), weekStart));
-  const weekTasks = tasks.filter((t) => inWeek(itemDate(t), weekStart));
+  const weekTasks = tasks.filter((t) => inWeek(itemDate(t, posts), weekStart));
   const counts = weekCounts(weekPosts);
   const grid = {
     display: 'grid',
@@ -154,7 +158,7 @@ function WeekCard({ weekStart, posts, tasks, isCurrent }) {
   }
 
   function cellTasks(date) {
-    return weekTasks.filter((t) => itemDate(t) === date);
+    return weekTasks.filter((t) => itemDate(t, posts) === date);
   }
 
   return (
