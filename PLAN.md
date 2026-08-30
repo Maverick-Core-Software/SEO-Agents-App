@@ -1,824 +1,274 @@
-# PLAN.md: Facebook Engagement Optimization for Grizzly Electrical Solutions
+# PLAN.md — Grizzly Marketing Control (consolidation + first read-only slice)
 
-**Run ID:** fb-engagement-20260716
-**Date:** 2026-07-16
-**Pipeline Depth:** Research + Plan (awaiting approval)
-**Research Package:** Three research reports at `C:\Workspace\Active\pi-agents\`
-
----
-
-## Executive Summary
-
-Grizzly Electrical's Facebook page (187 followers) gets **zero engagement** across all posts. The root cause is NOT content quality — the copy is good. The problem is a convergence of:
-
-1. **7 posts/week with 187 followers** — algorithm sees high volume + zero engagement = low-quality page, suppresses everything
-2. **Uniform hook→story→"Call us at 555-XXXX" format** — Facebook's 2026 algorithm penalizes repetitive broadcast content and suppresses posts with phone-number sales CTAs
-3. **No conversation triggers** — followers have nothing to comment on, save, or share
-4. **Page organic reach is 2-6%** — 4-11 people see each post. Facebook Groups deliver 30-60% reach
-5. **No seed engagement network** — no initial likes/comments to signal to the algorithm that content is worth distributing
-
-**This plan addresses all five root causes with 6 sessions across 3 waves. No new subscriptions required — all changes are to existing CrewAI prompts and Node.js scripts. Boost budget locked at $50/week — the CrewAI agent decides how to distribute it across posts.**
+**Run ID:** mktg-consolidation-20260830
+**Date:** 2026-08-30
+**Pipeline depth:** Full — audit (done) → plan → review → execute
+**Audit evidence:** `artifacts/audit-20260830/research/{flow,data,adapters,tests,mcc,ux,secops}.md`
+**Author:** Pi (orchestrator). **Executor:** Grok 4.6 (with its own subagents).
+**Status:** REVIEWED 2026-08-30 — execution approved with the contract in §9. Currently executing.
 
 ---
 
-## Codebase Primer
+## 0. Executive summary
 
-### Key Files
+The SEO automation is a working production system. The problem is not a missing app — it is that the workflow's operator surface is a thin proxy layer embedded in MCC, a broad homelab/agent console, while the durable record (Supabase) and the execution worker (`mav-bridge.mjs`) already do the real work.
 
-| File | Lines | Role |
-|------|-------|------|
-| `src/seo_agents/crew.py` | ~1230 | **PRIMARY TARGET** — `build_facebook_crew()` generates schedule with content instructions |
-| `scripts/facebook-poster.mjs` | ~1214 | Facebook posting: prompt rewrite, video gen, Graph API upload, `buildCaption()` |
-| `scripts/mav-bridge.mjs` | ~1350 | Pipeline orchestrator: Supabase bridge, executes approved runs |
-| `outputs/facebook_posting_schedule.md` | ~147 | Intermediate format between generator and executor |
-| `src/seo_agents/main.py` | ~1380 | Weekly runner, orchestrates research → schedule generation |
+This plan does **not** rewrite the SEO engine, migrate data, or move browser automation. It:
 
-### Architecture Flow
+1. Records the current production state (Phase 0, documentation only).
+2. Builds **Grizzly Marketing Control** — a focused, private, **read-only** weekly marketing dashboard reading the existing Supabase record directly (Phase 1, the immediate slice).
+3. Defers the durable command path, cutover, and engine hardening to later, gated phases (Phases 2–5).
 
-```
-crew.py (CrewAI/GPT-4o) → facebook_posting_schedule.md (7 posts)
-    ↓
-mav-bridge.mjs → Supabase poll → pick up approved items
-    ↓
-facebook-poster.mjs → parseSchedule() → buildCaption() → graphDispatch()
-    ↓
-Facebook Graph API (/{page-id}/feed, /{page-id}/photos, /{page-id}/videos)
-```
+**Non-negotiables for every execution worker (carry these verbatim):**
 
-### Conventions
-- Node.js ESM (`.mjs`) for scripts, Python (CrewAI) for content generation
-- `hopLog()` for structured logging in facebook-poster.mjs
-- `buildCaption(post)` assembles final caption from hook + body + hashtags + CTA
-- `parseSchedule()` reads markdown schedule, returns array of post objects
-- `graphDispatch()` routes `post.type` → correct Graph API endpoint
-- CrewAI uses OpenAI GPT-4o via `build_exec_llm()`
-- `DAY_TOPIC_BINDING_RULE` keeps Facebook and GBP on the same daily topic
-
-### Current Caption Assembly (facebook-poster.mjs, ~line 260)
-
-```javascript
-function buildCaption(post) {
-  const parts = [];
-  if (post.hook) parts.push(post.hook);
-  if (post.body) parts.push(`\n${post.body}`);
-  if (post.hashtags) parts.push(`\n\n${post.hashtags}`);
-  if (post.cta) parts.push(`\n\n${post.cta}`);
-  return parts.join('').trim();
-}
-```
-
-The CTA (e.g. "Call us today at (469) 863-9804") is included inline in EVERY post's caption — this is what Facebook suppresses.
+- Read-only by default. No production post, website edit, approval, browser login, secret change, process restart, deployment, or scheduled-task alteration without direct approval.
+- No `git push` / `git fetch`. All work is local.
+- `git add` ONLY the files a session changed — never `git add -A` / `git add .`.
+- Never print secret values. Reference `.env` keys by name only.
+- The two live repos (`C:\Workspace\Active\SEO-Agents-App`, `C:\Workspace\Active\MCC`) are **out of scope for edits**. All new code lands in this worktree (`C:/Users/carte/orca/workspaces/SEO-Agents-App/cockle`) under `marketing-control/`.
+- Do not restart PM2, Task Scheduler, or any running service.
 
 ---
 
-## Wave 1: Foundation — Content Strategy Overhaul (3 Parallel Sessions)
+## 1. Codebase primer (audit-grounded facts)
 
-All three sessions touch different files and have no inter-session dependencies. They can run in parallel.
+### 1.1 The production flow (from `flow.md`)
 
-### Session 1: Overhaul crew.py Facebook Content Instructions
+- Friday 08:25–08:30 Windows Task Scheduler: photo sync → `run-weekly-seo.py` (CrewAI research → schedules) → parallel `seo-monitor.mjs` (14h window).
+- Crew phases write Markdown to `outputs/` (`facebook_posting_schedule.md`, `gbp_posting_schedule.md`, `grizzly_execution_queue.md`, reports).
+- `supabase-sync.mjs` parses Markdown → Supabase (`seo_runs` upsert on `week_of`, `weekly_posts`, `website_tasks` — all `pending_approval`).
+- Approval (MCC UI or `SEO_AUTO_APPROVE=1`) → Supabase status `approved`.
+- `mav-bridge.mjs` (PM2, :8790) polls Supabase every 30s → executes approved FB/website work, reconciles, alerts.
+- `gbp-worker.mjs` (user-session Scheduled Task) posts GBP daily via Playwright.
+- `seo-watchdog.mjs` (daily 10:00) is the independent no-show/stale detector.
 
-**File:** `src/seo_agents/crew.py` — `build_facebook_crew()` function (lines 970–1110)
-**Executor:** Claude Code (bridge) — nuanced prompt engineering
-**Context estimate:** ~25k tokens
+### 1.2 Durable record (from `data.md`)
 
-#### Background
+- Supabase is authoritative for **status/approval/execution state**. Markdown is authoritative for **published content** (files are mutated post-sync). Boost decisions live only in Markdown.
+- `seo_runs` (key `week_of`, derived from run clock — a known TZ bug), `weekly_posts` (`run_id`, `platform`, `day`, `status`, `platform_post_id`, `media_status`, `photo_file`), `website_tasks`, `run_logs`.
+- The anon key is already shipped in MCC's Vite bundle and reads SEO tables. **RLS is absent from `schema.sql`** (live state unverifiable) — a Phase-2 concern, not a blocker for read-only Phase 1.
 
-The current `build_facebook_crew()` generates 7 posts/week (3 video + 3 photo + 1 text) all with phone-number CTAs. Research shows this uniform broadcast format gets suppressed by Facebook's 2026 algorithm. The fix requires changing the prompt instructions that CrewAI's GPT-4o agent follows — NOT changing the agent itself.
+### 1.3 Adapters (from `adapters.md`)
 
-#### Tasks
+- **Facebook** (`facebook-poster.mjs`): no create-level idempotency key; token-retry on Graph 190/102; no post-hoc read-back in-poster (reconcile in bridge). Untested crash windows: post-success-before-write, duplicate resume, stale `.lock-*` idempotency locks (Python path), `website.py:147` fence-strip bug.
+- **GBP** (`gbp-poster/driver.mjs` + `gbp-worker.mjs`): strongest safety — submitted-flag (never re-post after click), exit-code contract (0/3/4/5), `needs_verification` handling. Partially-handled crash window between driver success and archive write (30-min TTL reset → duplicate risk).
+- **Website** (`website.py`): no adapter-level approval (relies on `actions.py` gate); no automated retry/rollback.
 
-1. **Reduce posting frequency from 7 to 4 posts/week**
+### 1.4 Test coverage (from `tests.md`)
 
-   In the `fb_context` string (line 1005), change:
-   ```python
-   "VIDEO DAYS: Days 1, 4, and 7 must be VIDEO posts. Day 5 must be a TEXT-only post..."
-   ```
-   To:
-   ```python
-   "POSTING DAYS: 4 posts per week — Mon (Day 1), Wed (Day 3), Fri (Day 5), Sat (Day 6). "
-   "Day 1 is VIDEO (Reel), Day 3 is PHOTO or CAROUSEL, Day 5 is VIDEO (Reel), Day 6 is PHOTO or TEXT."
-   ```
+- **Covered:** engine idempotency, evidence/claims, dispatch gates, failure classification, dry-run isolation, run locks, LLM failover, GBP runner/exit-codes, website task runner/parser, FB media selection, name guard, run-status mapping.
+- **Untested (high severity):** `seo-monitor.mjs` + `seo-watchdog.mjs` (the 2026-07-24 no-show incident chain), `supabase-sync.mjs` (contains the known `getWeekOf` TZ bug), `run-weekly-seo.py`. `tests/conftest.py` output-path fixture is a no-op. No `npm test` script, no CI.
 
-2. **Add content format variety requirements**
+### 1.5 MCC decomposition (from `mcc.md`)
 
-   After the "TONE RULES" section (line 1044), add a new "CONTENT FORMAT VARIETY (mandatory)" section:
+- SEO approval in MCC is a **thin proxy**: `SEOApprovalPage.jsx` → `routes/seo.mjs` → `lib/models.mjs::callSeoApp()` → `http://127.0.0.1:8790` (mav-bridge). No AI, no file I/O, no DB writes in the SEO path itself.
+- SEO-essential: `SEOApprovalPage.jsx`, `seoRules.js`, `routes/seo.mjs`, `lib/http.mjs`, `lib/load-env.mjs`, plus `callSeoApp`/`logSeoEvent`/`seoAppUrl` splinters of `models.mjs`/`state.mjs`/`config.mjs`.
+- RETIRE (independent of SEO): `chat.mjs`, `exec.mjs`, `prompts.mjs`, `self-improve.mjs`, `llama-status`, `zai-status`, `memory`, `extract`, `ops-notify`, `thumbtack-*` (5), `orchestrator.mjs`, `build.mjs`, `HomePage.jsx`, `MaverickPage.jsx`, etc.
 
-   ```python
-   "CONTENT FORMAT VARIETY (mandatory — avoid algorithm suppression):\n"
-   "- Each post MUST use a DIFFERENT content format from the last. Never repeat the same "
-   "format twice in a row (e.g. not two 'hook→story→CTA' posts consecutively).\n"
-   "- Rotate through these formats across the week:\n"
-   "  1. Before/After transformation (photo or video): Show problem then solution\n"
-   "  2. Educational/How-To: Teach something useful (signs of failing panel, GFCI basics)\n"
-   "  3. Behind-the-Scenes/Day-in-the-Life: Team member at work, loading the van, job walkthrough\n"
-   "  4. Interactive/Question: Poll, 'this or that', 'what would you do', fill-in-the-blank\n"
-   "  5. Social Proof/Testimonial: Customer story, completed job showcase, review highlight\n"
-   "  6. Humor/Personality: Trade humor, relatable electrical fails, 'caption this'\n"
-   "- 50% of posts must be educational/value-first, 30% social proof/personality, 20% interactive\n"
-   "- 0% direct sales pitches — the CTA should invite conversation, not quote a phone number\n"
-   ```
+### 1.6 Security (from `secops.md`)
 
-3. **Replace phone-number CTAs with engagement CTAs**
+- **Critical:** `/api/build/apply` (MCC) accepts arbitrary absolute paths + runs `pm2` with no auth, on `0.0.0.0:3000`, with CORS granted to any `*.vercel.app`/`*.ts.net`. **Out of scope for this slice's edits** (MCC is not edited), but flagged as the reason MCC must not become the marketing control plane.
+- **High:** CORS wildcard; secrets duplicated into PM2 `env:` block.
+- **Positive patterns to reuse:** bearer-gated photo upload, fail-closed Thumbtack config, `alertOnce` dedup, dual-channel alerts, double-trigger watchdog design.
 
-   Change the CTA rule (line 1047-1048):
-   ```python
-   # OLD:
-   "- CTA is specific: 'Call us today', 'DM us for a free quote', 'DM \"PANEL\" for a free estimate'. "
-   "DM-based CTAs perform better on Reels because Meta rewards DM engagement.\n"
-   
-   # NEW:
-   "- CTA is an ENGAGEMENT invitation, NOT a sales pitch. Rotate through:\n"
-   "  * 'Save this for your next panel inspection'\n"
-   "  * 'Tag a homeowner who needs to see this'\n"
-   "  * 'Drop a 👍 if this has ever happened to you'\n"
-   "  * 'Which would you choose — left panel or right? 👇'\n"
-   "  * 'Share this with someone whose house was built before 1980'\n"
-   "  * 'What's the weirdest electrical issue you've had at home? Tell us below'\n"
-   "- Business phone number goes in a separate CONTACT field (add to format below), "
-   "NOT in the caption CTA. The poster script will post it as the first comment.\n"
-   ```
+### 1.7 UX (from `ux.md`)
 
-4. **Add CONTACT field to output format**
-
-   In the format specification (lines 1080-1091), add a CONTACT field:
-   ```python
-   "CONTACT: [business phone/contact info — goes in the first comment, not caption]\n"
-   ```
-   
-   Place it after HASHTAGS and before PHOTO_FILE.
-
-5. **Add POST_GOAL field to output format**
-
-   Add a POST_GOAL field that tells the poster what this post should achieve:
-   ```python
-   "POST_GOAL: [engagement | education | social_proof | entertainment]\n"
-   ```
-   
-   This drives analytics tracking and boost decisions.
-
-6. **Update VIDEO_PROMPT instructions for algorithm-optimized Reels**
-
-   The current video instructions (lines 1054-1071) are technically correct for AI video quality but missing algorithm optimization. Add:
-   ```python
-   "- REEL LENGTH: 15-25 seconds (not 8). Facebook's algorithm favors Reels "
-   "in the 15-30 second range. The video generator will be told 15s.\n"
-   "- ON-SCREEN TEXT: Every Reel must include text overlays for the hook and key points — "
-   "most Facebook users watch without sound. Describe what text should appear on screen.\n"
-   "- FIRST 1.5 SECONDS: The VIDEO_PROMPT must describe an instant visual hook — "
-   "a sparking outlet, a burnt wire, a dramatic before/after reveal. No establishing shots.\n"
-   ```
-
-7. **Remove HASHTAGS requirement (negligible reach impact on Facebook)**
-
-   Research shows hashtags have minimal impact on Facebook distribution. Remove the HASHTAGS requirement and reallocate that space to keyword-rich captions:
-   ```python
-   # OLD:
-   "- HASHTAGS: 5-8 tags. Always include #DFW or #Dallas, one service tag, one brand tag (#GrizzlyElectrical)\n"
-   
-   # NEW:
-   "- HASHTAGS: 2-3 max (optional). Facebook hashtags have minimal reach impact. "
-   "Prioritize keyword-rich body text over hashtag stuffing.\n"
-   ```
-
-#### Verification
-
-```bash
-# Syntax check
-PYTHONPATH="" .venv/Scripts/python.exe -c "from seo_agents.crew import build_facebook_crew; print('OK')"
-
-# Run existing tests (no regressions)
-PYTHONPATH="" .venv/Scripts/python.exe -m pytest tests/ -q -x --basetemp=/tmp/pytest-tmp -p no:cacheprovider
-```
-
-#### Commit Message
-```
-feat: overhaul Facebook content strategy — 4 posts/week, engagement CTAs, format variety, algorithm optimization
-```
+- Today's whole marketing UI is one page (`SEOApprovalPage.jsx`). Performance data is collected (`facebook_engagement_report.md`, boost ledger, baselines) but **never surfaced** — MCC's metrics are homelab infra only.
+- Derived IA: 7 screens (Today/This Week, Content Calendar, Approval Inbox, Content Detail, Website Tasks, Performance, Operations) + a first-class "Needs recovery" zone.
+- The read-only slice is implementable entirely against existing Supabase reads + GET endpoints (`/seo/status`, `/seo/actions`, `/seo/posts/week`) + file outputs — **no backend work required**.
 
 ---
 
-### Session 2: Update facebook-poster.mjs — CTA Handling + First Comment + Engagement Tracking
+## 2. Target architecture
 
-**File:** `scripts/facebook-poster.mjs`
-**Executor:** Claude Code (bridge) — multiple function changes
-**Context estimate:** ~35k tokens
-**Depends on:** Session 1 (new schedule format with CONTACT field and POST_GOAL)
-
-#### Tasks
-
-1. **Strip phone-number CTAs from `buildCaption()` and move to first comment**
-
-   Modify `buildCaption()` (around line 260) to EXCLUDE the CTA field and INCLUDE a new `contact` field:
-   
-   ```javascript
-   function buildCaption(post) {
-     const parts = [];
-     if (post.hook) parts.push(post.hook);
-     if (post.body) parts.push(`\n${post.body}`);
-     // HASHTAGS: keep but minimize (Session 1 reduces to 2-3)
-     if (post.hashtags) parts.push(`\n\n${post.hashtags}`);
-     // CTA: only include if it's an ENGAGEMENT CTA (no phone numbers)
-     if (post.cta && !hasPhoneNumber(post.cta)) parts.push(`\n\n${post.cta}`);
-     return parts.join('').trim();
-   }
-   
-   function hasPhoneNumber(text) {
-     return /\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/.test(text);
-   }
-   ```
-
-2. **Post business contact as first comment after publishing**
-
-   After `graphDispatch()` succeeds, post the contact info as a comment:
-   
-   ```javascript
-   async function postFirstComment(postId, contactText) {
-     if (!contactText) return;
-     const body = new URLSearchParams({
-       message: contactText,
-       access_token: FB_PAGE_ACCESS_TOKEN,
-     });
-     await fetch(
-       `https://graph.facebook.com/${GRAPH_API_VERSION}/${postId}/comments`,
-       { method: 'POST', body }
-     );
-   }
-   ```
-   
-   Call this in `graphDispatch()` after successful post:
-   ```javascript
-   const { id, media, fallback } = await graphDispatch(post, caption, videoPath, scheduleUnix);
-   if (id && post.contact) {
-     await postFirstComment(id, post.contact).catch(e =>
-       hopLog('facebook-poster→graph', 'warn', `First comment failed: ${e.message}`)
-     );
-   }
-   ```
-
-3. **Add `parseSchedule()` support for new CONTACT and POST_GOAL fields**
-
-   In the schedule parser, add extraction for the new fields:
-   ```javascript
-   function parseSchedule(text) {
-     // ... existing parsing ...
-     const contact = get('CONTACT');    // NEW
-     const postGoal = get('POST_GOAL'); // NEW
-     // ... include in returned post object ...
-   }
-   ```
-
-4. **Add post-upload engagement tracking**
-
-   After a post is published, wait 1 hour then log initial engagement metrics:
-   
-   ```javascript
-   async function trackPostEngagement(postId, postGoal) {
-     // Facebook Insights data isn't available immediately — we log the post ID
-     // and goal for later analysis. The analytics feedback pipeline (Session 3)
-     // handles the delayed read-back.
-     hopLog('facebook-poster', 'info', `Post ${postId} published — goal: ${postGoal}`);
-     return { postId, postGoal, tracked: true };
-   }
-   ```
-
-5. **Update the schedule parser to handle 4-day weeks**
-
-   The current `parseSchedule()` expects 7 days. Make it flexible:
-   ```javascript
-   const posts = parseSchedule(SCHEDULE_FILE).filter(p => 
-     p.day >= args.startDay && p.day <= args.endDay && p.type !== 'skip'
-   );
-   ```
-   
-   Add support for `TYPE: skip` to allow the schedule to explicitly skip days.
-
-6. **Add logging for engagement CTA type**
-
-   Log which CTA type was used so the analytics pipeline can correlate:
-   ```javascript
-   const ctaType = classifyCta(post.cta || ''); // 'comment', 'save', 'tag', 'vote', 'share', 'call'
-   hopLog('facebook-poster', 'info', `Day ${post.day}: CTA type = ${ctaType}`);
-   ```
-
-#### Verification
-
-```bash
-# Syntax check
-node -c scripts/facebook-poster.mjs
-
-# Test buildCaption with new format
-node -e "
-import { buildCaption } from './scripts/facebook-poster.mjs';
-const test = { hook: 'Test', body: 'Body', hashtags: '#DFW', cta: 'Save this!', contact: '(469) 863-9804' };
-const caption = buildCaption(test);
-console.assert(!caption.includes('863-9804'), 'Phone should not be in caption');
-console.assert(caption.includes('Save this!'), 'Engagement CTA should be in caption');
-console.log('PASS');
-"
-
-# Test parseSchedule with new fields
-node -e "
-// Parse the existing schedule file to verify new fields are handled gracefully
-import { parseSchedule } from './scripts/facebook-poster.mjs';
-const posts = parseSchedule('outputs/facebook_posting_schedule.md');
-console.log('Posts parsed:', posts.length);
-posts.forEach(p => console.log('Day', p.day, 'Type', p.type, 'Goal', p.postGoal || 'N/A'));
-"
+```
+                    Grizzly Marketing Control
+                 (private, read-only operator app)
+                              |
+              authenticated reads, zero writes (Phase 1)
+                              |
+                         Supabase
+       runs | posts | tasks | commands | events | metrics | artifacts
+                              |
+                      local SEO worker
+          planning | adapters | media | verification | health
+                              |
+                  Facebook | GBP | website | media sources
 ```
 
-#### Commit Message
-```
-feat: strip phone CTAs from captions, post to first comment, add engagement tracking
-```
+Phase 1 is **read-only**: the app reads Supabase directly (anon key, SELECT only) and renders. It issues zero POST calls. Write buttons are rendered disabled with a "read-only slice" tooltip.
 
 ---
 
-### Session 3: Create Facebook Analytics Feedback Pipeline
+## 3. Phase plan
 
-**Files:** `scripts/facebook-insights-collector.mjs` (NEW), `outputs/facebook_engagement_report.md` (NEW output)
-**Executor:** Claude Code (bridge) — API integration + data pipeline
-**Context estimate:** ~15k tokens
-
-#### Background
-
-The current pipeline pushes content OUT but never reads results back IN. The Facebook Page Insights MCP tools are available (facebook_top_posts, facebook_page_overview, etc.) but aren't integrated into the SEO agents workflow. This session creates a bridge that feeds engagement data back into the weekly content generation cycle.
-
-#### Tasks
-
-1. **Create `scripts/facebook-insights-collector.mjs`**
-
-   A script that reads recent post performance and writes a structured report consumed by crew.py:
-
-   ```javascript
-   #!/usr/bin/env node
-   /**
-    * facebook-insights-collector.mjs
-    * Collects engagement data for recent Facebook posts and writes a structured
-    * report consumed by crew.py's research phase.
-    *
-    * Usage:
-    *   node facebook-insights-collector.mjs --days 7 --output outputs/facebook_engagement_report.md
-    *   node facebook-insights-collector.mjs --post-id <id>  # single post
-    */
-   ```
-
-   The script:
-   - Reads the last week's `facebook_posting_schedule.md` to get post IDs and goals
-   - Calls Facebook Graph API to fetch engagement metrics for each post:
-     - `/{post-id}/insights/post_impressions,post_engaged_users,post_reactions_by_type_total,post_clicks`
-   - Calculates engagement rate: (reactions + comments + shares) / impressions
-   - Ranks posts by engagement rate
-   - Identifies which content types (before/after, educational, behind-scenes) performed best
-   - Identifies which CTA types (save, tag, comment, vote) drove most engagement
-   - Writes a structured markdown report
-
-2. **Report format**
-
-   The output file (`facebook_engagement_report.md`) follows this structure:
-
-   ```markdown
-   # Facebook Engagement Report — Week of [date]
-   
-   ## Top Performing Posts
-   | Rank | Day | Type | Goal | CTA | Impressions | Engagement | Rate |
-   |------|-----|------|------|-----|-------------|------------|------|
-   
-   ## Content Type Performance
-   | Type | Avg Engagement Rate | Best Day |
-   |------|---------------------|----------|
-   
-   ## CTA Performance
-   | CTA Type | Avg Comments | Avg Shares |
-   |----------|-------------|------------|
-   
-   ## Recommendations for Next Week
-   - Double down on: [winning content type]
-   - Drop: [worst performing format]
-   - Test: [new format idea based on data]
-   ```
-
-3. **Integrate into weekly pipeline**
-
-   In `src/seo_agents/main.py`, add a step BEFORE schedule generation that reads `facebook_engagement_report.md` and injects it into the Facebook crew's context:
-
-   ```python
-   # In the weekly pipeline, after research phase, before schedule generation:
-   fb_engagement = read_output("facebook_engagement_report.md")
-   # Pass to build_facebook_crew() as additional context
-   ```
-
-4. **Fallback for zero data**
-
-   When there's no engagement data yet (fresh start), the report should state:
-   ```markdown
-   # Facebook Engagement Report — Week of [date]
-   
-   **Status:** No engagement data available yet — this is expected for the first week of the new strategy.
-   Recommendations below are based on research best practices, not live data.
-   ```
-
-#### Verification
-
-```bash
-# Syntax check
-node -c scripts/facebook-insights-collector.mjs
-
-# Dry run (should produce a report even with no data)
-node scripts/facebook-insights-collector.mjs --days 7 --dry-run
-
-# Verify report generated
-cat outputs/facebook_engagement_report.md
-
-# Verify Python integration
-PYTHONPATH="" .venv/Scripts/python.exe -c "
-from seo_agents.main import read_output
-report = read_output('facebook_engagement_report.md')
-print('Engagement report loaded:', 'yes' if report else 'no')
-"
-```
-
-#### Commit Message
-```
-feat: add Facebook analytics feedback pipeline — closing the engagement loop
-```
+| Phase | Goal | In this run? |
+|---|---|---|
+| **0 — Protect production** | Write current-state inventory, commit audit evidence. No code changes to live repos. | **YES** |
+| **1 — Read-only dashboard** | Private weekly marketing dashboard: posts, status, approvals, faults, run health, performance signals. | **YES (the main build)** |
+| 2 — Durable command path | command/attempt model in Supabase; worker lease; one low-risk action end-to-end. | Deferred (gated) |
+| 3 — Controlled cutover | Move approvals/retries/dismissals into the app; retire MCC SEO proxy after one full cycle. | Deferred (gated) |
+| 4 — Engine hardening | Extract module boundaries; single schedule parser; targeted regression tests. | Deferred (gated) |
+| 5 — Decide MCC future | Narrow/retire MCC independently. | Deferred (gated) |
 
 ---
 
-## Wave 2: Integration — Schedule Format & Boost Framework (2 Parallel Sessions)
+## 4. Execution waves (this run)
 
-### Session 4: Update Schedule Format & Cross-Platform Alignment
+Executor: **Grok 4.6** + subagents. Sessions are file-disjoint within a wave. All work is in this worktree.
 
-**Files:** `src/seo_agents/crew.py` (format instructions), `scripts/facebook-poster.mjs` (parser)
-**Executor:** Claude Code (bridge)
-**Context estimate:** ~20k tokens
-**Depends on:** Session 1 (new content instructions), Session 2 (new parser fields)
+### Wave 0 — Documentation (1 session)
 
-#### Tasks
+**S0 — Current-state inventory + audit archive.**
+- Write `marketing-control/docs/CURRENT-STATE-INVENTORY.md` (services, owners, startup paths, state writes, side effects, recovery paths — condensed from `flow.md` + `secops.md`).
+- Write `marketing-control/docs/AUDIT-FINDINGS.md` (condensed from the 7 research reports, facts vs inference separated, severity-ranked).
+- Copy the 7 research reports into `marketing-control/docs/audit/` (they are already at `artifacts/audit-20260830/research/`).
+- **Verification:** `node -e` lint-free is N/A (docs); confirm files exist and are non-empty; confirm no file outside `marketing-control/` was touched.
+- **Commit:** `docs: current-state inventory and audit findings (marketing-control)`
 
-1. **Update the schedule output format in crew.py fb_task description**
+### Wave 1 — App scaffold + data layer (2 sessions, file-disjoint)
 
-   In lines 1080-1093, update the format spec to include new fields:
-   ```python
-   "DAY: [number]\n"
-   "DATE: [YYYY-MM-DD]\n"
-   "TYPE: [video|photo|text|carousel|poll|skip]\n"
-   "SERVICE: [service area]\n"
-   "POST_GOAL: [engagement|education|social_proof|entertainment]\n"
-   "HOOK: [first line — the scroll-stopper]\n"
-   "BODY: [the story or value, varied by format type]\n"
-   "CTA: [engagement invitation — save, tag, vote, comment, share — NO phone numbers]\n"
-   "HASHTAGS: [2-3 max, optional]\n"
-   "CONTACT: [(469) 863-9804 — posted as first comment, not in caption]\n"
-   "PHOTO_FILE: [path or blank]\n"
-   "VIDEO_PROMPT: [cinematic Reel prompt with on-screen text notes or blank]\n"
-   "ON_SCREEN_TEXT: [text that should appear as overlays on the Reel]\n"
-   "STATUS: Needs approval\n"
-   ```
+**S1 — Scaffold `marketing-control/` Vite+React app.**
+- `package.json` (React 19 + Vite, matching MCC stack), `vite.config.js`, `index.html`, `src/main.jsx`, `src/styles.css`, `.gitignore` (ignore `node_modules`, `.env*`), `.env.example` (`VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY` placeholders only).
+- Supabase client `src/supabase.js` reading `import.meta.env.VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY`.
+- A minimal layout shell with the **7-screen** nav (Today, Calendar, Approval Inbox, Content Detail, Website Tasks, Performance, Operations) + "read-only" banner.
+- Stub `src/pages/{Today,Calendar,ApprovalInbox,ContentDetail,WebsiteTasks,Performance,Operations}Page.jsx` so later sessions replace page bodies only (they must not edit `App.jsx` / `main.jsx`).
+- Shared `src/components/ReadOnlyButton.jsx` (disabled + tooltip) and hash/view-state routing in `App.jsx` (no react-router).
+- `package.json` `"test"` script: `node --test src/**/*.test.mjs` so S7 does not need to own `package.json`.
+- **Verification:** `npm install` (no network for private deps — use npm registry), `npm run build` succeeds.
+- **Commit:** `feat(marketing-control): scaffold read-only dashboard app`
 
-2. **Ensure DAY_TOPIC_BINDING_RULE still works with 4-day weeks**
+**S2 — Data layer + status derivation.**
+- `src/lib/status.js`: port `liveRunStatus` semantics from `SEO-Agents-App/scripts/lib/seo-run-status.mjs` (read-only; copy + adapt, do not import across repos). Status → display bucket mapping (pending_approval/approved/scheduled/scheduled_native/posted/needs_verification/error/skipped/...).
+- `src/lib/postHealth.js`: port `postHealth()` from MCC `src/lib/seoRules.js` (RED/GREEN/neutral).
+- `src/lib/api.js`: read-only Supabase query functions — `fetchRuns()`, `fetchPosts(weekStart, weekEnd)`, `fetchWebsiteTasks()`, `fetchRunLogs()`, `fetchLatestRunHealth()`. `fetchLatestRunHealth()` derives from `seo_runs` + `weekly_posts` via `liveRunStatus` (there is **no** `run_health` table; `outputs/run_health.json` is a local file and mav-bridge currently returns `runHealth: null`). SELECT only; a guard rejects any `.insert/.update/.delete/.upsert/.rpc` (throw `READ_ONLY`).
+- `src/lib/week.js`: America/Chicago calendar date + Mon–Sun week bounds (UTC midnight falsely marks tomorrow as today after 19:00 CT).
+- Optional worker probe: GET `import.meta.env.VITE_SEO_STATUS_URL` (default unset). If unset or the GET fails, Operations shows "worker unreachable" — never POST.
+- **Verification:** `node --test` on `src/lib/status.test.mjs` + `postHealth.test.mjs` (port the existing assertions from `seo-run-status.test.mjs` / `seoRules.js`).
+- **Commit:** `feat(marketing-control): read-only data layer and status derivation`
 
-   The GBP poster still runs 7 days. The binding rule needs to handle the mismatch:
-   ```python
-   DAY_TOPIC_BINDING_RULE = (
-       "DAY→TOPIC BINDING (MANDATORY):\n"
-       "Use the '## RECOMMENDED POST TOPIC QUEUE' in the GBP REPORT as the source of truth.\n"
-       "Facebook posts 4 days/week: assign RANK 1→Day 1, RANK 3→Day 3, RANK 5→Day 5, RANK 6→Day 6.\n"
-       "The topic/SERVICE on each posted day MUST match the same rank's topic on GBP.\n"
-   )
-   ```
+### Wave 2 — Screens (3 sessions, file-disjoint)
 
-3. **Add `parseSchedule()` support for `SKIP` type and `ON_SCREEN_TEXT` field**
+**S3 — Today / This Week screen.**
+- `src/pages/TodayPage.jsx` only (replace the S1 stub). Week-anchored Mon–Sun grid × Facebook/GBP, health chips (from `postHealth`), POST TODAY / OVERDUE / CHECK chips (`scheduled` + date vs America/Chicago today; `scheduled_native` is not overdue), pending count, alerts/faults strip, adapter-readiness dots, latest run health, and a first-class **Needs recovery** zone (`error` / `needs_verification` / stuck `posting`). Retry/Skip/Ack buttons disabled via `ReadOnlyButton`.
+- **Verification:** component renders with fixture data (no live Supabase needed); `npm run build`.
+- **Commit:** `feat(marketing-control): today/this-week screen`
 
-   In facebook-poster.mjs:
-   ```javascript
-   // In parseSchedule:
-   if (type === 'skip') continue; // Skip this day entirely
-   
-   // Add on_screen_text to post object
-   post.on_screen_text = get('ON_SCREEN_TEXT') || '';
-   ```
+**S4 — Content Calendar + Approval Inbox (read-only).**
+- `src/pages/CalendarPage.jsx`: 2–4 week grid, status colors, per-week counts, click-through placeholder to detail.
+- `src/pages/ApprovalInboxPage.jsx`: grouped queue (run/post/website_task) with priority/risk/confidence/status; Approve/Skip buttons rendered **disabled** with tooltip.
+- **Verification:** fixtures render; buttons are `disabled` and issue no network call when clicked (assert via test spy).
+- **Commit:** `feat(marketing-control): content calendar and read-only approval inbox`
 
-#### Verification
+**S5 — Content Detail + Website Tasks + Operations.**
+- `src/pages/ContentDetailPage.jsx`: full copy fields, approval scaffolding (steps, deps, verification checklist, rollback, confidence, idempotency key), run history. Read-only.
+- `src/pages/WebsiteTasksPage.jsx`: priority list + capability + preview path. Read-only.
+- `src/pages/OperationsPage.jsx`: adapter readiness, run history + `run_logs`, fault ack state, run-health phase flags, worker health (`/seo/status` GET only), task event log.
+- **Verification:** fixtures render; `npm run build`.
+- **Commit:** `feat(marketing-control): content detail, website tasks, operations screens`
 
-```bash
-# Syntax check both files
-node -c scripts/facebook-poster.mjs
-PYTHONPATH="" .venv/Scripts/python.exe -c "from seo_agents.crew import build_facebook_crew; print('OK')"
+### Wave 3 — Performance + guardrails + final verification (2 sessions, sequential)
 
-# Test schedule generation
-PYTHONPATH="" .venv/Scripts/python.exe -m seo_agents.main facebook-schedule --days 4 2>&1 | head -50
+**S6 — Performance screen (surfacing what already exists).**
+- `src/pages/PerformancePage.jsx` only + `src/lib/performance.js` + `src/fixtures/performance.js`. Render fixture copies of the engagement report / boost ledger / baseline excerpts shipped in-repo (this worktree has no `outputs/`). Optional `VITE_OUTPUTS_DIR` file read if set; never write outside `marketing-control/`. Label "week-over-week trends require Phase-2 structured store" where a number is unavailable.
+- **Verification:** fixtures render; `npm run build`.
+- **Commit:** `feat(marketing-control): performance screen from existing reports`
 
-# Verify new format fields present in output
-grep -c "POST_GOAL:" outputs/facebook_posting_schedule.md  # Should be 4
-grep -c "CONTACT:" outputs/facebook_posting_schedule.md     # Should be 4
+**S7 — Read-only guardrail audit + final verification.**
+- Add a hard read-only guard: a single wrapper module (`src/lib/guard.js`) that every mutation-capable call must route through; assert in tests that zero `.insert/.update/.delete/.upsert` reach the client.
+- `npm run build` + `npm test` (wire a `test` script in `package.json` running `node --test` on `src/lib/*.test.mjs`).
+- Write `marketing-control/README.md` (run instructions, read-only guarantee, Phase-2 roadmap pointer).
+- **Verification:** `npm test` passes; `npm run build` passes; grep confirms no `fetch`/`supabase.from(...).insert|update|delete` mutation path in `src/`.
+- **Commit:** `test(marketing-control): read-only guardrail, test wiring, README`
+
+### Dependency graph (after review)
+
+```
+S0
+ └── S1 (scaffold + stubs + test script + ReadOnlyButton)
+      └── S2 (data layer)
+           ├── S3  TodayPage.jsx
+           ├── S4  CalendarPage.jsx + ApprovalInboxPage.jsx
+           ├── S5  ContentDetail + WebsiteTasks + Operations
+           └── S6  PerformancePage.jsx
+                └── S7  guard.js + README + final verify
 ```
 
-#### Commit Message
-```
-feat: update schedule format — POST_GOAL, CONTACT, ON_SCREEN_TEXT, 4-day weeks, SKIP support
-```
+S3–S6 are parallel after S2 (file-disjoint page/fixture ownership). S7 is last. Subagents **do not commit**; the executor commits with explicit path lists after each session (or after a parallel wave). No cycles.
+
+### File ownership (do not cross)
+
+| Session | Owns |
+|---|---|
+| S0 | `marketing-control/docs/**` |
+| S1 | `package.json`, `vite.config.js`, `index.html`, `.gitignore`, `.env.example`, `src/main.jsx`, `src/App.jsx`, `src/styles.css`, `src/supabase.js`, `src/components/**`, stub `src/pages/*Page.jsx` |
+| S2 | `src/lib/status.js`, `status.test.mjs`, `postHealth.js`, `postHealth.test.mjs`, `api.js`, `week.js`, `useMarketingData.js` |
+| S3 | `src/pages/TodayPage.jsx`, `src/fixtures/week.js` |
+| S4 | `src/pages/CalendarPage.jsx`, `src/pages/ApprovalInboxPage.jsx`, `src/fixtures/approval.js`, `src/pages/ApprovalInboxPage.test.mjs` |
+| S5 | `src/pages/ContentDetailPage.jsx`, `WebsiteTasksPage.jsx`, `OperationsPage.jsx`, `src/fixtures/detail.js` |
+| S6 | `src/pages/PerformancePage.jsx`, `src/lib/performance.js`, `src/fixtures/performance.js` |
+| S7 | `src/lib/guard.js`, `src/lib/guard.test.mjs`, `marketing-control/README.md` |
 
 ---
 
-### Session 5: Add Boost Recommendation Framework
+## 5. Acceptance criteria (this run)
 
-**Files:** `outputs/facebook_posting_schedule.md` (enhanced with boost flags), `scripts/facebook-poster.mjs` (optional boost logging)
-**Executor:** Claude Code (bridge)
-**Context estimate:** ~10k tokens
-**Depends on:** Session 1 (POST_GOAL field), Session 3 (analytics data)
-
-#### Background
-
-Research established a clear boost strategy: $10-15/day per post, targeting 15-mile radius around Rowlett, homeowner interests, boosting before/after photos and educational videos. The budget is **locked at $50/week** — the CrewAI agent decides how to distribute it (e.g., 1 post at $50, 2 posts at $25 each, or 3 posts at ~$17 each). This session adds boost recommendations to the schedule output so the user can act on them manually (full automated boosting via Ads API is a Phase 2 project).
-
-#### Tasks
-
-1. **Add boost recommendations to crew.py context with $50/week budget constraint**
-
-   In the `fb_context` (line 1005), add boost guidance for the agent:
-   ```python
-   "BOOST GUIDANCE (BUDGET: $50/week total — YOU decide how to distribute):\n"
-   "- TOTAL WEEKLY BUDGET: Exactly $50. Distribute across 1-3 posts as you see fit. "
-   "You are the strategist — decide which posts deserve budget and how much.\n"
-   "- Recommendation: $25 on your best post + $25 on your second-best, "
-   "OR $50 on a single must-win post, OR $17 × 3 for broad coverage.\n"
-   "- For each post, include a BOOST field: 'yes:$N' (boost with $N budget), "
-   "'maybe' (boost if extra budget appears), or 'no' (don't boost).\n"
-   "- The sum of all BOOST=$N values must equal exactly $50.\n"
-   "- BOOST=yes criteria: before/after photos, educational videos, testimonials "
-   "with photos — content with visual proof and educational value.\n"
-   "- BOOST=no criteria: text-only, generic updates, holiday posts.\n"
-   "- Include a BOOST_TARGETING hint: e.g. '15mi Rowlett, homeowners 28-65, "
-   "home improvement interests' or '10mi Garland, EV owners'\n"
-   "- Include a BOOST_DURATION: how many days to run each boost (3, 5, or 7 days). "
-   "At $17/day × 3 days = $51 (~on budget); at $25/day × 2 days = $50.\n"
-   ```
-
-2. **Add BOOST, BOOST_AMOUNT, BOOST_DURATION, and BOOST_TARGETING fields to output format**
-
-   In the schedule format spec:
-   ```python
-   "BOOST: [yes|maybe|no]\n"
-   "BOOST_AMOUNT: [$N — daily budget for this post's boost, e.g. $17]\n"
-   "BOOST_DURATION: [N days — how long to run the boost, e.g. 3]\n"
-   "BOOST_TARGETING: [targeting hint for this specific post or blank]\n"
-   ```
-
-3. **Add a weekly boost budget summary section**
-
-   After the 4 posts, in the CONTENT NOTES section, add:
-   ```python
-   "\nBOOST BUDGET SUMMARY (Weekly Budget: $50):\n"
-   "- Posts boosted: N of 4\n"
-   "- Budget allocation:\n"
-   "  * Day X: $N/day × N days = $N total\n"
-   "  * Day Y: $N/day × N days = $N total\n"
-   "- TOTAL SPEND: $50 (must equal exactly $50)\n"
-   "- Priority post (boost first): Day X — [reason]\n"
-   "- Expected weekly reach from boosts: ~5,000-10,000 additional impressions\n"
-   "- Expected weekly engagement from boosts: ~50-120 additional engagements\n"
-   "- Boost targeting: 15mi radius from Rowlett, homeowners 28-65, "
-   "home improvement/DIY/real estate interests. Exclude electrician interest "
-   "(that's competitors). Use Advantage+ Audience for AI optimization.\n"
-   ```
-
-4. **Update parseSchedule to extract BOOST fields**
-
-   In facebook-poster.mjs:
-   ```javascript
-   post.boost = get('BOOST') || 'no';
-   post.boostAmount = get('BOOST_AMOUNT') || '';
-   post.boostDuration = get('BOOST_DURATION') || '';
-   post.boostTargeting = get('BOOST_TARGETING') || '';
-   ```
-
-#### Verification
-
-```bash
-# Syntax checks
-node -c scripts/facebook-poster.mjs
-PYTHONPATH="" .venv/Scripts/python.exe -c "from seo_agents.crew import build_facebook_crew; print('OK')"
-
-# Verify BOOST fields in schedule output
-grep -c "BOOST:" outputs/facebook_posting_schedule.md
-grep "BOOST BUDGET SUMMARY" outputs/facebook_posting_schedule.md
-```
-
-#### Commit Message
-```
-feat: add boost recommendation framework to Facebook schedule — budget tiers, targeting hints
-```
+1. `marketing-control/` builds (`npm run build`) and `npm test` passes.
+2. The app is **read-only**: grep/audit proves no Supabase mutation call reaches the client; all write buttons are disabled with an explanatory tooltip.
+3. The app renders, against live Supabase (anon key), at minimum: this week's posts with status, approval queue, active faults, latest run health, and basic performance signals.
+4. No file outside `marketing-control/` in this worktree was modified. The two live repos are untouched.
+5. Audit evidence is committed under `marketing-control/docs/`.
+6. No `git push`/`git fetch`; commits are file-scoped.
 
 ---
 
-## Wave 3: Polish & Verification (1 Sequential Session)
+## 6. Non-goals (this run)
 
-### Session 6: End-to-End Testing & Runbook Update
-
-**Files:** Tests, `FRIDAY-RUNBOOK.md`, documentation
-**Executor:** Claude Code (bridge)
-**Context estimate:** ~12k tokens
-**Depends on:** All Wave 1 + Wave 2 sessions
-
-#### Tasks
-
-1. **Run the full weekly pipeline with new 4-day Facebook configuration**
-
-   ```bash
-   # Generate fresh schedules with new 4-day Facebook + existing 7-day GBP
-   PYTHONPATH="" .venv/Scripts/python.exe -m seo_agents.main facebook-schedule --days 4
-   ```
-
-   Verify output:
-   - 4 posts (not 7)
-   - Each post has POST_GOAL, CONTACT, BOOST fields
-   - CTAs are engagement-focused (no phone numbers in CTA)
-   - Content formats are varied (no two identical formats in a row)
-
-2. **Test caption assembly with new format**
-
-   ```bash
-   node -e "
-   import { buildCaption, parseSchedule } from './scripts/facebook-poster.mjs';
-   const posts = parseSchedule('outputs/facebook_posting_schedule.md');
-   for (const p of posts) {
-     const caption = buildCaption(p);
-     const hasPhone = /\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/.test(caption);
-     console.log('Day', p.day, '| Goal:', p.postGoal, '| CTA type:', p.cta?.slice(0, 40), '| Phone in caption:', hasPhone);
-     if (hasPhone) throw new Error('Phone number in caption — FAIL');
-   }
-   console.log('ALL PASS: No phone numbers in captions');
-   "
-   ```
-
-3. **Run existing test suites for regressions**
-
-   ```bash
-   PYTHONPATH="" .venv/Scripts/python.exe -m pytest tests/ -q -x --basetemp=/tmp/pytest-tmp -p no:cacheprovider
-   node -c scripts/facebook-poster.mjs
-   node -c scripts/mav-bridge.mjs
-   node -c scripts/facebook-insights-collector.mjs
-   ```
-
-4. **Update FRIDAY-RUNBOOK.md**
-
-   Update the runbook to reflect:
-   - New 4-day Facebook posting schedule
-   - New fields in schedule format
-   - Facebook Insights collection step (before schedule generation)
-   - Recommended boost workflow (manual for now)
-
-5. **Dry-run the full Facebook poster with new schedule format**
-
-   ```bash
-   node scripts/facebook-poster.mjs --dry-run --schedule-all
-   ```
-   
-   Verify that all posts parse correctly and the Graph API calls would succeed.
-
-6. **Verify backward compatibility**
-
-   The new code must still parse an OLD 7-day schedule without crashing:
-   ```bash
-   # Backup current schedule, generate old format, test parsing, restore
-   cp outputs/facebook_posting_schedule.md outputs/facebook_posting_schedule.md.bak
-   # ... test old format parsing ...
-   mv outputs/facebook_posting_schedule.md.bak outputs/facebook_posting_schedule.md
-   ```
-
-#### Verification
-
-```bash
-# Full verification suite
-PYTHONPATH="" .venv/Scripts/python.exe -m pytest tests/ -q -x --basetemp=/tmp/pytest-tmp -p no:cacheprovider
-node -c scripts/facebook-poster.mjs
-node -c scripts/mav-bridge.mjs
-node -c scripts/facebook-insights-collector.mjs
-node -c scripts/video-postprocess.mjs
-node -c scripts/xai-video-generator.mjs
-```
-
-#### Commit Message
-```
-test: end-to-end verification of Facebook engagement optimization pipeline, update runbook
-```
+- Editing the live SEO engine or MCC (no file in `C:\Workspace\Active\*` changes).
+- New write endpoints, command queue, or worker lease (Phase 2).
+- Facebook/GBP/website automation changes.
+- Combining homelab/agent/estimate features into the marketing app.
+- Autonomous live publishing beyond existing policy.
+- Migrating Supabase data or adding RLS (flag as Phase-2 prerequisite; read-only Phase 1 does not require it).
 
 ---
 
-## Dependency Graph
+## 7. Deferred roadmap (gated — do NOT execute this run)
 
-```
-Wave 1 (parallel):
-  Session 1 (crew.py content overhaul)          ──┐
-  Session 2 (facebook-poster.mjs CTA/parse)     ──┼──→ Wave 2
-  Session 3 (analytics feedback pipeline)       ──┘
-
-Wave 2 (parallel):
-  Session 4 (schedule format + cross-platform)  [depends on 1, 2]
-  Session 5 (boost framework)                   [depends on 1, 3]
-
-Wave 3 (sequential):
-  Session 6 (e2e test + runbook)               [depends on 1, 2, 3, 4, 5]
-```
-
-**DAG verification:** No cycles. Sessions in the same wave touch different files. ✅
+- **Phase 2:** `commands`/`command_attempts` tables; worker claims one command via lease; `marketing-control` submits validated commands (not direct HTTP to mav-bridge); start with one low-risk action type; MCC path stays as fallback.
+- **Phase 3:** cutover approvals/retries/dismissals; retire MCC SEO proxy after one full weekly cycle with rollback.
+- **Phase 4:** extract stable interfaces (planning, scheduling, adapters, persistence, command execution, observability); single schedule parser consumed by sync/insights/boost; regression tests for the untested transitions (no-show watchdog, `getWeekOf` TZ bug, crash-after-claim, post-success-before-write, stale idempotency locks, `website.py:147` fence bug).
+- **Phase 5:** MCC's independent future (narrow to infra / maintenance / retire).
 
 ---
 
-## Acceptance Criteria
+## 8. Rollback / contingency
 
-1. ✅ `build_facebook_crew()` generates 4 posts/week (not 7)
-2. ✅ All CTAs are engagement-focused (save, tag, vote, comment, share) — no phone numbers
-3. ✅ Business contact info posted as first comment, not in caption
-4. ✅ Schedule includes POST_GOAL, CONTACT, BOOST, BOOST_TARGETING, ON_SCREEN_TEXT fields
-5. ✅ Content formats are varied (no two identical formats consecutively)
-6. ✅ Facebook Insights analytics pipeline feeds back into weekly content generation
-7. ✅ Boost recommendations appear in schedule output with budget summaries
-8. ✅ Old 7-day schedule format still parses without crashes (backward compatibility)
-9. ✅ All existing tests pass
-10. ✅ No new subscriptions required (uses existing Facebook Graph API + OpenAI keys)
+- Every session is a separate commit; `git revert <sha>` undoes any slice.
+- The live SEO workflow, MCC, PM2, and Task Scheduler are never touched — production behavior is unaffected by any failure in this run.
+- If the app cannot reach Supabase (missing anon key), it degrades to a clear "not configured" state with `.env.example` guidance — never a crash.
 
 ---
 
-## Content Strategy Summary (for reference)
+## 9. Review notes (Grok 4.6, 2026-08-30)
 
-### New Posting Cadence
-| Day | Format | Goal | CTA Example |
-|-----|--------|------|-------------|
-| Mon | Video (Reel 15-25s) | education/social_proof | "Save this for your next panel inspection" |
-| Wed | Photo or Carousel | education/engagement | "Would you call a pro or DIY? 👇" |
-| Fri | Video (Reel 15-25s) | social_proof/entertainment | "Tag an electrician who'd appreciate this" |
-| Sat | Photo or Text | engagement/social_proof | "Drop a 🔌 if you've had this issue" |
+Reviewed against `artifacts/audit-20260830/research/{flow,data,adapters,tests,mcc,ux,secops}.md` plus live copies of `scripts/lib/seo-run-status.mjs`, MCC `src/lib/seoRules.js`, `supabase/schema.sql`, and MCC `package.json` (React 19.2 / Vite 7 / `@supabase/supabase-js` ^2.108.1).
 
-### Content Mix
-- 50% Educational/Value (tips, safety, how-to, "what's wrong here")
-- 30% Social Proof/Personality (before/after, reviews, team, humor)
-- 20% Interactive (polls, questions, "this or that")
-- 0% Direct sales CTAs in captions
+**Verdict:** Execute Phases 0–1. The slice is the right cut: no engine rewrite, no MCC edits, no writes. The audit supports a read-only operator surface against existing Supabase SELECTs.
 
-### Organic Reach Tactics (manual — not automated)
-- Join 10-15 DFW Facebook community Groups as Page
-- Create 5-10 person seed engagement network (staff, family, past customers)
-- Reply to every comment within 15 minutes
-- Post 1-2 Stories/day with interactive stickers
+**Plan errors corrected above (do not re-litigate):**
 
-### Boost Strategy ($50/week — CrewAI decides distribution)
+1. S1 nav listed 6 screens; UX §7 requires Content Detail as the seventh. Stubs + routing land in S1.
+2. `fetchLatestRunHealth()` is not a table. Derive from `seo_runs` + `weekly_posts` + `liveRunStatus`. Optional GET to mav-bridge; degrade if down.
+3. Wave-2 `──` looked sequential while the comment said parallel. Graph + ownership table now make that explicit.
+4. Parallel page sessions would collide on `App.jsx` unless S1 owns the router and stubs. Ownership table forbids later sessions from touching S1 files.
+5. This worktree has no `outputs/`. Performance ships fixtures; optional `VITE_OUTPUTS_DIR`; never read/write `C:\Workspace\Active\*`.
+6. MCC `postHealth` tests use vitest `expect`; port them to `node:test` + `node:assert/strict` to match `seo-run-status.test.mjs`.
+7. Subagent git commits on one branch race. Executor commits with explicit paths. Still no `git add -A`, no `git push`/`git fetch`.
+8. Anon key is already in MCC's Vite bundle; `schema.sql` has no RLS. Client-side mutation guard is required and **not sufficient** if live RLS is off — Phase-2 prerequisite, documented in AUDIT-FINDINGS. Phase 1 still issues zero mutation calls.
+9. America/Chicago date math is load-bearing (UTC rollover after 19:00 CT). Port the MCC `en-CA` + `America/Chicago` today helper into `week.js`.
+10. Needs-recovery is first-class in UX; S3 must render it, not only POST TODAY chips.
 
-- **Budget:** $50/week total. CrewAI agent decides: e.g. 2 posts × $25/day × 1 day = $50, or 3 posts × $17/day × 1 day = $51 (~on budget), or 1 post × $10/day × 5 days = $50.
-- **Targeting:** 15-mile radius Rowlett, homeowners 28-65, home improvement/DIY/real estate interests. Exclude electrician interest (competitors). Use Advantage+ Audience.
-- **Best posts to boost:** Before/after photos, educational videos, testimonials w/ photos
-- **Never boost:** Text-only posts, generic updates, holiday greeting posts
-- **Expected weekly reach from boosts:** ~3,000-7,000 additional impressions
-- **Expected monthly follower growth:** +30-60 followers/month (187 → ~220-250 in 30 days)
-- **Schedule output:** BOOST_AMOUNT, BOOST_DURATION, and BOOST_TARGETING per post + weekly budget summary that must sum to $50
+**Non-goals remain gated.** Do not start Phases 2–5.
 
----
-
-## What This Plan Does NOT Cover
-
-The following are OUT OF SCOPE for this plan and would be separate builds:
-
-- **Facebook Groups automation** — the plan recommends joining Groups but automating Group posting is a different technical challenge
-- **Facebook Stories automation** — Stories API is limited; Stories are best done manually
-- **Automated boosting via Ads API** — this plan adds recommendations to the schedule; actual automated boosting is a Phase 2 project
-- **GBP content optimization** — this plan is Facebook-only per user's direction
-- **Instagram cross-posting** — the research recommends it but the pipeline doesn't currently connect to Instagram
-- **Facebook Live** — low priority for follower count; Reels are the priority format
-- **Meta Verified subscription** — $15/mo, worth testing but out of scope for code changes
-
----
-
-## New Subscription Cost Analysis
-
-| Item | Cost | Required? | Verdict |
-|------|------|-----------|---------|
-| Facebook Graph API | Free (included) | Already have token | ✅ No new cost |
-| OpenAI (GPT-4o for CrewAI) | Existing subscription | Already configured | ✅ No new cost |
-| xAI Grok (video generation) | Existing API key | Already configured | ✅ No new cost |
-| Facebook Insights API | Free (included) | Same Page token | ✅ No new cost |
-| **Total new subscription cost: $0** | | | |
-
----
-
-## Archive Steps
-
-After all sessions are verified and merged:
-
-```bash
-# Copy PLAN.md to archive
-mkdir -p "C:\Workspace\Archive\Build Plans\SEO-Agents-App"
-cp PLAN.md "C:\Workspace\Archive\Build Plans\SEO-Agents-App\20260716_fb-engagement.md"
-
-# Archive run artifacts
-mkdir -p "C:\Workspace\Archive\Agent-Orchestration\SEO-Agents-App"
-cp -r artifacts/fb-engagement-20260716 "C:\Workspace\Archive\Agent-Orchestration\SEO-Agents-App\"
-
-# Copy research reports to archive
-cp C:\Workspace\Active\pi-agents\research_facebook_organic_reach_grizzly.md "C:\Workspace\Archive\Build Plans\SEO-Agents-App\20260716_research_organic-reach.md"
-cp C:\Workspace\Active\pi-agents\facebook-trade-business-research.md "C:\Workspace\Archive\Build Plans\SEO-Agents-App\20260716_research_content-formats.md"
-cp C:\Workspace\Active\pi-agents\research\facebook-boost-strategy-grizzly-electrical.md "C:\Workspace\Archive\Build Plans\SEO-Agents-App\20260716_research_boost-strategy.md"
-
-# Remove PLAN.md from repo
-git rm PLAN.md
-git commit -m "chore: archive PLAN.md for Facebook engagement optimization build"
-```
+**Live env:** `marketing-control/.env` is gitignored. Executor may copy `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` from MCC's existing Vite env **without printing values**. Missing env → "not configured" UI, not a crash.
