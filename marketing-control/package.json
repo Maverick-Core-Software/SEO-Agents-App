@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node --test src/lib/scaffold.test.mjs src/lib/*.test.mjs src/pages/*.test.mjs"
+    "test": "node --test src/lib/*.test.mjs src/pages/*.test.mjs src/fixtures/*.test.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.108.1",
