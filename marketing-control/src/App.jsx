@@ -19,6 +19,7 @@ const NAV = [
 ];
 
 function routeFromHash(hash) {
+  if (hash.startsWith('#/detail')) return NAV.find((item) => item.id === 'detail') || NAV[0];
   return NAV.find((item) => item.hash === hash) || NAV[0];
 }
 
