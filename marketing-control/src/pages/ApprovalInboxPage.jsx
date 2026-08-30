@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { fetchPosts, fetchRuns, fetchWebsiteTasks } from '../lib/api.js';
 import { addDays, chicagoToday, sundayOfWeek, saturdayOfWeek } from '../lib/week.js';
-import { POST_STATUS_COLOR, POST_STATUS_LABEL } from '../lib/status.js';
+import { isPendingApproval, isWaitingOnOwner, POST_STATUS_COLOR, statusLabelFor } from '../lib/status.js';
+import { isSupabaseAvailable } from '../supabase.js';
 import { StatusChip } from '../components/StatusChip.jsx';
 import { ReadOnlyButton } from '../components/ReadOnlyButton.jsx';
 import { FIXTURE_QUEUE } from '../fixtures/approval.js';
@@ -21,6 +22,7 @@ const GROUPS = [
   { type: 'seo_run', label: 'SEO runs' },
   { type: 'weekly_post', label: 'Weekly posts' },
   { type: 'website_task', label: 'Website tasks' },
+  { type: 'waiting_on_owner', label: 'Waiting on owner' },
 ];
 
 const PRIORITY_COLOR = {
@@ -28,11 +30,6 @@ const PRIORITY_COLOR = {
   P2: POST_STATUS_COLOR.pending_approval,
   P3: C.muted,
 };
-
-function isPendingApproval(status) {
-  const s = String(status || '').toLowerCase();
-  return s === 'pending_approval' || s === 'needs_approval';
-}
 
 function toPriority(raw, type) {
   const v = String(raw || '').trim().toUpperCase();
@@ -63,19 +60,14 @@ function statusColor(status) {
   return C.muted;
 }
 
-function statusLabel(status) {
-  const s = String(status || '');
-  if (POST_STATUS_LABEL[s]) return POST_STATUS_LABEL[s];
-  if (s === 'needs_approval') return POST_STATUS_LABEL.pending_approval;
-  return (s || 'unknown').replace(/_/g, ' ').toUpperCase();
-}
-
 function normalizeItem(row, type) {
   return {
     id: row.id,
+    run_id: row.run_id || null,
     // Queue group is the second arg. weekly_posts.type is media (video/photo/slideshow);
     // website_tasks.type is capability (blog_post/…). Never let those overwrite the group.
     type,
+    kind: type === 'seo_run' ? 'run' : type === 'website_task' || type === 'waiting_on_owner' ? 'task' : 'post',
     capability: row.type && row.type !== type ? row.type : (row.capability || null),
     title:
       row.title ||
@@ -129,7 +121,7 @@ function QueueCard({ item }) {
           {item.type}
         </span>
         <StatusChip label={item.priority} color={PRIORITY_COLOR[item.priority] || C.muted} />
-        <StatusChip label={statusLabel(item.status)} color={color} />
+        <StatusChip label={statusLabelFor(item.status, item.kind)} color={color} />
       </div>
       <h3 style={{ margin: '0 0 10px', fontSize: 15, fontWeight: 650, color: C.text }}>{item.title}</h3>
       <div
@@ -165,6 +157,8 @@ export default function ApprovalInboxPage(props) {
   void props;
   const [items, setItems] = useState(() => FIXTURE_QUEUE.map((row) => normalizeItem(row, row.type)));
   const [source, setSource] = useState('fixture');
+  const [latestRunId, setLatestRunId] = useState(null);
+  const [showAll, setShowAll] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -177,13 +171,19 @@ export default function ApprovalInboxPage(props) {
           fetchWebsiteTasks(),
         ]);
         if (cancelled) return;
+        const isPending = (status) => isPendingApproval(status) || isWaitingOnOwner(status);
+        const groupOf = (row, base) => (isWaitingOnOwner(row.status) ? 'waiting_on_owner' : base);
         const live = [
-          ...runs.filter((row) => isPendingApproval(row.status)).map((row) => normalizeItem(row, 'seo_run')),
-          ...posts.filter((row) => isPendingApproval(row.status)).map((row) => normalizeItem(row, 'weekly_post')),
-          ...tasks.filter((row) => isPendingApproval(row.status)).map((row) => normalizeItem(row, 'website_task')),
+          ...runs.filter((row) => isPending(row.status)).map((row) => normalizeItem(row, groupOf(row, 'seo_run'))),
+          ...posts.filter((row) => isPending(row.status)).map((row) => normalizeItem(row, groupOf(row, 'weekly_post'))),
+          ...tasks.filter((row) => isPending(row.status)).map((row) => normalizeItem(row, groupOf(row, 'website_task'))),
         ];
-        if (live.length) {
+        if (isSupabaseAvailable && live.length) {
           setItems(live);
+          setLatestRunId(runs[0]?.id || null);
+          setSource('live');
+        } else if (isSupabaseAvailable) {
+          setItems([]);
           setSource('live');
         } else {
           setItems(FIXTURE_QUEUE.map((row) => normalizeItem(row, row.type)));
@@ -200,19 +200,40 @@ export default function ApprovalInboxPage(props) {
     };
   }, []);
 
+  const inDefaultView = (item) =>
+    item.type === 'waiting_on_owner' ||
+    (item.type === 'seo_run' ? item.id === latestRunId : item.run_id === latestRunId);
+  const visible = showAll || source !== 'live' || !latestRunId ? items : items.filter(inDefaultView);
+
   return (
     <section className="page">
       <h1>Approval Inbox</h1>
       <p style={{ marginBottom: 12 }}>
-        {items.length} item{items.length === 1 ? '' : 's'} awaiting approval. Writes are disabled.
+        {visible.length} item{visible.length === 1 ? '' : 's'} awaiting approval. Writes are disabled.
       </p>
       {source === 'fixture' ? (
         <p style={{ marginBottom: 12 }}>
           Showing fixture queue (Supabase is not configured or returned no pending_approval rows).
         </p>
       ) : null}
+      {source === 'live' ? (
+        <label
+          style={{
+            display: 'inline-flex',
+            gap: 8,
+            alignItems: 'center',
+            marginBottom: 12,
+            color: C.text,
+            fontSize: 13,
+            cursor: 'pointer',
+          }}
+        >
+          <input type="checkbox" checked={showAll} onChange={(e) => setShowAll(e.target.checked)} />
+          Show all pending
+        </label>
+      ) : null}
       {GROUPS.map((group) => {
-        const rows = items.filter((item) => item.type === group.type);
+        const rows = visible.filter((item) => item.type === group.type);
         return (
           <section key={group.type} style={{ marginBottom: 20 }}>
             <h2 style={{ margin: '0 0 10px', fontSize: 16, fontWeight: 650, color: C.text }}>
