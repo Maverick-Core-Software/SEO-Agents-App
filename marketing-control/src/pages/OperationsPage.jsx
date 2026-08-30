@@ -4,7 +4,7 @@ import { StatusChip } from '../components/StatusChip.jsx';
 import { FIXTURE_ADAPTERS, FIXTURE_LOGS, FIXTURE_RUNS } from '../fixtures/detail.js';
 import { fetchWorkerStatus } from '../lib/api.js';
 import { useMarketingData } from '../lib/useMarketingData.js';
-import { bucketStatusCount, liveRunStatus, POST_STATUS_COLOR, POST_STATUS_LABEL } from '../lib/status.js';
+import { bucketStatusCount, liveRunStatus, POST_STATUS_COLOR, POST_STATUS_LABEL, statusLabelFor, statusColorFor, isOnGraph, isRecoveryItem, isWaitingOnOwner } from '../lib/status.js';
 
 const SECRET_KEY = /token|secret|password|passwd|api[_-]?key|anon[_-]?key|authorization|cookie|credential|private[_-]?key|service[_-]?role/i;
 
@@ -37,9 +37,11 @@ const td = {
 const ADAPTER_COLOR = {
   live_ready: '#10b981',
   approval_ready: '#f59e0b',
+  worker: '#f59e0b',
   missing: '#ef4444',
   blocked: '#ef4444',
   error: '#ef4444',
+  unknown: '#4b5563',
 };
 
 function StatusFor({ status }) {
@@ -47,6 +49,12 @@ function StatusFor({ status }) {
   const label = POST_STATUS_LABEL[key] || (key ? key.replace(/_/g, ' ').toUpperCase() : '—');
   const color = POST_STATUS_COLOR[key] || ADAPTER_COLOR[key] || '#4b5563';
   return <StatusChip label={label} color={color} />;
+}
+
+// Run statuses must read DONE, not POSTED (POST_STATUS_LABEL maps done → POSTED).
+function RunStatusFor({ status }) {
+  const s = String(status || '');
+  return <StatusChip label={statusLabelFor(s, 'run')} color={statusColorFor(s, 'run')} />;
 }
 
 function dash(value) {
@@ -92,8 +100,45 @@ function liveOrFrozen(run, runPosts) {
   return run?.status || 'idle';
 }
 
+// Same derivation as TodayPage (duplicated here by design; do not edit TodayPage).
+function deriveAdapters({ facebook, gbp, tasks, waitingOnOwner, runRecovery }) {
+  const platformRecovery = (platform) =>
+    runRecovery.some((i) => String(i.platform || '') === platform);
+  const facebookStatus = platformRecovery('facebook')
+    ? 'error'
+    : facebook.some((p) => isOnGraph(p) || p.status === 'posted' || p.status === 'done')
+      ? 'live_ready'
+      : 'unknown';
+  const gbpStatus = platformRecovery('gbp')
+    ? 'error'
+    : gbp.some((p) => p.status === 'posted' || p.status === 'done')
+      ? 'live_ready'
+      : gbp.some((p) => p.status === 'scheduled_native')
+        ? 'worker'
+        : 'unknown';
+  const websiteStatus =
+    waitingOnOwner.length || tasks.some((t) => t.status === 'error' || t.status === 'failed')
+      ? 'error'
+      : 'unknown';
+  return [
+    { id: 'facebook', label: 'Facebook', status: facebookStatus },
+    { id: 'gbp', label: 'GBP', status: gbpStatus },
+    { id: 'website', label: 'Website', status: websiteStatus },
+  ];
+}
+
+// Short, readable fault lines for the worker card (strings only, no secrets).
+function faultStrings(data) {
+  const list = Array.isArray(data?.faults) ? data.faults : [];
+  return list
+    .map((f) => (typeof f === 'string' ? f : String(f?.message || f?.title || '')))
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .slice(0, 5);
+}
+
 export default function OperationsPage(props) {
-  const { configured, loading, error, runs, posts, logs, health } = useMarketingData();
+  const { configured, loading, error, runs, posts, logs, health, facebook, gbp, tasks, waitingOnOwner, runRecovery } = useMarketingData();
   const [worker, setWorker] = useState(null);
 
   useEffect(() => {
@@ -113,6 +158,9 @@ export default function OperationsPage(props) {
   const usingLive = configured;
   const runList = usingLive ? runs : FIXTURE_RUNS;
   const logList = usingLive ? logs : FIXTURE_LOGS;
+  const adapters = usingLive
+    ? deriveAdapters({ facebook, gbp, tasks, waitingOnOwner, runRecovery })
+    : FIXTURE_ADAPTERS;
   const healthView = usingLive
     ? health
     : {
@@ -137,6 +185,7 @@ export default function OperationsPage(props) {
       }
     }
   }
+  const faults = worker?.ok && !worker?.unreachable ? faultStrings(worker.data) : [];
 
   return (
     <section className="page">
@@ -157,7 +206,7 @@ export default function OperationsPage(props) {
             gap: 12,
           }}
         >
-          {FIXTURE_ADAPTERS.map((adapter) => (
+          {adapters.map((adapter) => (
             <div
               key={adapter.id}
               style={{
@@ -169,7 +218,7 @@ export default function OperationsPage(props) {
             >
               <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}>
                 <strong style={{ color: '#f1f5f9' }}>{adapter.label}</strong>
-                <StatusFor status={adapter.state} />
+                <StatusFor status={adapter.state ?? adapter.status} />
               </div>
               {adapter.missing?.length ? (
                 <ul style={{ margin: '8px 0 0', paddingLeft: 18, color: '#94a3b8' }}>
@@ -183,6 +232,11 @@ export default function OperationsPage(props) {
             </div>
           ))}
         </div>
+        {usingLive && worker && worker.unreachable ? (
+          <p style={{ marginTop: 12, color: '#ef4444', fontSize: 12 }}>
+            Worker probe unreachable — adapter status may be stale or unknown.
+          </p>
+        ) : null}
         {usingLive && healthView ? (
           <p style={{ marginTop: 12 }}>
             Live run health overlay: {dash(healthView.live)} / {dash(healthView.bucket)}
@@ -206,7 +260,7 @@ export default function OperationsPage(props) {
         >
           <div style={{ color: '#94a3b8', fontWeight: 600 }}>health.live</div>
           <div>
-            <StatusFor status={healthView?.live} />
+            <RunStatusFor status={healthView?.live} />
           </div>
           <div style={{ color: '#94a3b8', fontWeight: 600 }}>health.bucket</div>
           <div>{dash(healthView?.bucket)}</div>
@@ -214,7 +268,7 @@ export default function OperationsPage(props) {
           <div>{dash(healthView?.run?.week_of)}</div>
           <div style={{ color: '#94a3b8', fontWeight: 600 }}>run.status</div>
           <div>
-            <StatusFor status={healthView?.run?.status} />
+            <RunStatusFor status={healthView?.run?.status} />
           </div>
           <div style={{ color: '#94a3b8', fontWeight: 600 }}>run.error</div>
           <div>{dash(healthView?.run?.error)}</div>
@@ -244,10 +298,10 @@ export default function OperationsPage(props) {
                     <tr key={run.id || run.week_of}>
                       <td style={td}>{dash(run.week_of)}</td>
                       <td style={td}>
-                        <StatusFor status={run.status} />
+                        <RunStatusFor status={run.status} />
                       </td>
                       <td style={td}>
-                        <StatusFor status={live} />
+                        <RunStatusFor status={live} />
                       </td>
                       <td style={td}>{dash(run.error)}</td>
                     </tr>
@@ -309,6 +363,15 @@ export default function OperationsPage(props) {
       <div style={card}>
         <h2 style={h2}>Worker health</h2>
         <p style={{ marginBottom: 10 }}>GET-only probe (VITE_SEO_STATUS_URL). Secrets are redacted.</p>
+        {faults.length ? (
+          <ul style={{ margin: '0 0 10px', paddingLeft: 18, color: '#ef4444', fontSize: 12 }}>
+            {faults.map((fault, i) => (
+              <li key={i} style={{ marginBottom: 4 }}>
+                {fault}
+              </li>
+            ))}
+          </ul>
+        ) : null}
         <pre
           style={{
             margin: 0,
