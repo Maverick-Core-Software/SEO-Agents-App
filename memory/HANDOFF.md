@@ -1,5 +1,17 @@
 # SEO Agents App — Handoff State
 
+**Last updated:** 2026-08-30
+**Branch:** `barnscarter-ops/cockle`
+**Next session:** `docs/NEXT-SESSION.md` — weekly harden (stale statuses, website-task drain, GBP verify truth). Inbox: `C:\Workspace\Active\brain\inbox\2026-08-30-marketing-control-weekly-harden.md`.
+
+Marketing Control Phase 1 is **shipped and verified** (run-anchored Today, pending split, owner-wait, DONE labels, Tailscale `:5188`). Do not redo UI. Carter’s next job is engine reliability, not dashboard chrome.
+
+Older Facebook-media notes below are historical (2026-08-17).
+
+---
+
+# SEO Agents App — Handoff State (2026-08-17 archive)
+
 **Last updated:** 2026-08-17 (Meta Ads API path implemented; live spend gated)  
 **Branch:** `main`  
 **Latest relevant commit:** (pending) Meta Marketing API boost via mav-bridge  
