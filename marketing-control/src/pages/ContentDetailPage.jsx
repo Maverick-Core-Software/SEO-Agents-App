@@ -1,7 +1,9 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ReadOnlyButton } from '../components/ReadOnlyButton.jsx';
 import { StatusChip } from '../components/StatusChip.jsx';
 import { FIXTURE_DETAIL_POST } from '../fixtures/detail.js';
+import { fetchPostById } from '../lib/api.js';
+import { isSupabaseAvailable } from '../supabase.js';
 import { postHealth } from '../lib/postHealth.js';
 import { POST_STATUS_COLOR, POST_STATUS_LABEL } from '../lib/status.js';
 
@@ -28,17 +30,19 @@ const card = {
 
 const h2 = { margin: '0 0 12px', fontSize: 16, fontWeight: 650, color: '#f1f5f9' };
 
-function loadDetailPost() {
+function detailIdFromHash(hash) {
+  return hash.startsWith('#/detail/') ? hash.slice('#/detail/'.length) : '';
+}
+
+function readSessionPost() {
   try {
     const raw = globalThis.sessionStorage?.getItem('mc.detailPost');
-    if (!raw) return { post: FIXTURE_DETAIL_POST, source: 'fixture' };
+    if (!raw) return null;
     const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      return { post: FIXTURE_DETAIL_POST, source: 'fixture' };
-    }
-    return { post: parsed, source: 'session' };
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    return parsed;
   } catch {
-    return { post: FIXTURE_DETAIL_POST, source: 'fixture' };
+    return null;
   }
 }
 
@@ -104,8 +108,60 @@ function ListValue({ items }) {
   );
 }
 
-export default function ContentDetailPage(props) {
-  const [{ post, source }] = useState(loadDetailPost);
+export default function ContentDetailPage() {
+  const [state, setState] = useState({ post: null, source: 'empty', loading: true });
+
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      setState({ post: null, source: 'empty', loading: true });
+      const id = detailIdFromHash(window.location.hash);
+      let next = null;
+      let nextSource = 'empty';
+      if (id && isSupabaseAvailable) {
+        next = await fetchPostById(id);
+        nextSource = next ? 'live' : 'empty';
+      } else {
+        const session = readSessionPost();
+        if (session) {
+          next = session;
+          nextSource = 'session';
+        }
+      }
+      if (!next && !isSupabaseAvailable) {
+        next = FIXTURE_DETAIL_POST;
+        nextSource = 'fixture';
+      }
+      if (!cancelled) setState({ post: next, source: nextSource, loading: false });
+    }
+    load();
+    window.addEventListener('hashchange', load);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('hashchange', load);
+    };
+  }, []);
+
+  const { post, source, loading } = state;
+
+  if (loading) {
+    return (
+      <section className="page">
+        <h1>Content Detail</h1>
+        <p>Loading…</p>
+      </section>
+    );
+  }
+
+  if (!post) {
+    return (
+      <section className="page">
+        <h1>Content Detail</h1>
+        <p>Read-only post/action view — pick a post from Today or Calendar.</p>
+      </section>
+    );
+  }
+
   const date = post.post_date || post.date;
   const headline = post.headline || post.hook;
   const photo = post.photo_file;
@@ -117,7 +173,11 @@ export default function ContentDetailPage(props) {
       <h1>Content Detail</h1>
       <p>
         Read-only post/action view
-        {source === 'session' ? ' — loaded from session (mc.detailPost).' : ' — fixture copy (no session post).'}
+        {source === 'live'
+          ? ' — loaded live by id.'
+          : source === 'session'
+            ? ' — loaded from session (mc.detailPost).'
+            : ' — fixture copy (no session post).'}
       </p>
 
       <div style={card}>

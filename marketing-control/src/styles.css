@@ -149,6 +149,8 @@ body {
 
   .appNav {
     flex-direction: column;
+    max-height: 264px;
+    flex-wrap: wrap;
   }
 
   .navLink {
