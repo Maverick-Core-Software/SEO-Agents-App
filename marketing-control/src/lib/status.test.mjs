@@ -8,6 +8,12 @@ import {
   bucketStatusCount,
   countRunStatuses,
   STATUS_COUNTS_WINDOW_MS,
+  isRecoveryItem,
+  isPendingApproval,
+  isWaitingOnOwner,
+  statusLabelFor,
+  statusColorFor,
+  isOnGraph,
 } from './status.js';
 
 describe('liveRunStatus', () => {
@@ -68,6 +74,56 @@ describe('liveRunStatus', () => {
     );
     assert.equal(ls, 'error');
     assert.equal(bucketStatusCount(ls), 'blocked');
+  });
+});
+
+describe('isRecoveryItem', () => {
+  it('true for error, needs_verification, failed, waiting_on_owner', () => {
+    for (const status of ['error', 'needs_verification', 'failed', 'waiting_on_owner']) {
+      assert.equal(isRecoveryItem({ status }), true, status);
+    }
+  });
+
+  it('true for posting without posted_at', () => {
+    assert.equal(isRecoveryItem({ status: 'posting' }), true);
+    assert.equal(isRecoveryItem({ status: 'posting', posted_at: '2026-08-30T12:00:00Z' }), false);
+  });
+
+  it('false for posted, scheduled, pending_approval', () => {
+    for (const status of ['posted', 'scheduled', 'pending_approval', 'done', 'skipped']) {
+      assert.equal(isRecoveryItem({ status }), false, status);
+    }
+  });
+});
+
+describe('status helpers', () => {
+  it('isPendingApproval / isWaitingOnOwner', () => {
+    assert.equal(isPendingApproval('pending_approval'), true);
+    assert.equal(isPendingApproval('needs_approval'), true);
+    assert.equal(isPendingApproval('posted'), false);
+    assert.equal(isWaitingOnOwner('waiting_on_owner'), true);
+    assert.equal(isWaitingOnOwner('WAITING_ON_OWNER'), true);
+    assert.equal(isWaitingOnOwner('pending_approval'), false);
+  });
+
+  it('statusLabelFor by kind', () => {
+    assert.equal(statusLabelFor('done', 'run'), 'DONE');
+    assert.equal(statusLabelFor('done', 'task'), 'DONE');
+    assert.equal(statusLabelFor('done', 'post'), 'POSTED');
+    assert.equal(statusLabelFor('waiting_on_owner', 'task'), 'WAITING ON OWNER');
+  });
+
+  it('statusColorFor run/task done is green', () => {
+    assert.equal(statusColorFor('done', 'run'), '#10b981');
+    assert.equal(statusColorFor('done', 'task'), '#10b981');
+    assert.equal(statusColorFor('waiting_on_owner', 'task'), '#f59e0b');
+  });
+
+  it('isOnGraph requires a platform_post_id and live-ish status', () => {
+    assert.equal(isOnGraph({ status: 'scheduled', platform_post_id: '1' }), true);
+    assert.equal(isOnGraph({ status: 'scheduled', platform_post_id: null }), false);
+    assert.equal(isOnGraph({ status: 'posted', platform_post_id: '1' }), true);
+    assert.equal(isOnGraph({ status: 'pending_approval', platform_post_id: '1' }), false);
   });
 });
 
