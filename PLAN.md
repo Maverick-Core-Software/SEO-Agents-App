@@ -21,12 +21,13 @@ This plan does **not** rewrite the SEO engine, migrate data, or move browser aut
 
 **Non-negotiables for every execution worker (carry these verbatim):**
 
-- Read-only by default. No production post, website edit, approval, browser login, secret change, process restart, deployment, or scheduled-task alteration without direct approval.
-- No `git push` / `git fetch`. All work is local.
-- `git add` ONLY the files a session changed — never `git add -A` / `git add .`.
-- Never print secret values. Reference `.env` keys by name only.
-- The two live repos (`C:\Workspace\Active\SEO-Agents-App`, `C:\Workspace\Active\MCC`) are **out of scope for edits**. All new code lands in this worktree (`C:/Users/carte/orca/workspaces/SEO-Agents-App/cockle`) under `marketing-control/`.
-- Do not restart PM2, Task Scheduler, or any running service.
+1. READ-ONLY by default; no production post, website edit, approval, browser login, secret change, process restart, deployment, or scheduled-task alteration.
+2. Never `git push` or `git fetch` — local only.
+3. `git add` ONLY the files a session changed, never `git add -A` / `git add .`.
+4. Never print secret values — reference `.env` keys by name only.
+5. The two live repos `D:\Workspace\Active\SEO-Agents-App` and `D:\Workspace\Active\MCC` (`C:\Workspace` is a junction to `D:\Workspace`) are OUT OF SCOPE for edits — all new code lands in this worktree under `marketing-control/`.
+6. Do not restart PM2, Task Scheduler, or any running service.
+7. Do not run the live SEO engine or MCC tests against production state.
 
 ---
 
@@ -96,7 +97,7 @@ This plan does **not** rewrite the SEO engine, migrate data, or move browser aut
                   Facebook | GBP | website | media sources
 ```
 
-Phase 1 is **read-only**: the app reads Supabase directly (anon key, SELECT only) and renders. It issues zero POST calls. Write buttons are rendered disabled with a "read-only slice" tooltip.
+Phase 1 is **read-only**: the app issues **anon-key SELECTs only** (the Vite anon key is not an operator login) and renders. It issues zero POST / insert / update / delete / upsert / rpc calls. Write buttons are rendered disabled with a "write action — read-only slice" tooltip. An optional GET to `VITE_SEO_STATUS_URL` (mav-bridge `/seo/status`) is fail-closed and never POST.
 
 ---
 
@@ -126,15 +127,15 @@ Executor: **Grok 4.6** + subagents. Sessions are file-disjoint within a wave. Al
 - **Verification:** `node -e` lint-free is N/A (docs); confirm files exist and are non-empty; confirm no file outside `marketing-control/` was touched.
 - **Commit:** `docs: current-state inventory and audit findings (marketing-control)`
 
-### Wave 1 — App scaffold + data layer (2 sessions, file-disjoint)
+### Wave 1 — App scaffold + data layer (2 sessions, **sequential**: S2 depends on S1)
 
 **S1 — Scaffold `marketing-control/` Vite+React app.**
 - `package.json` (React 19 + Vite, matching MCC stack), `vite.config.js`, `index.html`, `src/main.jsx`, `src/styles.css`, `.gitignore` (ignore `node_modules`, `.env*`), `.env.example` (`VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY` placeholders only).
 - Supabase client `src/supabase.js` reading `import.meta.env.VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY`.
 - A minimal layout shell with the **7-screen** nav (Today, Calendar, Approval Inbox, Content Detail, Website Tasks, Performance, Operations) + "read-only" banner.
 - Stub `src/pages/{Today,Calendar,ApprovalInbox,ContentDetail,WebsiteTasks,Performance,Operations}Page.jsx` so later sessions replace page bodies only (they must not edit `App.jsx` / `main.jsx`).
-- Shared `src/components/ReadOnlyButton.jsx` (disabled + tooltip) and hash/view-state routing in `App.jsx` (no react-router).
-- `package.json` `"test"` script: `node --test src/**/*.test.mjs` so S7 does not need to own `package.json`.
+- Shared `src/components/ReadOnlyButton.jsx` (disabled + tooltip `"write action — read-only slice"`) and hash/view-state routing in `App.jsx` (no react-router).
+- `package.json` `"test"` script (S1 owns this file; S7 does not edit it): `node --test src/lib/*.test.mjs src/pages/*.test.mjs src/fixtures/*.test.mjs`.
 - **Verification:** `npm install` (no network for private deps — use npm registry), `npm run build` succeeds.
 - **Commit:** `feat(marketing-control): scaffold read-only dashboard app`
 
@@ -155,8 +156,8 @@ Executor: **Grok 4.6** + subagents. Sessions are file-disjoint within a wave. Al
 - **Commit:** `feat(marketing-control): today/this-week screen`
 
 **S4 — Content Calendar + Approval Inbox (read-only).**
-- `src/pages/CalendarPage.jsx`: 2–4 week grid, status colors, per-week counts, click-through placeholder to detail.
-- `src/pages/ApprovalInboxPage.jsx`: grouped queue (run/post/website_task) with priority/risk/confidence/status; Approve/Skip buttons rendered **disabled** with tooltip.
+- `src/pages/CalendarPage.jsx`: 2–4 week grid, status colors, per-week counts, click-through to Content Detail via `sessionStorage` + `#/detail` (do not edit `App.jsx`).
+- `src/pages/ApprovalInboxPage.jsx`: grouped queue (**group key is `seo_run` / `weekly_post` / `website_task`**, never `weekly_posts.type` media or `website_tasks.type` capability — those are display fields) with priority/risk/confidence/status; Approve/Skip buttons rendered **disabled** with tooltip.
 - **Verification:** fixtures render; buttons are `disabled` and issue no network call when clicked (assert via test spy).
 - **Commit:** `feat(marketing-control): content calendar and read-only approval inbox`
 
@@ -175,10 +176,10 @@ Executor: **Grok 4.6** + subagents. Sessions are file-disjoint within a wave. Al
 - **Commit:** `feat(marketing-control): performance screen from existing reports`
 
 **S7 — Read-only guardrail audit + final verification.**
-- Add a hard read-only guard: a single wrapper module (`src/lib/guard.js`) that every mutation-capable call must route through; assert in tests that zero `.insert/.update/.delete/.upsert` reach the client.
-- `npm run build` + `npm test` (wire a `test` script in `package.json` running `node --test` on `src/lib/*.test.mjs`).
+- Add a hard read-only guard: a single wrapper module (`src/lib/guard.js`) that every mutation-capable call must route through; assert in tests that zero `.insert/.update/.delete/.upsert/.rpc` reach the client.
+- Allowed S2 touch: `src/lib/api.js` may **only** re-export `wrapReadOnly` from `guard.js` (no other S2 files). Do **not** edit `package.json` (S1 already wired `npm test`).
 - Write `marketing-control/README.md` (run instructions, read-only guarantee, Phase-2 roadmap pointer).
-- **Verification:** `npm test` passes; `npm run build` passes; grep confirms no `fetch`/`supabase.from(...).insert|update|delete` mutation path in `src/`.
+- **Verification:** `npm test` passes; `npm run build` passes; grep of `src/` (excluding `*.test.mjs` and `guard.js`) finds no `.insert(` / `.update(` / `.delete(` / `.upsert(` / `.rpc(` and no `method: 'POST'`. GET `fetch` for worker liveness is allowed.
 - **Commit:** `test(marketing-control): read-only guardrail, test wiring, README`
 
 ### Dependency graph (after review)
@@ -190,11 +191,11 @@ S0
            ├── S3  TodayPage.jsx
            ├── S4  CalendarPage.jsx + ApprovalInboxPage.jsx
            ├── S5  ContentDetail + WebsiteTasks + Operations
-           └── S6  PerformancePage.jsx
-                └── S7  guard.js + README + final verify
+           └── S6  PerformancePage.jsx     (same DAG level as S3–S5)
+                └── S7 waits on S3 AND S4 AND S5 AND S6
 ```
 
-S3–S6 are parallel after S2 (file-disjoint page/fixture ownership). S7 is last. Subagents **do not commit**; the executor commits with explicit path lists after each session (or after a parallel wave). No cycles.
+Levels: S0 → S1 → S2 → {S3,S4,S5,S6} → S7. No cycles. S3–S6 are parallel after S2 (file-disjoint). S7 is last because it greps all of `src/` and runs the full test suite. Subagents **do not commit**; the executor commits with explicit path lists after each session (or after a parallel wave).
 
 ### File ownership (do not cross)
 
@@ -207,24 +208,24 @@ S3–S6 are parallel after S2 (file-disjoint page/fixture ownership). S7 is last
 | S4 | `src/pages/CalendarPage.jsx`, `src/pages/ApprovalInboxPage.jsx`, `src/fixtures/approval.js`, `src/pages/ApprovalInboxPage.test.mjs` |
 | S5 | `src/pages/ContentDetailPage.jsx`, `WebsiteTasksPage.jsx`, `OperationsPage.jsx`, `src/fixtures/detail.js` |
 | S6 | `src/pages/PerformancePage.jsx`, `src/lib/performance.js`, `src/fixtures/performance.js` |
-| S7 | `src/lib/guard.js`, `src/lib/guard.test.mjs`, `marketing-control/README.md` |
+| S7 | `src/lib/guard.js`, `src/lib/guard.test.mjs`, `marketing-control/README.md`; import-only rewire of `src/lib/api.js` |
 
 ---
 
 ## 5. Acceptance criteria (this run)
 
-1. `marketing-control/` builds (`npm run build`) and `npm test` passes.
-2. The app is **read-only**: grep/audit proves no Supabase mutation call reaches the client; all write buttons are disabled with an explanatory tooltip.
-3. The app renders, against live Supabase (anon key), at minimum: this week's posts with status, approval queue, active faults, latest run health, and basic performance signals.
-4. No file outside `marketing-control/` in this worktree was modified. The two live repos are untouched.
+1. From `marketing-control/`: `npm run build` exits 0 and `npm test` exits 0 (the S1 test glob).
+2. The app is **read-only**: (a) grep of production `src/` (exclude `*.test.mjs`, `guard.js`) finds no `.insert(` / `.update(` / `.delete(` / `.upsert(` / `.rpc(` and no `method: 'POST'`; (b) every Approve/Skip/Retry/Ack/Run control is a disabled `ReadOnlyButton` with tooltip `write action — read-only slice`. GET `fetch` for worker liveness is allowed.
+3. With gitignored `.env` keys `VITE_SUPABASE_URL` + `VITE_SUPABASE_ANON_KEY` set (values never printed): the app shows this week's posts with status, the approval queue, active faults, latest run health, and basic performance signals. Without those keys: "not configured" / fixtures, no crash. Do not run SEO-engine or MCC test suites to prove this.
+4. Execution commits touch only `marketing-control/**` (plus this `PLAN.md` as the run record). `D:\Workspace\Active\SEO-Agents-App` and `D:\Workspace\Active\MCC` are untouched.
 5. Audit evidence is committed under `marketing-control/docs/`.
-6. No `git push`/`git fetch`; commits are file-scoped.
+6. `git log` / `git status` show no `git push` / `git fetch`; each session commit lists explicit paths (never `git add -A`).
 
 ---
 
 ## 6. Non-goals (this run)
 
-- Editing the live SEO engine or MCC (no file in `C:\Workspace\Active\*` changes).
+- Editing the live SEO engine or MCC (no file in `D:\Workspace\Active\*` / `C:\Workspace\Active\*` changes).
 - New write endpoints, command queue, or worker lease (Phase 2).
 - Facebook/GBP/website automation changes.
 - Combining homelab/agent/estimate features into the marketing app.
@@ -272,3 +273,26 @@ Reviewed against `artifacts/audit-20260830/research/{flow,data,adapters,tests,mc
 **Non-goals remain gated.** Do not start Phases 2–5.
 
 **Live env:** `marketing-control/.env` is gitignored. Executor may copy `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` from MCC's existing Vite env **without printing values**. Missing env → "not configured" UI, not a crash.
+
+---
+
+## 10. Step-1 review addendum (2026-08-30, second pass)
+
+Checked: DAG, same-wave file-disjointness, testable acceptance, read-only guardrails, and the seven binding rules.
+
+**DAG:** S0 → S1 → S2 → {S3,S4,S5,S6} → S7. No cycles.
+
+**Still-real defects patched in this pass (not a re-litigation of §9):**
+
+1. ASCII graph nested S7 under S6 only; S7 must wait on S3–S6 because it greps all of `src/`.
+2. Wave 1 was labeled "file-disjoint" while S2 depends on S1 (sequential).
+3. S1 and S7 both claimed `package.json` `"test"`. S1 owns it; glob must include `src/lib`, `src/pages`, and `src/fixtures` or S3 chip tests are orphaned.
+4. S7 verification grep of bare `fetch` would fail the allowed GET worker probe. Grep mutations + POST only.
+5. Binding rule (7) (no live SEO-engine / MCC tests against production) was missing from the non-negotiables.
+6. Live-repo paths stated as `C:\Workspace\Active\*` only; canonical is `D:\Workspace\Active\*` (`C:\Workspace` is a junction).
+7. Acceptance #4 forbade any file outside `marketing-control/`, which made this `PLAN.md` illegal to revise. Exception: this file as the run record.
+8. S4 grouping must use queue kind (`seo_run` / `weekly_post` / `website_task`). Using `row.type` hides the live inbox (media type / capability collide with the group key).
+9. Architecture said "authenticated reads"; Phase 1 is anon-key SELECT, not an operator login.
+10. S7 may rewire `api.js` imports onto `guard.js` and nothing else in S2.
+
+**Verdict:** Plan is sound after these patches. Do not start Phases 2–5. This worktree already contains the Phase 0–1 implementation; a re-execute is not required unless the user asks for one.
