@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { chicagoToday, mondayOfWeek, sundayOfWeek, addDays } from './week.js';
+import { chicagoToday, sundayOfWeek, saturdayOfWeek, addDays } from './week.js';
 
 describe('chicagoToday', () => {
   it('stays on the CT date when UTC has already rolled after 19:00 CT', () => {
@@ -11,16 +11,21 @@ describe('chicagoToday', () => {
   });
 });
 
-describe('week bounds', () => {
-  it('a Wednesday yields that week\'s Monday–Sunday', () => {
+describe('week bounds (Sunday start)', () => {
+  it('a Wednesday yields that week\'s Sunday–Saturday', () => {
     // 2026-08-12 is a Wednesday.
-    assert.equal(mondayOfWeek('2026-08-12'), '2026-08-10');
-    assert.equal(sundayOfWeek('2026-08-12'), '2026-08-16');
+    assert.equal(sundayOfWeek('2026-08-12'), '2026-08-09');
+    assert.equal(saturdayOfWeek('2026-08-12'), '2026-08-15');
   });
 
-  it('Sunday belongs to the week that started the previous Monday', () => {
-    assert.equal(mondayOfWeek('2026-08-16'), '2026-08-10');
+  it('Sunday is the first day of its own week', () => {
     assert.equal(sundayOfWeek('2026-08-16'), '2026-08-16');
+    assert.equal(saturdayOfWeek('2026-08-16'), '2026-08-22');
+  });
+
+  it('Saturday belongs to the week that started the previous Sunday', () => {
+    assert.equal(sundayOfWeek('2026-08-15'), '2026-08-09');
+    assert.equal(saturdayOfWeek('2026-08-15'), '2026-08-15');
   });
 
   it('addDays crosses month bounds on calendar dates', () => {

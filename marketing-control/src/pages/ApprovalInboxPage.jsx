@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { fetchPosts, fetchRuns, fetchWebsiteTasks } from '../lib/api.js';
-import { addDays, chicagoToday, mondayOfWeek, sundayOfWeek } from '../lib/week.js';
+import { addDays, chicagoToday, sundayOfWeek, saturdayOfWeek } from '../lib/week.js';
 import { POST_STATUS_COLOR, POST_STATUS_LABEL } from '../lib/status.js';
 import { StatusChip } from '../components/StatusChip.jsx';
 import { ReadOnlyButton } from '../components/ReadOnlyButton.jsx';
@@ -173,7 +173,7 @@ export default function ApprovalInboxPage(props) {
       try {
         const [runs, posts, tasks] = await Promise.all([
           fetchRuns(),
-          fetchPosts(addDays(mondayOfWeek(today), -21), sundayOfWeek(addDays(today, 21))),
+          fetchPosts(addDays(sundayOfWeek(today), -21), saturdayOfWeek(addDays(today, 21))),
           fetchWebsiteTasks(),
         ]);
         if (cancelled) return;
