@@ -85,7 +85,7 @@ function openPost(post) {
   } catch {
     // private mode / quota — still navigate
   }
-  window.location.hash = '#/detail';
+  window.location.hash = post?.id ? `#/detail/${post.id}` : '#/detail';
 }
 
 function CountPill({ label, value, color }) {

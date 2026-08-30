@@ -160,7 +160,7 @@ export default function TodayPage(props) {
           marginTop: 12, padding: '10px 14px', borderRadius: 8,
           background: '#ef444422', border: '1px solid #ef444444', color: C.red, fontSize: 13,
         }}>
-          Live data unavailable — showing fixtures. {data.error}
+          Live data unavailable. {data.error}
         </div>
       ) : null}
 
