@@ -73,7 +73,10 @@ function statusLabel(status) {
 function normalizeItem(row, type) {
   return {
     id: row.id,
-    type: row.type || type,
+    // Queue group is the second arg. weekly_posts.type is media (video/photo/slideshow);
+    // website_tasks.type is capability (blog_post/…). Never let those overwrite the group.
+    type,
+    capability: row.type && row.type !== type ? row.type : (row.capability || null),
     title:
       row.title ||
       row.hook ||
@@ -141,6 +144,7 @@ function QueueCard({ item }) {
         <Field label="risk">{item.risk}</Field>
         <Field label="confidence">{item.confidence}</Field>
         <Field label="due">{item.due_date || '—'}</Field>
+        <Field label="capability">{item.capability || '—'}</Field>
         <Field label="media_status">{item.media_status || '—'}</Field>
         <Field label="status">{item.status || '—'}</Field>
         <Field label="error">{item.error || '—'}</Field>
