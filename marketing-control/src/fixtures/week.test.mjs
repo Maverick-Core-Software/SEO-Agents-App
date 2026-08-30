@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { chipForPost, FIXTURE_TODAY, FIXTURE_POSTS } from './week.js';
+import { chipForPost, dayLabelFor, FIXTURE_TODAY, FIXTURE_POSTS } from './week.js';
 
 const TODAY = '2026-08-30';
 
@@ -41,6 +41,13 @@ describe('chipForPost', () => {
     assert.equal(chip.color, '#ef4444');
   });
 
+  it('scheduled + media none → CHECK', () => {
+    const chip = chipForPost({ status: 'scheduled', media_status: 'none', post_date: '2026-08-26' }, TODAY);
+    assert.equal(chip.label, 'CHECK');
+    assert.equal(chip.kind, 'check');
+    assert.equal(chip.color, '#ef4444');
+  });
+
   it('posted healthy → POSTED / green', () => {
     const chip = chipForPost({
       status: 'posted',
@@ -52,6 +59,14 @@ describe('chipForPost', () => {
     assert.equal(chip.label, 'POSTED');
     assert.equal(chip.kind, 'posted');
     assert.equal(chip.color, '#10b981');
+  });
+});
+
+describe('dayLabelFor', () => {
+  it('Sunday-start labels with Sunday → Sun', () => {
+    assert.equal(dayLabelFor('2026-08-30'), 'Sun');
+    assert.equal(dayLabelFor('2026-08-24'), 'Mon');
+    assert.equal(dayLabelFor('2026-08-25'), 'Tue');
   });
 });
 

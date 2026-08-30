@@ -1,5 +1,6 @@
-// Fixture week 2026-08-24 (Mon) .. 2026-08-30 (Sun). FIXTURE_TODAY is Sunday
-// so scheduled-today and overdue chips both appear in the demo.
+// Fixture run covers 2026-08-24 (Mon) .. 2026-08-30 (Sun) so POST TODAY / OVERDUE
+// chips still appear in the demo; FIXTURE_TODAY is Sunday and FIXTURE_WEEK_START/END
+// stay these dates for the unconfigured demo.
 
 import { postHealth } from '../lib/postHealth.js';
 import { POST_STATUS_COLOR, POST_STATUS_LABEL } from '../lib/status.js';
@@ -8,7 +9,7 @@ export const FIXTURE_TODAY = '2026-08-30';
 export const FIXTURE_WEEK_START = '2026-08-24';
 export const FIXTURE_WEEK_END = '2026-08-30';
 
-export const WEEKDAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+export const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 const RUN_ID = 'fx-run-2026-08-24';
 
@@ -19,14 +20,11 @@ export function cleanCopy(str) {
 export function dayLabelFor(isoDate) {
   const [y, m, d] = String(isoDate).split('-').map(Number);
   const dow = new Date(Date.UTC(y, m - 1, d)).getUTCDay();
-  return WEEKDAY_LABELS[dow === 0 ? 6 : dow - 1];
+  return WEEKDAY_LABELS[dow];
 }
 
-export function isRecoveryItem(item) {
-  const status = String(item?.status || '');
-  if (status === 'error' || status === 'needs_verification') return true;
-  return status === 'posting' && !item?.posted_at;
-}
+// Re-export so pages can keep importing recovery helpers from one place.
+export { isRecoveryItem } from '../lib/status.js';
 
 export function chipForPost(post, today) {
   const status = String(post?.status || '');
@@ -42,7 +40,11 @@ export function chipForPost(post, today) {
         : (status || 'scheduled');
 
   // scheduled_native is Google's 9am CT scheduler — never POST TODAY / OVERDUE.
-  if (status === 'scheduled') {
+  if (status === 'scheduled' && post?.media_status === 'none') {
+    color = '#ef4444';
+    label = 'CHECK';
+    kind = 'check';
+  } else if (status === 'scheduled') {
     if (isToday) {
       color = '#f59e0b';
       label = 'POST TODAY';
@@ -234,7 +236,8 @@ export const FIXTURE_POSTS = [
     media_status: 'photo',
     service: '**Outlet Repair**',
     hook: 'GFCI where the code actually requires it',
-    status: 'pending_approval',
+    status: 'error',
+    error: 'GBP verification failed after 4 attempts over 1hr — post may not be live',
   }),
   post({
     id: 'gbp-sun',
