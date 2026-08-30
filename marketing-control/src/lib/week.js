@@ -24,15 +24,14 @@ export function addDays(isoDate, n) {
   return toIsoDate(dt);
 }
 
-/** Monday of the week containing isoDate (YYYY-MM-DD as a calendar date, Monday start). */
-export function mondayOfWeek(isoDate) {
+/** Sunday of the week containing isoDate (Sunday-start week). */
+export function sundayOfWeek(isoDate) {
   const dt = utcMidnight(isoDate);
-  const dow = dt.getUTCDay();
-  const offset = dow === 0 ? -6 : 1 - dow;
-  return addDays(isoDate, offset);
+  const dow = dt.getUTCDay(); // 0 = Sunday
+  return addDays(isoDate, -dow);
 }
 
-/** Sunday of the same Monday-start week (Monday + 6). */
-export function sundayOfWeek(isoDate) {
-  return addDays(mondayOfWeek(isoDate), 6);
+/** Saturday of the same Sunday-start week (Sunday + 6). */
+export function saturdayOfWeek(isoDate) {
+  return addDays(sundayOfWeek(isoDate), 6);
 }

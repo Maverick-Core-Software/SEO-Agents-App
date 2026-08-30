@@ -50,6 +50,13 @@ function itemTitle(item) {
   return cleanCopy(item.service) || cleanCopy(item.hook) || item.title || item.id;
 }
 
+function itemDate(item) {
+  const raw = item?.post_date || item?.due_date || item?.week_of || item?.created_at;
+  if (!raw) return null;
+  const s = String(raw).slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null;
+}
+
 function postedCount(list) {
   return (list || []).filter((p) => p.status === 'posted' || p.status === 'done').length;
 }
@@ -57,6 +64,7 @@ function postedCount(list) {
 export default function TodayPage(props) {
   const data = useMarketingData();
   const [tab, setTab] = useState('facebook');
+  const [showPrior, setShowPrior] = useState(false);
 
   const configured = data.configured;
   const waiting = configured && data.loading;
@@ -77,6 +85,14 @@ export default function TodayPage(props) {
 
   const pendingCount = [...(posts || []), ...tasks].filter((x) => x.status === 'pending_approval').length;
   const recoveryItems = [...(posts || []), ...tasks].filter(isRecoveryItem);
+  const currentRecovery = recoveryItems.filter((i) => {
+    const d = itemDate(i);
+    return !d || d >= weekStart;
+  });
+  const priorRecovery = recoveryItems.filter((i) => {
+    const d = itemDate(i);
+    return d && d < weekStart;
+  });
   const fbPosted = postedCount(facebook);
   const gbpPosted = postedCount(gbp);
   const gbpNative = gbp.filter((p) => p.status === 'scheduled_native').length;
@@ -139,17 +155,44 @@ export default function TodayPage(props) {
         </div>
       </div>
 
-      {recoveryItems.length > 0 ? (
+      {currentRecovery.length > 0 ? (
         <div style={{
           marginTop: 16, background: '#ef444411', border: '1px solid #ef444433',
           borderRadius: 8, padding: '10px 14px',
         }}>
           <div style={{ color: C.red, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', marginBottom: 8 }}>
-            Alerts ({recoveryItems.length})
+            Alerts ({currentRecovery.length})
           </div>
-          {recoveryItems.map((item) => (
+          {currentRecovery.map((item) => (
             <div key={`alert-${item.id}`} style={{ color: C.red, fontSize: 12, marginBottom: 4 }}>
-              ⚠ {item.platform ? `${item.platform} · ` : ''}{itemTitle(item)} — {recoveryReason(item)}
+              ⚠ {itemDate(item) ? `${itemDate(item)} · ` : ''}{item.platform ? `${item.platform} · ` : ''}{itemTitle(item)} — {recoveryReason(item)}
+            </div>
+          ))}
+        </div>
+      ) : null}
+
+      {priorRecovery.length > 0 ? (
+        <button
+          type="button"
+          onClick={() => setShowPrior((v) => !v)}
+          style={{
+            marginTop: 8, background: 'transparent', border: '1px solid #2a2f45',
+            borderRadius: 6, padding: '4px 10px', color: C.muted, fontSize: 11,
+            cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6,
+          }}
+        >
+          {showPrior ? '▾' : '▸'} {priorRecovery.length} prior-week alert{priorRecovery.length === 1 ? '' : 's'}
+        </button>
+      ) : null}
+
+      {showPrior && priorRecovery.length > 0 ? (
+        <div style={{
+          marginTop: 8, background: '#161922', border: '1px solid #2a2f45',
+          borderRadius: 8, padding: '10px 14px',
+        }}>
+          {priorRecovery.map((item) => (
+            <div key={`prior-${item.id}`} style={{ color: C.muted, fontSize: 12, marginBottom: 4 }}>
+              ⚠ {itemDate(item) ? `${itemDate(item)} · ` : ''}{item.platform ? `${item.platform} · ` : ''}{itemTitle(item)} — {recoveryReason(item)}
             </div>
           ))}
         </div>
@@ -162,15 +205,15 @@ export default function TodayPage(props) {
         }}>
           Needs recovery
         </div>
-        {recoveryItems.length === 0 ? (
+        {currentRecovery.length === 0 ? (
           <p>No items need recovery.</p>
-        ) : recoveryItems.map((item) => (
+        ) : currentRecovery.map((item) => (
           <div key={`rec-${item.id}`} style={{
             background: C.surface, border: '1px solid #ef444466', borderRadius: 8,
             padding: '12px 14px', marginBottom: 8,
           }}>
             <div style={{ color: C.text, fontSize: 13, fontWeight: 600 }}>
-              {item.platform ? `${item.platform} · ` : ''}{itemTitle(item)}
+              {itemDate(item) ? `${itemDate(item)} · ` : ''}{item.platform ? `${item.platform} · ` : ''}{itemTitle(item)}
             </div>
             <div style={{ color: C.red, fontSize: 12, margin: '6px 0 10px' }}>{recoveryReason(item)}</div>
             <div style={{ display: 'flex', gap: 8 }}>

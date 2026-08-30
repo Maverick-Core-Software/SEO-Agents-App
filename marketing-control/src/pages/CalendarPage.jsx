@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { fetchPosts, fetchWebsiteTasks } from '../lib/api.js';
-import { addDays, chicagoToday, mondayOfWeek, sundayOfWeek } from '../lib/week.js';
+import { addDays, chicagoToday, sundayOfWeek, saturdayOfWeek } from '../lib/week.js';
 import { POST_STATUS_COLOR, POST_STATUS_LABEL } from '../lib/status.js';
 import { StatusChip } from '../components/StatusChip.jsx';
 import { FIXTURE_CALENDAR_POSTS, FIXTURE_CALENDAR_TASKS } from '../fixtures/approval.js';
@@ -15,7 +15,7 @@ const C = {
 };
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-const DOW = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 function formatMd(iso) {
   const [, m, d] = String(iso).split('-').map(Number);
@@ -230,8 +230,8 @@ function WeekCard({ weekStart, posts, tasks, isCurrent }) {
 export default function CalendarPage(props) {
   void props;
   const today = chicagoToday();
-  const currentMonday = mondayOfWeek(today);
-  const weekStarts = [-21, -14, -7, 0].map((n) => addDays(currentMonday, n));
+  const currentSunday = sundayOfWeek(today);
+  const weekStarts = [0, -7, -14, -21].map((n) => addDays(currentSunday, n));
   const [posts, setPosts] = useState(FIXTURE_CALENDAR_POSTS);
   const [tasks, setTasks] = useState(FIXTURE_CALENDAR_TASKS);
   const [source, setSource] = useState('fixture');
@@ -241,7 +241,7 @@ export default function CalendarPage(props) {
     (async () => {
       try {
         const [livePosts, liveTasks] = await Promise.all([
-          fetchPosts(addDays(mondayOfWeek(today), -21), sundayOfWeek(addDays(today, 21))),
+          fetchPosts(addDays(sundayOfWeek(today), -21), saturdayOfWeek(addDays(today, 21))),
           fetchWebsiteTasks(),
         ]);
         if (cancelled) return;
@@ -283,7 +283,7 @@ export default function CalendarPage(props) {
           weekStart={weekStart}
           posts={posts}
           tasks={tasks}
-          isCurrent={weekStart === currentMonday}
+          isCurrent={weekStart === currentSunday}
         />
       ))}
     </section>

@@ -7,7 +7,7 @@ import {
   fetchRunLogs,
   fetchLatestRunHealth,
 } from './api.js';
-import { chicagoToday, mondayOfWeek, sundayOfWeek } from './week.js';
+import { chicagoToday, sundayOfWeek, saturdayOfWeek } from './week.js';
 
 const EMPTY_HEALTH = { run: null, posts: [], live: 'idle', bucket: 'incomplete' };
 
@@ -24,8 +24,8 @@ export function partitionPosts(posts) {
 
 export function useMarketingData() {
   const today = chicagoToday();
-  const weekStart = mondayOfWeek(today);
-  const weekEnd = sundayOfWeek(today);
+  const weekStart = sundayOfWeek(today);
+  const weekEnd = saturdayOfWeek(today);
   const configured = isSupabaseAvailable;
 
   const [loading, setLoading] = useState(configured);

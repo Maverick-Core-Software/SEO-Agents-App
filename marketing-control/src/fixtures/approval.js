@@ -1,10 +1,10 @@
-import { addDays, chicagoToday, mondayOfWeek } from '../lib/week.js';
+import { addDays, chicagoToday, sundayOfWeek } from '../lib/week.js';
 
-const thisMonday = mondayOfWeek(chicagoToday());
+const thisSunday = sundayOfWeek(chicagoToday());
 
-/** `weeksAgo` 0 = current week; `dayIndex` 0 = Monday. */
+/** `weeksAgo` 0 = current week; `dayIndex` 0 = Sunday. */
 function d(weeksAgo, dayIndex) {
-  return addDays(thisMonday, -7 * weeksAgo + dayIndex);
+  return addDays(thisSunday, -7 * weeksAgo + dayIndex);
 }
 
 function calPost({ id, platform, weeksAgo, dayIndex, status, ...rest }) {
@@ -245,12 +245,12 @@ export const FIXTURE_QUEUE = [
   {
     id: 'fix-run-current',
     type: 'seo_run',
-    title: `SEO Run week of ${thisMonday}`,
-    week_of: thisMonday,
+    title: `SEO Run week of ${thisSunday}`,
+    week_of: thisSunday,
     priority: 'P1',
     risk: 'high',
     confidence: { label: 'medium', score: 0.62 },
-    due_date: thisMonday,
+    due_date: thisSunday,
     media_status: null,
     status: 'pending_approval',
     error: null,
