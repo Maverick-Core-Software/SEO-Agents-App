@@ -1,13 +1,13 @@
 import { useState } from 'react';
 import { useMarketingData, partitionPosts } from '../lib/useMarketingData.js';
-import { postHealth, healthReason } from '../lib/postHealth.js';
+import { postHealth } from '../lib/postHealth.js';
+import { isPendingApproval, isWaitingOnOwner, isRecoveryItem, isOnGraph } from '../lib/status.js';
 import { ReadOnlyButton } from '../components/ReadOnlyButton.jsx';
 import { StatusChip } from '../components/StatusChip.jsx';
 import {
   chipForPost,
   cleanCopy,
   dayLabelFor,
-  isRecoveryItem,
   FIXTURE_TODAY,
   FIXTURE_WEEK_START,
   FIXTURE_WEEK_END,
@@ -37,13 +37,47 @@ const ADAPTER_DOT = {
 
 function recoveryReason(item) {
   if (item?.error) return item.error;
-  const hr = healthReason(item);
-  if (hr) return hr;
   const status = String(item?.status || '');
+  if (status === 'waiting_on_owner') return 'Waiting on owner';
   if (status === 'needs_verification') return 'Needs verification';
   if (status === 'posting' && !item?.posted_at) return 'Stuck in posting state (no posted_at)';
-  if (status === 'error') return 'Post failed';
+  if (status === 'error') return item?.platform ? 'Post failed' : 'Task failed';
   return status || 'Needs recovery';
+}
+
+function openPost(post) {
+  try {
+    sessionStorage.setItem('mc.detailPost', JSON.stringify(post));
+  } catch {
+    // private mode / quota — still navigate
+  }
+  window.location.hash = `#/detail/${post.id}`;
+}
+
+function deriveAdapters({ facebook, gbp, tasks, waitingOnOwner, runRecovery }) {
+  const platformRecovery = (platform) =>
+    runRecovery.some((i) => String(i.platform || '') === platform);
+  const facebookStatus = platformRecovery('facebook')
+    ? 'error'
+    : facebook.some((p) => isOnGraph(p) || p.status === 'posted' || p.status === 'done')
+      ? 'live_ready'
+      : 'unknown';
+  const gbpStatus = platformRecovery('gbp')
+    ? 'error'
+    : gbp.some((p) => p.status === 'posted' || p.status === 'done')
+      ? 'live_ready'
+      : gbp.some((p) => p.status === 'scheduled_native')
+        ? 'worker'
+        : 'unknown';
+  const websiteStatus =
+    waitingOnOwner.length || tasks.some((t) => t.status === 'error' || t.status === 'failed')
+      ? 'error'
+      : 'unknown';
+  return [
+    { id: 'facebook', label: 'Facebook', status: facebookStatus },
+    { id: 'gbp', label: 'GBP', status: gbpStatus },
+    { id: 'website', label: 'Website', status: websiteStatus },
+  ];
 }
 
 function itemTitle(item) {
@@ -68,7 +102,7 @@ export default function TodayPage(props) {
 
   const configured = data.configured;
   const waiting = configured && data.loading;
-  const usingFixtures = !waiting && (!configured || !(data.posts && data.posts.length));
+  const usingFixtures = !configured && !waiting;
 
   const today = usingFixtures ? FIXTURE_TODAY : data.today;
   const weekStart = usingFixtures ? FIXTURE_WEEK_START : data.weekStart;
@@ -76,23 +110,30 @@ export default function TodayPage(props) {
   const posts = usingFixtures ? FIXTURE_POSTS : data.posts;
   const tasks = usingFixtures ? FIXTURE_TASKS : (data.tasks || []);
   const health = usingFixtures ? FIXTURE_HEALTH : data.health;
-  const adapters = FIXTURE_ADAPTERS;
 
   const { facebook, gbp } = partitionPosts(posts);
   const activePosts = (tab === 'gbp' ? gbp : facebook)
     .slice()
     .sort((a, b) => String(a.post_date).localeCompare(b.post_date));
 
-  const pendingCount = [...(posts || []), ...tasks].filter((x) => x.status === 'pending_approval').length;
-  const recoveryItems = [...(posts || []), ...tasks].filter(isRecoveryItem);
-  const currentRecovery = recoveryItems.filter((i) => {
-    const d = itemDate(i);
-    return !d || d >= weekStart;
-  });
-  const priorRecovery = recoveryItems.filter((i) => {
-    const d = itemDate(i);
-    return d && d < weekStart;
-  });
+  const pendingPosts = usingFixtures
+    ? posts.filter((p) => isPendingApproval(p.status))
+    : data.pendingPosts;
+  const pendingTasks = usingFixtures
+    ? tasks.filter((t) => isPendingApproval(t.status))
+    : data.pendingTasks;
+  const waitingOnOwner = usingFixtures
+    ? tasks.filter((t) => isWaitingOnOwner(t.status))
+    : data.waitingOnOwner;
+  const runRecovery = usingFixtures
+    ? [...posts, ...tasks].filter(isRecoveryItem)
+    : data.runRecovery;
+  const currentRecovery = runRecovery;
+  const priorRecovery = usingFixtures ? [] : data.priorRecovery;
+  const adapters = usingFixtures
+    ? FIXTURE_ADAPTERS
+    : deriveAdapters({ facebook, gbp, tasks, waitingOnOwner, runRecovery });
+  const facebookOnGraph = facebook.filter(isOnGraph).length;
   const fbPosted = postedCount(facebook);
   const gbpPosted = postedCount(gbp);
   const gbpNative = gbp.filter((p) => p.status === 'scheduled_native').length;
@@ -125,8 +166,16 @@ export default function TodayPage(props) {
 
       <div style={{ display: 'flex', gap: 12, marginTop: 16, flexWrap: 'wrap' }}>
         <div style={summaryCard}>
-          <div style={{ color: C.amber, fontSize: 22, fontWeight: 700 }}>{pendingCount}</div>
-          <div style={summaryLabel}>Pending approval</div>
+          <div style={{ color: C.amber, fontSize: 22, fontWeight: 700 }}>{pendingPosts.length}</div>
+          <div style={summaryLabel}>Posts pending</div>
+        </div>
+        <div style={summaryCard}>
+          <div style={{ color: C.amber, fontSize: 22, fontWeight: 700 }}>{pendingTasks.length}</div>
+          <div style={summaryLabel}>Website pending</div>
+        </div>
+        <div style={summaryCard}>
+          <div style={{ color: C.amber, fontSize: 22, fontWeight: 700 }}>{waitingOnOwner.length}</div>
+          <div style={summaryLabel}>Waiting on owner</div>
         </div>
         <div style={summaryCard}>
           <div style={{ color: health?.live === 'done' ? C.green : health?.live === 'error' ? C.red : C.indigo, fontSize: 18, fontWeight: 700 }}>
@@ -227,7 +276,7 @@ export default function TodayPage(props) {
 
       <div style={{ display: 'flex', gap: 8, marginTop: 20, marginBottom: 16 }}>
         {[
-          { key: 'facebook', label: 'Facebook', posted: fbPosted, total: facebook.length },
+          { key: 'facebook', label: 'Facebook', posted: fbPosted, total: facebook.length, onGraph: facebookOnGraph },
           { key: 'gbp', label: 'Google Business', posted: gbpPosted, total: gbp.length, native: gbpNative },
         ].map((t) => {
           const active = tab === t.key;
@@ -252,7 +301,9 @@ export default function TodayPage(props) {
               }}>
                 {t.native != null
                   ? `${t.posted}/${t.total} · ${t.native} native`
-                  : `${t.posted}/${t.total}`}
+                  : t.onGraph > t.posted
+                    ? `${t.posted}/${t.total} · ${t.onGraph} on Graph`
+                    : `${t.posted}/${t.total}`}
               </span>
             </button>
           );
@@ -272,11 +323,15 @@ export default function TodayPage(props) {
               : isToday ? '1px solid #6366f144' : `1px solid ${C.border}`;
             const rowBackground = healthRow.state === 'red' ? '#1e1518' : isToday ? '#1e2235' : C.surface;
             return (
-              <div
+              <button
                 key={post.id}
+                type="button"
+                onClick={() => openPost(post)}
+                aria-label={`Open ${post.platform || 'post'} ${post.post_date || ''}`}
                 style={{
                   background: rowBackground, border: rowBorder, borderRadius: 7,
                   padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
+                  width: '100%', textAlign: 'left', font: 'inherit', color: 'inherit', cursor: 'pointer',
                 }}
               >
                 <div style={{ minWidth: 42, textAlign: 'center' }}>
@@ -319,7 +374,7 @@ export default function TodayPage(props) {
                     : healthRow.state === 'red' ? (healthRow.reason || 'red')
                       : 'neutral'}
                 </span>
-              </div>
+              </button>
             );
           })}
         </div>
