@@ -125,6 +125,9 @@ export const POST_STATUS_COLOR = {
   skipped: '#4b5563',
   needs_verification: '#ef4444',
   error: '#ef4444',
+  waiting_on_owner: '#f59e0b',
+  failed: '#ef4444',
+  rejected: '#4b5563',
 };
 
 export const POST_STATUS_LABEL = {
@@ -139,3 +142,65 @@ export const POST_STATUS_LABEL = {
   needs_verification: 'NEEDS VERIFY',
   error: 'ERROR',
 };
+
+/** True when the item still needs a human or bridge action. */
+export function isRecoveryItem(item) {
+  const status = String(item?.status || '');
+  if (status === 'error' || status === 'needs_verification' || status === 'failed') return true;
+  if (status === 'waiting_on_owner') return true;
+  return status === 'posting' && !item?.posted_at;
+}
+
+export function isPendingApproval(status) {
+  const s = String(status || '').toLowerCase();
+  return s === 'pending_approval' || s === 'needs_approval';
+}
+
+export function isWaitingOnOwner(status) {
+  return String(status || '').toLowerCase() === 'waiting_on_owner';
+}
+
+/** True when the post is live on the platform Graph (scheduled or published). */
+export function isOnGraph(post) {
+  const s = String(post?.status || '');
+  return Boolean(post?.platform_post_id) && (s === 'scheduled' || s === 'posted' || s === 'done');
+}
+
+export const RUN_STATUS_LABEL = {
+  done: 'DONE',
+  error: 'ERROR',
+  pending_approval: 'PENDING',
+  approved: 'APPROVED',
+  executing: 'EXECUTING',
+  posting: 'POSTING…',
+  rejected: 'REJECTED',
+  dismissed: 'DISMISSED',
+  cancelled: 'CANCELLED',
+};
+
+export const TASK_STATUS_LABEL = {
+  done: 'DONE',
+  failed: 'FAILED',
+  error: 'ERROR',
+  pending_approval: 'PENDING',
+  waiting_on_owner: 'WAITING ON OWNER',
+  skipped: 'SKIPPED',
+  executing: 'EXECUTING',
+};
+
+export function statusLabelFor(status, kind = 'post') {
+  const s = String(status || '');
+  if (kind === 'run') return RUN_STATUS_LABEL[s] || (s ? s.replace(/_/g, ' ').toUpperCase() : '—');
+  if (kind === 'task') return TASK_STATUS_LABEL[s] || (s ? s.replace(/_/g, ' ').toUpperCase() : '—');
+  return POST_STATUS_LABEL[s] || (s ? s.replace(/_/g, ' ').toUpperCase() : '—');
+}
+
+export function statusColorFor(status, kind = 'post') {
+  const s = String(status || '');
+  if (POST_STATUS_COLOR[s]) return POST_STATUS_COLOR[s];
+  if (s === 'waiting_on_owner') return '#f59e0b';
+  if (s === 'failed' || s === 'rejected') return s === 'rejected' ? '#4b5563' : '#ef4444';
+  if (kind === 'run' && s === 'done') return '#10b981';
+  if (kind === 'task' && s === 'done') return '#10b981';
+  return '#4b5563';
+}

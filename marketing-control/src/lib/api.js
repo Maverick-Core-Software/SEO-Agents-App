@@ -80,6 +80,15 @@ export async function fetchLatestRunHealth() {
   return { run, posts, live, bucket: bucketStatusCount(live) };
 }
 
+export async function fetchPostById(id) {
+  if (!isSupabaseAvailable || !id) return null;
+  const rows = await selectRows(
+    readFrom('weekly_posts').select('*').eq('id', id).limit(1),
+    'weekly_posts query failed',
+  );
+  return rows[0] || null;
+}
+
 export async function fetchWorkerStatus() {
   const url = import.meta.env?.VITE_SEO_STATUS_URL;
   if (!url) return { ok: false, unreachable: true };

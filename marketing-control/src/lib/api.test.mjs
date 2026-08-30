@@ -9,6 +9,7 @@ import {
   fetchRunLogs,
   fetchLatestRunHealth,
   fetchWorkerStatus,
+  fetchPostById,
 } from './api.js';
 
 describe('wrapReadOnly', () => {
@@ -64,6 +65,10 @@ describe('fetchers without live supabase', () => {
       live: 'idle',
       bucket: 'incomplete',
     });
+  });
+
+  it('fetchPostById returns null when not configured', async () => {
+    assert.equal(await fetchPostById('x'), null);
   });
 
   it('fetchWorkerStatus is unreachable when VITE_SEO_STATUS_URL is unset', async () => {
