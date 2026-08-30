@@ -1,8 +1,9 @@
+import { useState } from 'react';
 import { ReadOnlyButton } from '../components/ReadOnlyButton.jsx';
 import { StatusChip } from '../components/StatusChip.jsx';
 import { FIXTURE_TASKS, FIXTURE_WEBSITE_ADAPTER } from '../fixtures/detail.js';
 import { useMarketingData } from '../lib/useMarketingData.js';
-import { POST_STATUS_COLOR, POST_STATUS_LABEL } from '../lib/status.js';
+import { statusColorFor, statusLabelFor } from '../lib/status.js';
 
 const PRIORITY_RANK = { critical: 0, high: 1, medium: 2, low: 3 };
 
@@ -12,6 +13,21 @@ const PRIORITY_COLOR = {
   medium: '#6366f1',
   low: '#4b5563',
 };
+
+const TABS = [
+  { key: 'open', label: 'Open' },
+  { key: 'owner', label: 'Waiting on owner' },
+  { key: 'all', label: 'All' },
+];
+
+const OPEN_STATUSES = new Set([
+  'pending_approval',
+  'needs_approval',
+  'waiting_on_owner',
+  'error',
+  'failed',
+  'executing',
+]);
 
 const card = {
   background: '#161922',
@@ -39,8 +55,26 @@ const td = {
   color: '#f1f5f9',
 };
 
+function statusBucket(status) {
+  const s = String(status || '').toLowerCase();
+  if (s === 'waiting_on_owner') return 0;
+  if (s === 'error' || s === 'failed') return 1;
+  if (s === 'pending_approval' || s === 'needs_approval') return 2;
+  return 3;
+}
+
+function inTab(task, tab) {
+  const s = String(task?.status || '').toLowerCase();
+  if (tab === 'owner') return s === 'waiting_on_owner';
+  if (tab === 'all') return true;
+  return OPEN_STATUSES.has(s);
+}
+
 function sortByPriority(tasks) {
   return [...(tasks || [])].sort((a, b) => {
+    const ba = statusBucket(a?.status);
+    const bb = statusBucket(b?.status);
+    if (ba !== bb) return ba - bb;
     const pa = PRIORITY_RANK[String(a?.priority || '').toLowerCase()] ?? 4;
     const pb = PRIORITY_RANK[String(b?.priority || '').toLowerCase()] ?? 4;
     if (pa !== pb) return pa - pb;
@@ -72,17 +106,15 @@ function previewPath(task) {
 }
 
 function StatusFor({ status }) {
-  const key = String(status || '').toLowerCase();
-  const label = POST_STATUS_LABEL[key] || (key ? key.replace(/_/g, ' ').toUpperCase() : '—');
-  const color = POST_STATUS_COLOR[key] || '#4b5563';
-  return <StatusChip label={label} color={color} />;
+  return <StatusChip label={statusLabelFor(status, 'task')} color={statusColorFor(status, 'task')} />;
 }
 
 export default function WebsiteTasksPage(props) {
   const { configured, loading, error, tasks } = useMarketingData();
   const usingLive = configured;
-  const list = sortByPriority(usingLive ? tasks : FIXTURE_TASKS);
+  const [tab, setTab] = useState('open');
   const adapter = FIXTURE_WEBSITE_ADAPTER;
+  const list = sortByPriority((usingLive ? tasks : FIXTURE_TASKS).filter((t) => inTab(t, tab)));
 
   return (
     <section className="page">
@@ -97,7 +129,7 @@ export default function WebsiteTasksPage(props) {
       <div style={card}>
         <h2 style={h2}>Adapter capabilities</h2>
         <p style={{ marginBottom: 10 }}>
-          {adapter.name} — {adapter.state}
+          {usingLive ? 'fixture capabilities (not live)' : `${adapter.name} — ${adapter.state}`}
         </p>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
           {(adapter.capabilities || []).map((cap) => (
@@ -123,6 +155,26 @@ export default function WebsiteTasksPage(props) {
 
       <div style={card}>
         <h2 style={h2}>Queue</h2>
+        <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+          {TABS.map((t) => (
+            <button
+              key={t.key}
+              onClick={() => setTab(t.key)}
+              style={{
+                padding: '4px 12px',
+                borderRadius: 999,
+                border: `1px solid ${tab === t.key ? '#6366f1' : '#2a2f45'}`,
+                background: tab === t.key ? '#6366f1' : '#0f1117',
+                color: tab === t.key ? '#ffffff' : '#f1f5f9',
+                fontSize: 12,
+                fontWeight: 600,
+                cursor: 'pointer',
+              }}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
         {list.length === 0 ? (
           <p>No website tasks.</p>
         ) : (
