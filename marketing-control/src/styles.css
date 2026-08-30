@@ -1,0 +1,157 @@
+:root {
+  color-scheme: dark;
+  --bg: #0f1117;
+  --surface: #161922;
+  --border: #2a2f45;
+  --text: #f1f5f9;
+  --muted: #94a3b8;
+  --indigo: #6366f1;
+  --indigo-dim: rgba(99, 102, 241, 0.18);
+  --amber: #fbbf24;
+  --amber-bg: #3a2d12;
+  --amber-border: #7a5a16;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.app {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.appHeader {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 12px 16px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 20px;
+}
+
+.appTitle {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.appNav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.navLink {
+  color: var(--muted);
+  text-decoration: none;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+}
+
+.navLink:hover {
+  color: var(--text);
+  background: var(--indigo-dim);
+}
+
+.navLink.active {
+  color: var(--text);
+  background: var(--indigo-dim);
+  border-color: var(--indigo);
+}
+
+.readonlyBanner {
+  background: var(--amber-bg);
+  color: var(--amber);
+  border-bottom: 1px solid var(--amber-border);
+  padding: 8px 16px;
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.configNotice {
+  background: var(--surface);
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+  padding: 8px 16px;
+}
+
+.configNotice code {
+  color: var(--text);
+  font-size: 12px;
+}
+
+.appMain {
+  flex: 1;
+  padding: 16px;
+  max-width: 1280px;
+  width: 100%;
+}
+
+.page h1 {
+  margin: 0 0 8px;
+  font-size: 22px;
+}
+
+.page p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.statusChip {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.readonlyBtn,
+.readonlyBtn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  background: var(--surface);
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 12px;
+  font: inherit;
+}
+
+@media (max-width: 720px) {
+  .appHeader {
+    flex-direction: column;
+    align-items: stretch;
+    padding: 12px;
+  }
+
+  .appNav {
+    flex-direction: column;
+  }
+
+  .navLink {
+    display: block;
+  }
+}

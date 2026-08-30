@@ -1,0 +1,8 @@
+export default function CalendarPage(props) {
+  return (
+    <section className="page">
+      <h1>Calendar</h1>
+      <p>Stub — later session will replace this.</p>
+    </section>
+  );
+}
