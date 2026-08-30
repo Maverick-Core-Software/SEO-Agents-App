@@ -17,6 +17,15 @@ describe('ApprovalInboxPage read-only', () => {
     }
   });
 
+  it('splits owner-wait into its own group and anchors default view to latest run', () => {
+    const src = readFileSync(join(here, 'ApprovalInboxPage.jsx'), 'utf8');
+    assert.ok(src.includes("label: 'Waiting on owner'"));
+    assert.ok(src.includes('waiting_on_owner'));
+    assert.ok(src.includes('statusLabelFor'));
+    assert.ok(src.includes('Show all pending'));
+    assert.ok(src.includes('isSupabaseAvailable'));
+  });
+
   it('attemptApprove / attemptSkip throw READ_ONLY without fetching', async () => {
     let calls = 0;
     const orig = globalThis.fetch;
