@@ -39,6 +39,11 @@ if (fs.existsSync(envPath)) {
 
 const SUPABASE_URL = process.env.SUPABASE_URL || '';
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY || '';
+
+// Import-safe: focused tests need the pure queue-policy helper without starting
+// a worker or requiring database credentials.
+const invokedDirectly = process.argv[1]
+  && fileURLToPath(import.meta.url) === path.resolve(process.argv[1]);
 const POLL_INTERVAL_MS = parseInt(process.env.GBP_WORKER_POLL_MS || process.env.MAV_BRIDGE_POLL_MS || '30000');
 const SEO_AGENTS_EXE = process.env.SEO_AGENTS_EXE
   || [
@@ -56,12 +61,12 @@ const GBP_POSTER_PATH = GBP_MODE === 'playwright'
 const PHOTO_PICK_PATH = path.join(PROJECT_ROOT, 'scripts', 'gbp-photo-pick.mjs');
 const GBP_VERIFY_PATH = path.join(PROJECT_ROOT, 'scripts', 'verify-gbp-posts.mjs');
 
-if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
+if (invokedDirectly && (!SUPABASE_URL || !SUPABASE_SERVICE_KEY)) {
   console.error('[gbp-worker] SUPABASE_URL or SUPABASE_SERVICE_KEY not set — exiting');
   process.exit(1);
 }
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
+const supabase = invokedDirectly ? createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY) : null;
 
 // ─────────────────────────────────────────────
 // Logging — own Supabase client, but same run_logs schema mav-bridge writes.
@@ -117,12 +122,20 @@ let lastDailyGbpDate = '';
 
 // Post-posting verification state. After a GBP post runs (or an unverified row is
 // detected), schedule verification checks: wait 10min, then check every 15min
-// up to 4 attempts. If none succeed, mark the post as error.
+// up to 4 attempts. If none succeed, mark the post needs_verification and stop.
 let verifyQueue = [];  // { postId, date, runId, attempt, nextAt }
 let lastVerifyCheckAt = 0;
 const VERIFY_INITIAL_DELAY_MS = 10 * 60 * 1000;   // 10 min after post
 const VERIFY_RETRY_INTERVAL_MS = 15 * 60 * 1000;  // 15 min between retries
 const VERIFY_MAX_ATTEMPTS = 4;
+
+// A verification miss is a terminal, human-check outcome. Re-seeding it would
+// create the false permanent failure loop that originally polluted the dashboard.
+export function shouldQueueGbpVerification(row) {
+  return Boolean(row)
+    && String(row.status || '') === 'posted'
+    && !row.platform_post_id;
+}
 
 async function poll() {
   if (busy) return;
@@ -193,11 +206,11 @@ async function poll() {
         .from('weekly_posts')
         .select('id, run_id, post_date')
         .eq('platform', 'gbp')
-        .in('status', ['posted', 'needs_verification'])
+        .eq('status', 'posted')
         .is('platform_post_id', null)
         .gte('updated_at', cutoff);
       for (const row of unverified || []) {
-        if (!verifyQueue.some(q => q.postId === row.id)) {
+        if (shouldQueueGbpVerification(row) && !verifyQueue.some(q => q.postId === row.id)) {
           verifyQueue.push({
             postId: row.id,
             date: row.post_date,
@@ -291,15 +304,17 @@ async function poll() {
 // Start
 // ─────────────────────────────────────────────
 
-const once = process.argv.includes('--once');
-console.log(`[gbp-worker] Starting — project root: ${PROJECT_ROOT}`);
-console.log(`[gbp-worker] GBP_POSTER=${GBP_MODE} → ${path.basename(GBP_POSTER_PATH)}`);
-if (once) {
-  await poll();
-  console.log('[gbp-worker] --once complete');
-  process.exit(0);
-} else {
-  console.log(`[gbp-worker] Polling Supabase every ${POLL_INTERVAL_MS / 1000}s`);
-  await poll();
-  setInterval(poll, POLL_INTERVAL_MS);
+if (invokedDirectly) {
+  const once = process.argv.includes('--once');
+  console.log(`[gbp-worker] Starting — project root: ${PROJECT_ROOT}`);
+  console.log(`[gbp-worker] GBP_POSTER=${GBP_MODE} → ${path.basename(GBP_POSTER_PATH)}`);
+  if (once) {
+    await poll();
+    console.log('[gbp-worker] --once complete');
+    process.exit(0);
+  } else {
+    console.log(`[gbp-worker] Polling Supabase every ${POLL_INTERVAL_MS / 1000}s`);
+    await poll();
+    setInterval(poll, POLL_INTERVAL_MS);
+  }
 }

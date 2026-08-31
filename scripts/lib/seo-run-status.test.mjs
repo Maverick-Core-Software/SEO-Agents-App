@@ -55,17 +55,44 @@ describe('liveRunStatus', () => {
 
   it('keeps real in-flight work as executing/partial', () => {
     const ls = liveRunStatus(
-      { id: 'r4', status: 'done' },
+      { id: 'r4', status: 'executing' },
       [{ status: 'posted' }, { status: 'pending_approval' }],
     );
     assert.equal(ls, 'executing');
     assert.equal(bucketStatusCount(ls), 'partial');
   });
 
-  it('flags current post errors as error/blocked', () => {
+  it('a finished run stays done even with open posts (async GBP residue)', () => {
     const ls = liveRunStatus(
-      { id: 'r5', status: 'done' },
+      { id: 'r4b', status: 'done' },
+      [{ status: 'posted' }, { status: 'pending_approval' }],
+    );
+    assert.equal(ls, 'done');
+    assert.equal(bucketStatusCount(ls), 'complete');
+  });
+
+  it('flags post errors as error/blocked only while the run is in flight', () => {
+    const ls = liveRunStatus(
+      { id: 'r5', status: 'executing' },
       [{ status: 'posted' }, { status: 'error' }],
+    );
+    assert.equal(ls, 'error');
+    assert.equal(bucketStatusCount(ls), 'blocked');
+  });
+
+  it('a needs_verification post must not flip a finished run to error (no-repost policy)', () => {
+    const ls = liveRunStatus(
+      { id: 'r5b', status: 'done' },
+      [{ status: 'posted' }, { status: 'needs_verification' }],
+    );
+    assert.equal(ls, 'done');
+    assert.equal(bucketStatusCount(ls), 'complete');
+  });
+
+  it('a needs_verification post during execution is a run fault (error/blocked)', () => {
+    const ls = liveRunStatus(
+      { id: 'r5c', status: 'executing' },
+      [{ status: 'posted' }, { status: 'needs_verification' }],
     );
     assert.equal(ls, 'error');
     assert.equal(bucketStatusCount(ls), 'blocked');

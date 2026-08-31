@@ -6,6 +6,8 @@ import assert from 'node:assert/strict';
 import {
   isFormatInstructionTitle,
   isOwnerWaitStatus,
+  isOwnerGatedDescription,
+  websiteTaskBlockReason,
   isWebsiteTaskExecutable,
   extractTaskTitle,
   parseWebsiteTasks,
@@ -13,6 +15,49 @@ import {
   isDuplicateOwnerWaitTopic,
   shouldSkipStaleWebsitePending,
 } from './parse-website-tasks.mjs';
+
+const FINAL_REPORT_OWNER_GATED = `
+## Incomplete
+
+| Task ID | Task | What was missing | Recommended Next Step |
+|---|---|---|---|
+| T-101 | Update Hours on Homepage | Holiday hours not reflected | Owner must confirm holiday hours before publishing |
+| T-102 | Fix FAQ Schema | Schema missing on FAQ page | Add FAQPage JSON-LD to the FAQ template |
+
+### Task 3: Rewrite Services Copy
+
+**Task ID:** \`T-103\`
+**What was missing:** Outdated service descriptions
+**Recommended Next Step:** Awaiting owner confirmation of the new service list
+
+### Task 4: Fix Broken Gallery Link
+
+**Task ID:** \`T-104\`
+**What was missing:** Gallery link 404s
+**Recommended Next Step:** Point the gallery link at the new /gallery/ path
+
+### T-GES-20260831-001 — BLOCKED
+
+**Title:** Verify Site Backend Access
+
+**Blocker:** Owner has not provided access to the site backend.
+**Recommended Next Step:** Owner must share hosting credentials.
+
+### T-GES-20260831-002 — PARTIAL
+
+**Title:** Finish Hero Section Copy
+
+**Blocker:** Ran out of time mid-edit.
+**Recommended Next Step:** Finish the remaining section edits.
+`;
+
+const FINAL_REPORT_TABLE = `
+## Incomplete
+
+| Task ID | Task | What was missing | Recommended Next Step |
+|---|---|---|---|
+| T-201 | Fix Nav Highlight | Nav state broken | Restore active-nav styling |
+`;
 
 const BLOG_QUEUE_SNIPPET = `
 ### T-GES-20260814-005 — [BLOG POST] Generator Interlock Kit Cost in DFW — 2026 Guide
@@ -91,6 +136,46 @@ describe('parseWebsiteTasks — 8/14 repro', () => {
   });
 });
 
+describe('parseWebsiteTasks — final_report owner-gated rows', () => {
+  it('marks owner-confirmation and blocker rows waiting_on_owner, never pending', () => {
+    const tasks = parseWebsiteTasks('', FINAL_REPORT_OWNER_GATED);
+    const byTitle = Object.fromEntries(tasks.map((t) => [t.title, t.status]));
+    assert.equal(byTitle['Update Hours on Homepage'], 'waiting_on_owner', 'next step demands owner confirmation');
+    assert.equal(byTitle['Rewrite Services Copy'], 'waiting_on_owner', 'awaiting owner confirmation');
+    assert.equal(byTitle['Verify Site Backend Access'], 'waiting_on_owner', 'BLOCKED header + Blocker field');
+    assert.equal(byTitle['Finish Hero Section Copy'], 'waiting_on_owner', 'Blocker field present');
+    assert.equal(byTitle['Fix FAQ Schema'], 'pending_approval', 'clean next step stays pending');
+    assert.equal(byTitle['Fix Broken Gallery Link'], 'pending_approval', 'clean next step stays pending');
+  });
+  it('keeps a clean Incomplete table row pending_approval', () => {
+    const tasks = parseWebsiteTasks('', FINAL_REPORT_TABLE);
+    assert.equal(tasks.length, 1);
+    assert.equal(tasks[0].title, 'Fix Nav Highlight');
+    assert.equal(tasks[0].status, 'pending_approval');
+  });
+});
+
+describe('isOwnerGatedDescription', () => {
+  it('detects owner-confirmation and blocker content', () => {
+    assert.equal(isOwnerGatedDescription('Owner must confirm actual pricing range before publishing.'), true);
+    assert.equal(isOwnerGatedDescription('Awaiting owner approval of the copy.'), true);
+    assert.equal(isOwnerGatedDescription('Waiting on owner to provide access.'), true);
+    assert.equal(isOwnerGatedDescription('Waiting for owner approval of the copy.'), true);
+    assert.equal(isOwnerGatedDescription('Owner to confirm the final service list.'), true);
+    assert.equal(isOwnerGatedDescription('Confirm with owner before publishing.'), true);
+    assert.equal(isOwnerGatedDescription('Needs owner input on the FAQ answers.'), true);
+    assert.equal(isOwnerGatedDescription('Blocker: Owner has not provided the new phone number.'), true);
+    assert.equal(isOwnerGatedDescription('BLOCKED until T-GES-20260814-001 is resolved.'), true);
+    assert.equal(isOwnerGatedDescription('Status: Blocked on the owner review.'), true);
+  });
+  it('does not flag plain prose or incidental words', () => {
+    assert.equal(isOwnerGatedDescription('Update the footer with the new service list.'), false);
+    assert.equal(isOwnerGatedDescription('Fix the blocked form submission on the contact page.'), false);
+    assert.equal(isOwnerGatedDescription('Add FAQ schema markup to the homepage.'), false);
+    assert.equal(isOwnerGatedDescription(''), false);
+  });
+});
+
 describe('isWebsiteTaskExecutable gate', () => {
   it('blocks waiting_on_owner even if status approved', () => {
     assert.equal(
@@ -125,6 +210,63 @@ describe('isWebsiteTaskExecutable gate', () => {
       }),
       false,
     );
+  });
+  it('blocks owner-gated descriptions even when approved', () => {
+    assert.equal(
+      isWebsiteTaskExecutable({
+        status: 'approved',
+        title: 'Update Hours',
+        description: 'Owner must confirm holiday hours before publishing.',
+        details: { platform: 'website' },
+      }),
+      false,
+    );
+  });
+  it('blocks unsupported platforms without claiming them', () => {
+    assert.equal(
+      isWebsiteTaskExecutable({
+        status: 'approved',
+        title: 'GBP listing',
+        description: 'Verify listing',
+        details: { platform: 'gbp' },
+      }),
+      false,
+    );
+    assert.equal(
+      isWebsiteTaskExecutable({
+        status: 'approved',
+        title: 'T',
+        description: 'D',
+        details: { platform: 'social' },
+      }),
+      false,
+    );
+  });
+  it('allows website platform and legacy null platform', () => {
+    assert.equal(
+      isWebsiteTaskExecutable({
+        status: 'approved',
+        title: 'T',
+        description: 'D',
+        details: { platform: 'website' },
+      }),
+      true,
+    );
+    assert.equal(
+      isWebsiteTaskExecutable({
+        status: 'approved',
+        title: 'T',
+        description: 'D',
+        details: {},
+      }),
+      true,
+    );
+  });
+  it('websiteTaskBlockReason explains the gate for parking', () => {
+    assert.match(websiteTaskBlockReason({ status: 'approved', title: 'T', description: 'Owner must confirm pricing.', details: {} }), /owner-gated/);
+    assert.match(websiteTaskBlockReason({ status: 'approved', title: 'T', description: 'D', details: { platform: 'social' } }), /unsupported platform=social/);
+    assert.match(websiteTaskBlockReason({ status: 'pending_approval', title: 'T', description: 'D', details: {} }), /status=pending_approval/);
+    assert.equal(websiteTaskBlockReason({ status: 'approved', title: 'T', description: 'D', details: { platform: 'website' } }), null);
   });
   it('blocks pending_approval (must be approved first)', () => {
     assert.equal(

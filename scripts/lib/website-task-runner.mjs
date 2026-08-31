@@ -5,10 +5,10 @@
 //
 // deps: { supabase, log, execFileAsync, seoAgentsExe, projectRoot }
 
-import { isWebsiteTaskExecutable } from './parse-website-tasks.mjs';
+import { isWebsiteTaskExecutable, websiteTaskBlockReason } from './parse-website-tasks.mjs';
 
 export const PRIORITY_MAP = { critical: 0, high: 1, medium: 2, low: 3 };
-export { isWebsiteTaskExecutable };
+export { isWebsiteTaskExecutable, websiteTaskBlockReason };
 
 // Only tasks classified for the website executor are auto-run. supabase-sync
 // stamps details.platform on every task (CONTRACT in supabase-sync.mjs);
@@ -63,19 +63,20 @@ export async function executeNextWebsiteTask(tasks, deps) {
   for (const task of sortWebsiteTasks(tasks)) {
     const runId = task.run_id || null;
 
-    // Hard gate: never live-execute owner-wait / blocked / format-instruction garbage.
-    // Tasks from fetchApprovedWebsiteTasks are approved; default status for the gate.
+    // Hard gate: never live-execute owner-wait / blocked / owner-gated /
+    // format-instruction / non-website-platform tasks. Tasks from
+    // fetchApprovedWebsiteTasks are approved; default status for the gate.
     const gateTask = { ...task, status: task.status || 'approved' };
-    if (!isWebsiteTaskExecutable(gateTask)) {
+    const blockReason = websiteTaskBlockReason(gateTask);
+    if (blockReason) {
       await log(
         runId,
         'website',
         'info',
-        `Skipping non-executable website task ${task.id}: status=${task.status} queue_status=${task.details?.queue_status || ''} title=${String(task.title || '').slice(0, 80)}`,
+        `Skipping non-executable website task ${task.id}: ${blockReason} title=${String(task.title || '').slice(0, 80)}`,
       );
-      // If wrongly approved while still owner-wait, park so the poll does not loop.
+      // If wrongly approved while still non-executable, park so the poll does not loop.
       if (String(gateTask.status).toLowerCase() === 'approved') {
-        const qs = task.details?.queue_status || 'waiting_on_owner';
         await supabase
           .from('website_tasks')
           .update({
@@ -83,7 +84,7 @@ export async function executeNextWebsiteTask(tasks, deps) {
             details: {
               ...task.details,
               execution_blocked: true,
-              execution_blocked_reason: `queue_status=${qs}`,
+              execution_blocked_reason: blockReason,
             },
           })
           .eq('id', task.id)

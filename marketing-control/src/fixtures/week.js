@@ -279,6 +279,29 @@ export const FIXTURE_ADAPTERS = [
   { id: 'website', label: 'Website', status: 'live_ready' },
 ];
 
+// Historical / skipped backlog for the collapsed prior-week section. These must
+// never appear in the primary attention view (different run_id / skipped status).
+export const FIXTURE_PRIOR_RECOVERY = [
+  {
+    id: 'prior-error',
+    run_id: 'fx-run-2026-08-17',
+    platform: 'facebook',
+    post_date: '2026-08-19',
+    service: '**Panel Load Calc**',
+    hook: 'Load calc before the EV quote',
+    status: 'error',
+    error: 'Graph token refresh failed on prior week',
+  },
+  {
+    id: 'prior-skipped',
+    run_id: 'fx-run-2026-08-17',
+    type: 'seo_fix',
+    title: 'Fix /contact/ 404 (prior week)',
+    status: 'skipped',
+    error: 'prior-week pending backlog — skipped',
+  },
+];
+
 export const FIXTURE_HEALTH = {
   run: { id: RUN_ID, week_of: FIXTURE_WEEK_START, status: 'executing' },
   posts: FIXTURE_POSTS,

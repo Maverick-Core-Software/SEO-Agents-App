@@ -14,6 +14,11 @@ import {
   statusLabelFor,
   statusColorFor,
   isOnGraph,
+  recoveryClass,
+  isAttentionItem,
+  ageLabel,
+  ownerFor,
+  nextActionFor,
 } from './status.js';
 
 describe('liveRunStatus', () => {
@@ -75,6 +80,21 @@ describe('liveRunStatus', () => {
     assert.equal(ls, 'error');
     assert.equal(bucketStatusCount(ls), 'blocked');
   });
+
+  it('maps needs_verification to its own live status, not error', () => {
+    const ls = liveRunStatus({ id: 'r6', status: 'done' }, [{ status: 'needs_verification' }]);
+    assert.equal(ls, 'needs_verification');
+    assert.equal(bucketStatusCount(ls), 'verify');
+    assert.equal(ls === 'error', false);
+  });
+
+  it('error outranks needs_verification when both exist', () => {
+    const ls = liveRunStatus(
+      { id: 'r7', status: 'done' },
+      [{ status: 'error' }, { status: 'needs_verification' }],
+    );
+    assert.equal(ls, 'error');
+  });
 });
 
 describe('isRecoveryItem', () => {
@@ -125,6 +145,101 @@ describe('status helpers', () => {
     assert.equal(isOnGraph({ status: 'posted', platform_post_id: '1' }), true);
     assert.equal(isOnGraph({ status: 'pending_approval', platform_post_id: '1' }), false);
   });
+
+  it('GBP scheduled/scheduled_native are not on the graph (corrected semantics)', () => {
+    assert.equal(isOnGraph({ platform: 'gbp', status: 'scheduled', platform_post_id: '1' }), false);
+    assert.equal(isOnGraph({ platform: 'gbp', status: 'scheduled_native', platform_post_id: '1' }), false);
+    assert.equal(isOnGraph({ platform: 'gbp', status: 'posted', platform_post_id: '1' }), true);
+    assert.equal(isOnGraph({ platform: 'gbp', status: 'posted', platform_post_id: null }), false);
+    // Facebook Graph scheduling stays on-graph; unknown platforms keep old fallback.
+    assert.equal(isOnGraph({ platform: 'facebook', status: 'scheduled', platform_post_id: '1' }), true);
+    assert.equal(isOnGraph({ platform: 'gbp', status: 'posted', platform_post_id: '1' }), true);
+  });
+
+  it('scheduled_native label reads 9AM TICK, not AUTO 9AM', () => {
+    assert.equal(statusLabelFor('scheduled_native', 'post'), '9AM TICK');
+    assert.equal(statusLabelFor('needs_verification', 'run'), 'NEEDS VERIFY');
+    assert.equal(statusLabelFor('needs_verification', 'task'), 'NEEDS VERIFY');
+  });
+});
+
+describe('recoveryClass', () => {
+  const today = '2026-08-30';
+
+  it('execution for error/failed/stuck posting', () => {
+    assert.equal(recoveryClass({ status: 'error' }, { today }), 'execution');
+    assert.equal(recoveryClass({ status: 'failed' }, { today }), 'execution');
+    assert.equal(recoveryClass({ status: 'posting', posted_at: null }, { today }), 'execution');
+    assert.equal(recoveryClass({ status: 'posting', posted_at: '2026-08-30T12:00:00Z' }, { today }), null);
+  });
+
+  it('verification for needs_verification and past queued days never published', () => {
+    assert.equal(recoveryClass({ status: 'needs_verification' }, { today }), 'verification');
+    assert.equal(
+      recoveryClass({ status: 'scheduled_native', post_date: '2026-08-25', posted_at: null }, { today }),
+      'verification',
+    );
+  });
+
+  it('past fallback scheduled day that never published is an execution miss', () => {
+    assert.equal(
+      recoveryClass({ status: 'scheduled', post_date: '2026-08-26', posted_at: null }, { today }),
+      'execution',
+    );
+  });
+
+  it('future scheduled days are not attention items', () => {
+    assert.equal(recoveryClass({ status: 'scheduled_native', post_date: '2026-08-31' }, { today }), null);
+    assert.equal(recoveryClass({ status: 'scheduled', post_date: '2026-09-01' }, { today }), null);
+  });
+
+  it('owner for waiting_on_owner', () => {
+    assert.equal(recoveryClass({ status: 'waiting_on_owner' }, { today }), 'owner');
+  });
+
+  it('historical for skipped and other-run items', () => {
+    assert.equal(recoveryClass({ status: 'skipped' }, { today }), 'historical');
+    assert.equal(
+      recoveryClass({ status: 'error', run_id: 'old' }, { today, currentRunId: 'new' }),
+      'historical',
+    );
+    assert.equal(isAttentionItem({ status: 'skipped' }, { today }), false);
+    assert.equal(isAttentionItem({ status: 'error' }, { today }), true);
+  });
+
+  it('null for clean statuses', () => {
+    assert.equal(recoveryClass({ status: 'posted' }, { today }), null);
+    assert.equal(recoveryClass({ status: 'pending_approval' }, { today }), null);
+    assert.equal(recoveryClass(null, { today }), null);
+  });
+});
+
+describe('actionability metadata', () => {
+  it('ageLabel renders compact age', () => {
+    assert.equal(ageLabel({ post_date: '2026-08-30' }, '2026-08-30'), 'today');
+    assert.equal(ageLabel({ post_date: '2026-08-29' }, '2026-08-30'), '1d');
+    assert.equal(ageLabel({ post_date: '2026-08-27' }, '2026-08-30'), '3d');
+    assert.equal(ageLabel({ post_date: '2026-08-16' }, '2026-08-30'), '2w');
+    assert.equal(ageLabel({}, '2026-08-30'), null);
+  });
+
+  it('ownerFor maps statuses to acting party', () => {
+    assert.equal(ownerFor({ status: 'error' }), 'Bridge worker');
+    assert.equal(ownerFor({ status: 'posting' }), 'Bridge worker');
+    assert.equal(ownerFor({ status: 'needs_verification' }), 'Verification');
+    assert.equal(ownerFor({ status: 'waiting_on_owner' }), 'Owner');
+    assert.equal(ownerFor({ status: 'scheduled_native' }), '9am tick');
+    assert.equal(ownerFor({ status: 'skipped' }), '—');
+  });
+
+  it('nextActionFor gives healer copy', () => {
+    assert.equal(nextActionFor({ status: 'needs_verification' }), 'Verify listing — do not re-post');
+    assert.equal(nextActionFor({ status: 'waiting_on_owner' }), 'Owner approves or provides input');
+    assert.equal(nextActionFor({ status: 'skipped' }), 'Skipped — backlog, no action');
+    assert.match(nextActionFor({ status: 'scheduled_native' }), /9am/);
+    assert.match(nextActionFor({ status: 'scheduled' }), /fallback/);
+    assert.match(nextActionFor({ status: 'error' }), /bridge/i);
+  });
 });
 
 describe('countRunStatuses window', () => {
@@ -151,6 +266,7 @@ describe('countRunStatuses window', () => {
       partial: 0,
       blocked: 0,
       incomplete: 1,
+      verify: 0,
     });
   });
 });
