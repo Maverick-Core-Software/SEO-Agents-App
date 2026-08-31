@@ -1,19 +1,17 @@
-# Next session — create Grizzly Local Grok Bot (public listing verify)
+# Next session — finish Grizzly Local 09:20 routine
 
-**Date:** 2026-08-30 close
+**Date:** 2026-08-30 close (Grizzly Local created)
 **Branch:** `barnscarter-ops/cockle` (engine committed; live Active worker still needs a land — see open thread 1)
-**Canonical inbox:** `C:\Workspace\Active\brain\inbox\2026-08-30-grizzly-local-grok-bot.md`
+**Canonical inbox:** `C:\Workspace\Active\brain\inbox\2026-08-30-grizzly-local-created.md`
 **Bot pack:** `D:\Workspace\Active\brain\projects\grok-bot\`
 
-Create **Grizzly Local** in the Grok Bot app. Do not redo Marketing Control UI. Do not re-post GBP. Do not log into Google/Facebook on the Agent Computer.
+**Grizzly Local exists.** Watched Test 2026-08-30 EV charger → `found` on public Maps. Do not recreate the Bot. Do not redo Marketing Control UI. Do not re-post GBP. Do not log into Google/Facebook on the Agent Computer.
 
 ## Do this
 
-1. Read `projects/grok-bot/handoff.md`, `bots/grizzly-local.md`, `skills/public-listing-verify.md`.
-2. Settings still: local computer **Never**; no Google plugins; Chicago TZ; Auto-review from `auto-review.md`.
-3. Create the Bot from `bots/grizzly-local.md`. Helm delegates; pin Helm only.
-4. One **watched Test**: public GBP listing for today's caption (8/31 Generator Interlock if that is the day). Result block only. No Post click.
-5. Enable `routines/public-listing-verify.md` (09:20 America/Chicago Mon–Sat) only after that Test is green.
+1. In Grizzly Local, open routine **Public listing verify**. Set When to run = **09:20 America/Chicago, Mon–Sat**. Then flip **Active**. Do not leave Every day 8:00 AM.
+2. Helm pastes DATE/HEADLINE/BODY before 09:20. 2026-08-31 = Generator Interlock / Inlet (`Portable Generator + Interlock = Real Backup Power`). If the paste is missing, stop — do not guess.
+3. Optional same morning: public Facebook Page check. Graph stays canonical.
 
 ## Operator truth (locked)
 
