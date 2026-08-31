@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'url';
 import assert from 'node:assert/strict';
 import { checkPostPolicy, formatViolations } from './policy-check.mjs';
 import { defaultGbpPhotoDirs, resolveGbpImagePath } from '../lib/gbp-paths.mjs';
+import { captionSnippet, findSnippetInAllPosts, gbpShouldSubmitLivePost } from '../lib/gbp-listing.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 
@@ -350,11 +351,6 @@ function resolveCtaUrl(payload, config) {
     return config?.default_cta_url || null;
 }
 
-function captionSnippet(caption) {
-    const firstLine = caption.split('\n').map((line) => line.trim()).find(Boolean) || caption;
-    return firstLine.replace(/\s+/g, ' ').slice(0, 60).trim();
-}
-
 async function saveVerificationSnapshot(page, caption, visible, attempt) {
     fs.mkdirSync(DEBUG_DIR, { recursive: true });
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -380,32 +376,10 @@ async function saveVerificationSnapshot(page, caption, visible, attempt) {
 async function checkPostVisible(page, snippet) {
     await page.goto('https://business.google.com/', { waitUntil: 'domcontentloaded' });
     await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
-
-    // Posts section may be inside an iframe on the profile page
-    const postsIframe = page.frameLocator('iframe[src*="contribute"], iframe[src*="posts"], iframe[src*="local/business"]').first();
-
-    // Check main page text first (some GBP layouts show posts inline)
-    let visible = await page.getByText(snippet, { exact: false }).first()
-        .isVisible({ timeout: 5000 }).catch(() => false);
-
-    // Fall back: check inside the posts iframe
-    if (!visible) {
-        visible = await postsIframe.getByText(snippet, { exact: false }).first()
-            .isVisible({ timeout: 8000 }).catch(() => false);
-    }
-
-    // Fall back: try clicking Posts button and re-check
-    if (!visible) {
-        const postsButton = page.locator('button:has-text("Posts")').first();
-        if (await postsButton.count()) {
-            await postsButton.click({ timeout: 5000 }).catch(() => {});
-            await page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => {});
-            visible = await page.getByText(snippet, { exact: false }).first()
-                .isVisible({ timeout: 8000 }).catch(() => false);
-        }
-    }
-
-    return visible;
+    await detectBlockingInterstitial(page);
+    await assertLoggedIn(page);
+    const found = await findSnippetInAllPosts(page, snippet);
+    return found.match === 'live';
 }
 
 async function verifyPosted(page, caption) {
@@ -603,6 +577,35 @@ async function main() {
     const page = await context.newPage();
 
     try {
+        await page.goto('https://business.google.com/', { waitUntil: 'domcontentloaded' });
+        await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+        await detectBlockingInterstitial(page);
+        await assertLoggedIn(page);
+        let listingMatch = null;
+        let listingUrl = null;
+        try {
+            const listing = await findSnippetInAllPosts(page, captionSnippet(payload.caption));
+            listingMatch = listing.match;
+            listingUrl = listing.postUrl;
+        } catch (listingErr) {
+            logStep('listing pre-check failed, proceeding to compose', { message: String(listingErr.message || listingErr) });
+            const reason = classifyFailure(listingErr.message);
+            if (reason === 'session_expired' || reason === 'captcha') throw listingErr;
+        }
+        const gate = gbpShouldSubmitLivePost({ workbookPosted: payload.posted, listingMatch });
+        if (!gate.submit) {
+            logStep(`skipping compose (${gate.reason})`, { date: payload.date, listingMatch });
+            if (gate.reason === 'already_live') {
+                emitResult({ result: 'already_live', date: payload.date, verified: true, postUrl: listingUrl || 'verified-no-url' });
+                return;
+            }
+            if (gate.reason === 'already_queued') {
+                emitResult({ result: 'already_queued', date: payload.date, verified: false, postUrl: null });
+                return;
+            }
+            throw new Error(`Post ${args.date} is already marked Posted in the workbook.`);
+        }
+
         await composeAndSubmit(page, payload, args.schedule);
         if (args.schedule) {
             // A scheduled post is not live yet — the Posts-list check would always

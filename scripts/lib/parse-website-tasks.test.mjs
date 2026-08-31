@@ -9,6 +9,9 @@ import {
   isWebsiteTaskExecutable,
   extractTaskTitle,
   parseWebsiteTasks,
+  websiteTaskTopicFingerprint,
+  isDuplicateOwnerWaitTopic,
+  shouldSkipStaleWebsitePending,
 } from './parse-website-tasks.mjs';
 
 const BLOG_QUEUE_SNIPPET = `
@@ -130,6 +133,47 @@ describe('isWebsiteTaskExecutable gate', () => {
         title: 'Fix nav links',
         details: {},
       }),
+      false,
+    );
+  });
+});
+
+describe('website task topic fingerprint / stale pending', () => {
+  it('fingerprints recurring owner-wait topics', () => {
+    assert.equal(websiteTaskTopicFingerprint('Owner Resolves GBP Claim Status'), 'gbp-claim');
+    assert.equal(websiteTaskTopicFingerprint('Fix Homepage Placeholder Stat Counters'), 'homepage-stats');
+    assert.equal(websiteTaskTopicFingerprint('Owner: Confirm 24/7 Emergency Staffing Claim is Accurate'), '24-7');
+    assert.equal(websiteTaskTopicFingerprint('Fix /contact/ 404'), 'contact-404');
+    assert.equal(websiteTaskTopicFingerprint('[BLOG POST] Generator Interlock Kit Cost'), 'weekly-blog');
+    assert.equal(websiteTaskTopicFingerprint('Unrelated nav fix'), null);
+  });
+  it('treats matching owner-wait as a duplicate', () => {
+    assert.equal(
+      isDuplicateOwnerWaitTopic(
+        { title: 'Owner Resolves GBP Claim Status (again)' },
+        [{ title: 'Owner Resolves GBP Claim Status', status: 'waiting_on_owner' }],
+      ),
+      true,
+    );
+    assert.equal(
+      isDuplicateOwnerWaitTopic(
+        { title: 'Fix /contact/ 404' },
+        [{ title: 'Owner Resolves GBP Claim Status', status: 'waiting_on_owner' }],
+      ),
+      false,
+    );
+  });
+  it('skips pending_approval from older runs, keeps latest', () => {
+    assert.equal(
+      shouldSkipStaleWebsitePending({ status: 'pending_approval', run_id: 'old' }, { latestRunId: 'new' }),
+      true,
+    );
+    assert.equal(
+      shouldSkipStaleWebsitePending({ status: 'pending_approval', run_id: 'new' }, { latestRunId: 'new' }),
+      false,
+    );
+    assert.equal(
+      shouldSkipStaleWebsitePending({ status: 'waiting_on_owner', run_id: 'old' }, { latestRunId: 'new' }),
       false,
     );
   });

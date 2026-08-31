@@ -26,6 +26,7 @@ export default [
       'scripts/facebook-poster.mjs',
       'scripts/verify-gbp-posts.mjs',
       'scripts/gbp-poster/driver.mjs',
+      'scripts/lib/gbp-listing.mjs',
     ],
     languageOptions: {
       globals: { ...globals.node, ...globals.browser },

@@ -4,6 +4,9 @@
 import xlsx from 'xlsx';
 import fs from 'node:fs';
 import path from 'node:path';
+import { gbpListingUnverifiedMessage, isGbpSessionExpiredText } from './gbp-listing.mjs';
+
+export { gbpListingUnverifiedMessage, isGbpSessionExpiredText };
 
 // Excel cells store dates as Date objects, serial numbers, or strings depending
 // on how the workbook was written. Normalise all three to an ISO yyyy-mm-dd.
@@ -53,7 +56,16 @@ export function gbpCrashUnverifiedMessage(exitCode) {
 // because context.close() aborted after a successful submit/verify emit.
 export function gbpDailyStatusForExit(exitCode, parsed = {}) {
   const result = String(parsed.result || '').toLowerCase();
-  if (parsed.verified === true || (exitCode === 0 && result !== 'failed' && result !== 'needs_approval' && result !== 'policy_violation')) {
+  // Listing already has a live match — treat as posted even if we did not compose.
+  if (result === 'already_live' || parsed.verified === true) {
+    return { status: 'posted', error: null, archive: true, platform_post_id: parsed.postUrl || null };
+  }
+  // Google listing already has today's post queued. Do not compose a second one.
+  // Stamp posted + posted_at without an id so the verify sweep confirms after Google publishes.
+  if (result === 'already_queued' || result === 'google_scheduled') {
+    return { status: 'posted', error: null, archive: false, platform_post_id: parsed.postUrl || null };
+  }
+  if (exitCode === 0 && result !== 'failed' && result !== 'needs_approval' && result !== 'policy_violation' && result !== 'scheduled_native') {
     return { status: 'posted', error: null, archive: true, platform_post_id: parsed.postUrl || null };
   }
   if (result === 'posted' || result === 'schedule_unconfirmed') {
@@ -94,21 +106,37 @@ export function gbpScheduleStatusForExit(exitCode, parsed = {}) {
   return { status: 'scheduled', error: null };
 }
 
+export function gbpVerifyLooksCrashed({ parsed = {}, exitCode, ok, stdout } = {}) {
+  if (parsed.result === 'fatal') return true;
+  if (isAbnormalExit(exitCode)) return true;
+  const blob = `${stdout || ''} ${parsed.error || ''} ${JSON.stringify(parsed.errors || [])}`;
+  if (isGbpSessionExpiredText(blob)) return true;
+  if (!ok && parsed.result !== 'complete' && parsed.result !== 'no_posts') return true;
+  return false;
+}
+
 // Worker verify-queue outcome. A Chromium abort after a live match must not
 // flip the row to error (last week's false "GBP failed" alerts).
-export function gbpVerifyDisposition({ ok, exitCode, stdout, currentStatus, platformPostId } = {}) {
+// Last-miss with no id is needs_verification ("check listing, do not re-post"),
+// never error just because posted_at was stamped. Session-expired / marketing = crash.
+export function gbpVerifyDisposition({ ok, exitCode, stdout, currentStatus, platformPostId, lastAttempt } = {}) {
   const parsed = parseDriverJson(stdout);
   const alreadyLive = Boolean(platformPostId) || parsed.verified > 0
     || (Array.isArray(parsed.details) && parsed.details.some((d) => d?.verified));
   if (alreadyLive) {
     return { action: 'confirmed', parsed };
   }
-  const crashed = parsed.result === 'fatal'
-    || isAbnormalExit(exitCode)
-    || (!ok && parsed.result !== 'complete' && parsed.result !== 'no_posts');
-  if (crashed) {
-    const status = currentStatus === 'posted' ? 'posted' : 'needs_verification';
+  if (gbpVerifyLooksCrashed({ parsed, exitCode, ok, stdout })) {
+    const status = platformPostId ? (currentStatus === 'posted' ? 'posted' : 'needs_verification') : 'needs_verification';
     return { action: 'crash', status, parsed, error: gbpCrashUnverifiedMessage(exitCode) };
+  }
+  if (lastAttempt) {
+    return {
+      action: 'unverified',
+      status: 'needs_verification',
+      parsed,
+      error: gbpListingUnverifiedMessage(parsed),
+    };
   }
   return { action: 'miss', parsed };
 }
@@ -279,7 +307,10 @@ export async function runGbpForApprovedRun({ runId, gbpPosts, deps }) {
 }
 
 // Daily poster: post today's scheduled GBP rows. Caller gates this to once/day >=9am
-// Central using centralDateHour(). deps inline: { supabase, runPhase, log, env, todayDate, gbpPosterPath, projectRoot }
+// Central using centralDateHour(). GBP is not a trustworthy native queue — Playwright
+// always runs for both `scheduled` and `scheduled_native`. The driver refuses to
+// compose when the workbook Posted gate is set or the All-posts listing already
+// shows today's caption as live/queued.
 export async function runDailyGbp({ supabase, runPhase, log, env, todayDate, gbpPosterPath, projectRoot }) {
   const { data: todayGbp } = await supabase
     .from('weekly_posts')
@@ -290,15 +321,9 @@ export async function runDailyGbp({ supabase, runPhase, log, env, todayDate, gbp
     .order('post_date', { ascending: true });
 
   for (const post of todayGbp || []) {
-    if (post.status === 'scheduled_native') {
-      // Native-scheduled post: no driver run — just flip to posted so the verify sweep picks it up.
-      await supabase.from('weekly_posts').update({ status: 'posted', posted_at: new Date().toISOString(), platform_post_id: null, error: null }).eq('id', post.id);
-      await log(post.run_id, 'gbp', 'info', `Native-scheduled GBP for ${post.post_date} — flipped to posted, verification sweep will confirm`);
-    } else {
-      await log(post.run_id, 'gbp', 'info', `Posting scheduled GBP for ${post.post_date}`);
-      const result = await runPhase(post.run_id, 'gbp', 'node', [gbpPosterPath, '--date', post.post_date], projectRoot);
-      const status = await applyDriverResult({ supabase, post, result, env, log });
-      await log(post.run_id, 'gbp', status === 'error' ? 'error' : 'info', `Daily GBP ${post.post_date} → ${status} (exit ${result.exitCode})`);
-    }
+    await log(post.run_id, 'gbp', 'info', `Posting GBP for ${post.post_date} (was ${post.status})`);
+    const result = await runPhase(post.run_id, 'gbp', 'node', [gbpPosterPath, '--date', post.post_date], projectRoot);
+    const status = await applyDriverResult({ supabase, post, result, env, log });
+    await log(post.run_id, 'gbp', status === 'error' ? 'error' : 'info', `Daily GBP ${post.post_date} → ${status} (exit ${result.exitCode})`);
   }
 }

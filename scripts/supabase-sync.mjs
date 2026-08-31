@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { createClient } from '@supabase/supabase-js';
 import { normalizePhotoFile } from './lib/schedule-text.mjs';
 import { sendHermesAlert } from './lib/hermes-alert.mjs';
-import { parseWebsiteTasks, stripCodeFence } from './lib/parse-website-tasks.mjs';
+import { parseWebsiteTasks, stripCodeFence, isDuplicateOwnerWaitTopic } from './lib/parse-website-tasks.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '..');
@@ -322,9 +322,18 @@ async function main() {
   const reportText = readFile('final_report.md');
   const tasks = parseWebsiteTasks(queueText, reportText);
   if (tasks.length) {
-    const { error } = await supabase.from('website_tasks').insert(tasks.map(t => ({ ...t, run_id: runId })));
-    if (error) console.error('Website tasks insert error:', error.message);
-    else console.log(`Synced ${tasks.length} website tasks`);
+    const { data: existingTasks } = await supabase
+      .from('website_tasks')
+      .select('id,title,status,run_id')
+      .in('status', ['waiting_on_owner', 'pending_approval', 'approved']);
+    const fresh = tasks.filter((t) => !isDuplicateOwnerWaitTopic(t, existingTasks || []));
+    const skipped = tasks.length - fresh.length;
+    if (skipped) console.log(`Skipped ${skipped} website task(s) already open (topic fingerprint)`);
+    if (fresh.length) {
+      const { error } = await supabase.from('website_tasks').insert(fresh.map(t => ({ ...t, run_id: runId })));
+      if (error) console.error('Website tasks insert error:', error.message);
+      else console.log(`Synced ${fresh.length} website tasks`);
+    }
   }
 
   // SEO_AUTO_APPROVE=1: skip the MCC gate for posts. Mirrors POST /seo/actions/approve
