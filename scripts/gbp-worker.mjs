@@ -43,7 +43,8 @@ const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY || '';
 // Import-safe: focused tests need the pure queue-policy helper without starting
 // a worker or requiring database credentials.
 const invokedDirectly = process.argv[1]
-  && fileURLToPath(import.meta.url) === path.resolve(process.argv[1]);
+  && fs.realpathSync.native(fileURLToPath(import.meta.url))
+    === fs.realpathSync.native(path.resolve(process.argv[1]));
 const POLL_INTERVAL_MS = parseInt(process.env.GBP_WORKER_POLL_MS || process.env.MAV_BRIDGE_POLL_MS || '30000');
 const SEO_AGENTS_EXE = process.env.SEO_AGENTS_EXE
   || [

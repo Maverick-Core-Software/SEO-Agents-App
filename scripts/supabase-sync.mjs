@@ -34,7 +34,8 @@ if (fs.existsSync(envPath)) {
 // (node scripts/supabase-sync.mjs). createClient throws on empty URL, hence the
 // conditional.
 const invokedDirectly = process.argv[1]
-  && fileURLToPath(import.meta.url) === path.resolve(process.argv[1]);
+  && fs.realpathSync.native(fileURLToPath(import.meta.url))
+    === fs.realpathSync.native(path.resolve(process.argv[1]));
 
 const supabase = invokedDirectly
   ? createClient(process.env.SUPABASE_URL || '', process.env.SUPABASE_SERVICE_KEY || '')
