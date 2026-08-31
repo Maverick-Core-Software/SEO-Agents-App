@@ -1,10 +1,10 @@
 # SEO Agents App — Handoff State
 
-**Last updated:** 2026-08-30
+**Last updated:** 2026-08-30 (evening close)
 **Branch:** `barnscarter-ops/cockle`
-**Next session:** `docs/NEXT-SESSION.md` — weekly harden (stale statuses, website-task drain, GBP verify truth). Inbox: `C:\Workspace\Active\brain\inbox\2026-08-30-marketing-control-weekly-harden.md`.
+**Next session:** `docs/NEXT-SESSION.md` — GBP 9am always posts. Inbox: `C:\Workspace\Active\brain\inbox\2026-08-30-gbp-9am-always-post.md`.
 
-Marketing Control Phase 1 is **shipped and verified** (run-anchored Today, pending split, owner-wait, DONE labels, Tailscale `:5188`). Do not redo UI. Carter’s next job is engine reliability, not dashboard chrome.
+Marketing Control Phase 1 is shipped. This session probed live tables and **did not edit the worker**. Carter locked operator truth: Facebook `scheduled`+id is Graph-real; GBP is **not** natively scheduled — Playwright at 9am is the publisher; live GBP = posted **and** an id. `runDailyGbp` currently skips Playwright for `scheduled_native` and stamps `posted_at`. That is the 6 false `error` rows. Remaining `scheduled_native` days: 8/31, 9/01, 9/02, 9/03. Do not redo UI. Do not re-post 8/29.
 
 Older Facebook-media notes below are historical (2026-08-17).
 
