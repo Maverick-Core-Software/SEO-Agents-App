@@ -1,5 +1,16 @@
 # SEO Agents App — Journal
 
+## 2026-08-30 evening — probed weekly harden; GBP 9am is Playwright (not native schedule)
+
+**Agent:** Grok 4.6 (cockle worktree)
+**Outcome:** No worker edits. Live probe + Carter correction. Next session implements 9am-always-post.
+
+- Facebook `scheduled`+Graph id is real. GBP `scheduled`/`scheduled_native` is not a Google queue.
+- `runDailyGbp` skips Playwright when status is `scheduled_native`, stamps `posted_at` with no id, verify fails → `error`. Matches Aug 15–20 and 8/29 Recessed Lighting.
+- 8/29 verify screenshots sat on scheduled cards; did not scroll. Do not re-post.
+- Website 53 pending is prior-week backlog; this week’s executable is `/contact/` 404.
+- Pickup: `docs/NEXT-SESSION.md` + `brain/inbox/2026-08-30-gbp-9am-always-post.md`.
+
 ## 2026-08-30 — Marketing Control operator-truth + Tailscale; next = weekly harden
 
 **Agent:** Grok 4.6 (cockle worktree) + Pi DeepSeek Flash workers S1–S7
