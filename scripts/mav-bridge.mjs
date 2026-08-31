@@ -27,7 +27,6 @@ import { mediaStatusFor, bucketStatus, isStuck, describeAction, agentFor } from 
 import { makeAlertStore } from './lib/alert-store.mjs';
 import { sendHermesAlert } from './lib/hermes-alert.mjs';
 import { getSlackConfig, approvalBlocks, sendSlackBlocks } from './lib/slack-alert.mjs';
-import { handleSlackInteraction } from './lib/slack-interactions.mjs';
 import { approveAction, dismissAction } from './lib/slack-actions.mjs';
 import { makeRunPhase } from './lib/run-phase.mjs';
 import { runGbpForApprovedRun, runDailyGbp, centralDateHour } from './lib/gbp-runner.mjs';
@@ -74,7 +73,6 @@ const SMTP_FROM = process.env.SMTP_FROM || '';
 const SMTP_TO = process.env.SMTP_TO || '';
 const SMTP_APP_PASSWORD = process.env.SMTP_APP_PASSWORD || '';
 const ALERTED_PATH = path.join(PROJECT_ROOT, 'state', 'alerted.json');
-const SLACK_SIGNING_SECRET = process.env.SLACK_SIGNING_SECRET || '';
 const GRAPH_API_VERSION = process.env.FB_GRAPH_API_VERSION || 'v22.0';
 const FB_PAGE_ACCESS_TOKEN = process.env.FB_PAGE_ACCESS_TOKEN || process.env.FB_ACCESS_TOKEN || '';
 // Auto-execute approved website tasks by priority (enabled by default; set to '0' to disable)
@@ -862,14 +860,6 @@ async function readBody(req) {
   return body ? JSON.parse(body) : {};
 }
 
-// Slack signs the exact request bytes; do not parse or reserialize before the
-// signature check in handleSlackInteraction.
-async function readRawBody(req) {
-  const chunks = [];
-  for await (const chunk of req) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-  return Buffer.concat(chunks).toString('utf8');
-}
-
 async function handleHttpRequest(req, res) {
   const url = new URL(req.url, `http://127.0.0.1:${BRIDGE_PORT}`);
   const { method } = req;
@@ -877,26 +867,6 @@ async function handleHttpRequest(req, res) {
   // ── GET /health ─────────────────────────────
   if (method === 'GET' && url.pathname === '/health') {
     sendJsonHttp(res, 200, { state: 'online', service: 'mav-bridge', uptime: process.uptime() });
-    return;
-  }
-
-  // Kept on loopback. Slack must be wired to an existing public HTTPS reverse
-  // proxy later; without a signing secret this endpoint rejects every request.
-  if (method === 'POST' && url.pathname === '/slack/interactions') {
-    try {
-      const outcome = await handleSlackInteraction({
-        rawBody: await readRawBody(req),
-        contentType: req.headers['content-type'] || '',
-        headers: req.headers,
-        supabase,
-        alertStore,
-        config: { signingSecret: SLACK_SIGNING_SECRET },
-      });
-      sendJsonHttp(res, outcome.status, outcome.body);
-    } catch (e) {
-      console.error(`[mav-bridge][slack-interactions] ${e.message}`);
-      sendJsonHttp(res, 500, { text: 'Internal error — see bridge logs.' });
-    }
     return;
   }
 

@@ -4,10 +4,9 @@
 // Primary SEO compatibility path: HERMES_ALERT_TO=slack (see .env.example).
 //
 // ONE-WAY COMPATIBILITY PATH: HERMES_ALERT_TO=slack still routes through this CLI
-// to Slack's home channel and is unchanged. The optional DIRECT Slack path (Block
-// Kit cards with Approve/Dismiss/Retry buttons) lives in slack-alert.mjs + the
-// /slack/interactions endpoint in mav-bridge.mjs and is activated by SLACK_BOT_TOKEN
-// + SLACK_ALERT_CHANNEL + SLACK_SIGNING_SECRET (see docs/runbooks/slack-alerts.md).
+// to Slack's home channel and is unchanged. Block Kit approvals use the existing
+// Hermes Slack credentials for delivery and Hermes Socket Mode for clicks; see
+// docs/runbooks/slack-alerts.md.
 // Replaces the grizzly-hcp iMessage path, dead since spectrum-ts went away.
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';

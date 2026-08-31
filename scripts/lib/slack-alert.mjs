@@ -1,14 +1,41 @@
 // scripts/lib/slack-alert.mjs
-// Fail-closed direct Slack delivery (Block Kit) via chat.postMessage. Optional
-// ADDITIVE channel on top of the hermes path: only active when SLACK_BOT_TOKEN
-// and SLACK_ALERT_CHANNEL are configured. Absent config = silent no-op, so all
-// existing alerting behavior (hermes SMS + SMTP) is preserved untouched.
+// Fail-closed Slack delivery (Block Kit) via chat.postMessage. The preferred
+// configuration stays inside the local Hermes runtime; the bridge reads only
+// the existing bot token and home channel when its own env does not define
+// them. No credential is copied into this repository or sent anywhere except
+// Slack's API. Absent config = silent no-op, so Hermes CLI + SMTP remain safe
+// fallback paths.
+
+import fs from 'node:fs';
+import path from 'node:path';
 
 const SLACK_API = 'https://slack.com/api/chat.postMessage';
 
-export function getSlackConfig(env = process.env) {
-  const token = env.SLACK_BOT_TOKEN || '';
-  const channel = env.SLACK_ALERT_CHANNEL || '';
+const HERMES_ENV_PATH = path.join(
+  process.env.LOCALAPPDATA || 'C:\\Users\\carte\\AppData\\Local',
+  'hermes',
+  '.env',
+);
+
+function readEnvFile(filePath) {
+  try {
+    const values = {};
+    for (const line of fs.readFileSync(filePath, 'utf8').split(/\r?\n/)) {
+      const match = line.match(/^([A-Z_][A-Z0-9_]*)=(.*)$/);
+      if (match) values[match[1]] = match[2].trim();
+    }
+    return values;
+  } catch {
+    return {};
+  }
+}
+
+export function getSlackConfig(env = process.env, hermesEnv = null) {
+  // Passing an env object is deliberately hermetic for tests/callers. Runtime
+  // bridge calls use the default process.env and may read Hermes' local config.
+  const fallback = hermesEnv ?? (env === process.env ? readEnvFile(HERMES_ENV_PATH) : {});
+  const token = env.SLACK_BOT_TOKEN || fallback.SLACK_BOT_TOKEN || '';
+  const channel = env.SLACK_ALERT_CHANNEL || fallback.SLACK_ALERT_CHANNEL || fallback.SLACK_HOME_CHANNEL || '';
   return { enabled: Boolean(token && channel), token, channel };
 }
 
@@ -19,8 +46,8 @@ const BUTTON_LABELS = {
 };
 
 // Block Kit card: one section + one action row. Button action_ids are
-// namespaced `seo_<verb>:<actionId>`; the interaction endpoint allowlists the
-// verb and validates the id (see slack-interactions.mjs).
+// namespaced `seo_<verb>:<actionId>`; the Hermes Socket Mode plugin allowlists
+// the verb and validates the id before it calls the loopback bridge.
 export function approvalBlocks({ title, detail, actionId, buttons = [] }) {
   const blocks = [{
     type: 'section',

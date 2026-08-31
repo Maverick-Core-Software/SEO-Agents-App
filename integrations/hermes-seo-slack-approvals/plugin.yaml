@@ -1,0 +1,5 @@
+name: seo-slack-approvals
+version: 1.0.0
+description: Hermes Socket Mode approvals for the local SEO operations bridge.
+author: Carter Barns
+kind: standalone

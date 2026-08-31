@@ -11,6 +11,18 @@ assert.equal(full.enabled, true);
 assert.equal(full.token, 'xoxb-1');
 assert.equal(full.channel, '#seo-ops');
 
+// Hermes-owned credentials are a fallback only; explicit SEO env still wins.
+const hermes = getSlackConfig({}, { SLACK_BOT_TOKEN: 'xoxb-hermes', SLACK_HOME_CHANNEL: 'C123' });
+assert.equal(hermes.enabled, true);
+assert.equal(hermes.token, 'xoxb-hermes');
+assert.equal(hermes.channel, 'C123');
+const explicit = getSlackConfig(
+  { SLACK_BOT_TOKEN: 'xoxb-local', SLACK_ALERT_CHANNEL: 'C-local' },
+  { SLACK_BOT_TOKEN: 'xoxb-hermes', SLACK_HOME_CHANNEL: 'C-hermes' },
+);
+assert.equal(explicit.token, 'xoxb-local');
+assert.equal(explicit.channel, 'C-local');
+
 // approvalBlocks: section + allowlisted action_ids; no buttons => section only
 {
   const blocks = approvalBlocks({ title: 'Failed: X', detail: 'boom', actionId: 'abc-123', buttons: ['approve', 'retry'] });
