@@ -110,6 +110,14 @@ Status flow:
     verify last-miss (no id) → needs_verification ("check listing, do not re-post")
     session-expired / marketing page → crash, not a miss
 
+**Verify queue is one-shot per post.** The worker seeds the queue only from rows
+that are `posted` with no `platform_post_id` (last 24h). A post that survives the
+4-attempt cycle lands in `needs_verification` and is **never re-seeded** —
+re-seeding would re-run the verifier against the listing forever. Re-checks of
+`needs_verification` rows are on-demand only: run `verify-gbp-posts.mjs` (no
+`--date` = last 14 days) or check the listing by hand. `needs_verification` is
+never an error and never auto-reposts.
+
 Rules to know:
 
 - **`scheduled_native`** means "queued for the 9am Playwright tick", not "Google will publish."

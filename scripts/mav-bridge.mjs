@@ -26,6 +26,9 @@ import { checkFacebookToken, postFirstComment, ensureFirstComments, drainPending
 import { mediaStatusFor, bucketStatus, isStuck, describeAction, agentFor } from './lib/action-enrich.mjs';
 import { makeAlertStore } from './lib/alert-store.mjs';
 import { sendHermesAlert } from './lib/hermes-alert.mjs';
+import { getSlackConfig, approvalBlocks, sendSlackBlocks } from './lib/slack-alert.mjs';
+import { handleSlackInteraction } from './lib/slack-interactions.mjs';
+import { approveAction, dismissAction } from './lib/slack-actions.mjs';
 import { makeRunPhase } from './lib/run-phase.mjs';
 import { runGbpForApprovedRun, runDailyGbp, centralDateHour } from './lib/gbp-runner.mjs';
 import { fetchApprovedWebsiteTasks, executeNextWebsiteTask, sweepOrphanWebsiteTasks } from './lib/website-task-runner.mjs';
@@ -71,6 +74,7 @@ const SMTP_FROM = process.env.SMTP_FROM || '';
 const SMTP_TO = process.env.SMTP_TO || '';
 const SMTP_APP_PASSWORD = process.env.SMTP_APP_PASSWORD || '';
 const ALERTED_PATH = path.join(PROJECT_ROOT, 'state', 'alerted.json');
+const SLACK_SIGNING_SECRET = process.env.SLACK_SIGNING_SECRET || '';
 const GRAPH_API_VERSION = process.env.FB_GRAPH_API_VERSION || 'v22.0';
 const FB_PAGE_ACCESS_TOKEN = process.env.FB_PAGE_ACCESS_TOKEN || process.env.FB_ACCESS_TOKEN || '';
 // Auto-execute approved website tasks by priority (enabled by default; set to '0' to disable)
@@ -150,12 +154,20 @@ async function sendBridgeAlert(subject, body) {
 async function notifyAlert({ runId, actionId, faultType, title, detail }) {
   if (!alertStore.shouldFire(runId, actionId, faultType)) return;
   const msg = `⚠️ Grizzly SEO: ${title}\n${detail || ''}`.trim();
-  // Slack via the Maverick-Homelab hermes CLI (was iMessage — dead since spectrum-ts
-  // shut down, which hid the 7/17 no-post incident). Failure must not break the poll loop.
-  try {
-    await sendHermesAlert(msg);
-  } catch (e) {
-    console.error(`[mav-bridge] Hermes alert failed: ${e.message}`);
+  const slack = getSlackConfig();
+  const deliveredToSlack = slack.enabled && await sendSlackBlocks({
+    blocks: approvalBlocks({ title: msg, detail: '', actionId, buttons: ['retry', 'dismiss'] }),
+    text: msg,
+    config: slack,
+  });
+  // Hermes is a compatibility fallback only. Do not duplicate successful Slack
+  // alerts through Twilio/SMS; email below remains independently best-effort.
+  if (!deliveredToSlack) {
+    try {
+      await sendHermesAlert(msg);
+    } catch (e) {
+      console.error(`[mav-bridge] Hermes alert failed: ${e.message}`);
+    }
   }
   await sendBridgeAlert(`Grizzly SEO: ${title}`, detail || title);
 }
@@ -512,6 +524,50 @@ async function poll() {
       }
     }
 
+    // ── Slack approval cards ─────────────────────
+    // Social posts can be auto-approved, but website tasks intentionally retain
+    // a human gate. Cards are deduped by the existing alert store so a poll loop
+    // cannot flood the channel.
+    const slackCfg = getSlackConfig();
+    if (slackCfg.enabled) {
+      try {
+        const { data: pendingRuns } = await supabase
+          .from('seo_runs').select('id,week_of,created_at')
+          .eq('status', 'pending_approval').order('created_at');
+        for (const run of (pendingRuns || [])) {
+          if (!alertStore.shouldFire(run.id, run.id, 'pending')) continue;
+          await sendSlackBlocks({
+            blocks: approvalBlocks({
+              title: `Grizzly SEO run ${run.id.slice(0, 8)} pending approval`,
+              detail: run.week_of ? `Week ${run.week_of}. Approve to release the social schedule.` : 'Approve to release the social schedule.',
+              actionId: run.id,
+              buttons: ['approve'],
+            }),
+            text: 'Grizzly SEO run pending approval', config: slackCfg,
+          });
+        }
+        const { data: pendingTasks } = await supabase
+          .from('website_tasks').select('id,run_id,title,priority,created_at')
+          .eq('status', 'pending_approval').order('created_at');
+        for (const task of (pendingTasks || [])) {
+          if (!alertStore.shouldFire(task.run_id || task.id, task.id, 'pending')) continue;
+          const priority = task.priority ? `Priority: ${task.priority}. ` : '';
+          await sendSlackBlocks({
+            blocks: approvalBlocks({
+              title: `Website task pending approval: ${task.title || task.id.slice(0, 8)}`,
+              detail: `${priority}Approve to queue this task for the guarded website executor.`,
+              actionId: task.id,
+              buttons: ['approve', 'dismiss'],
+            }),
+            text: `Website task pending approval: ${task.title || task.id.slice(0, 8)}`,
+            config: slackCfg,
+          });
+        }
+      } catch (e) {
+        console.error(`[mav-bridge][slack-pending] ${e.message}`);
+      }
+    }
+
     // ── Orphaned approved website tasks ──────────
     // executeApprovedRun only fires for runs in 'approved', so a website task
     // approved in MCC after its run settled ('done'/'error') sits in 'approved'
@@ -806,6 +862,14 @@ async function readBody(req) {
   return body ? JSON.parse(body) : {};
 }
 
+// Slack signs the exact request bytes; do not parse or reserialize before the
+// signature check in handleSlackInteraction.
+async function readRawBody(req) {
+  const chunks = [];
+  for await (const chunk of req) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  return Buffer.concat(chunks).toString('utf8');
+}
+
 async function handleHttpRequest(req, res) {
   const url = new URL(req.url, `http://127.0.0.1:${BRIDGE_PORT}`);
   const { method } = req;
@@ -813,6 +877,26 @@ async function handleHttpRequest(req, res) {
   // ── GET /health ─────────────────────────────
   if (method === 'GET' && url.pathname === '/health') {
     sendJsonHttp(res, 200, { state: 'online', service: 'mav-bridge', uptime: process.uptime() });
+    return;
+  }
+
+  // Kept on loopback. Slack must be wired to an existing public HTTPS reverse
+  // proxy later; without a signing secret this endpoint rejects every request.
+  if (method === 'POST' && url.pathname === '/slack/interactions') {
+    try {
+      const outcome = await handleSlackInteraction({
+        rawBody: await readRawBody(req),
+        contentType: req.headers['content-type'] || '',
+        headers: req.headers,
+        supabase,
+        alertStore,
+        config: { signingSecret: SLACK_SIGNING_SECRET },
+      });
+      sendJsonHttp(res, outcome.status, outcome.body);
+    } catch (e) {
+      console.error(`[mav-bridge][slack-interactions] ${e.message}`);
+      sendJsonHttp(res, 500, { text: 'Internal error — see bridge logs.' });
+    }
     return;
   }
 
@@ -995,75 +1079,31 @@ async function handleHttpRequest(req, res) {
 
   // ── POST /seo/actions/approve ────────────────
   if (method === 'POST' && url.pathname === '/seo/actions/approve') {
-    const { actionId, note } = await readBody(req);
+    const { actionId } = await readBody(req);
     if (!actionId) { sendJsonHttp(res, 400, { error: 'actionId required' }); return; }
-
-    // Try seo_run first
-    const { data: run, error: runErr } = await supabase.from('seo_runs')
-      .update({ status: 'approved', approved_at: new Date().toISOString() })
-      .eq('id', actionId).eq('status', 'pending_approval')
-      .select().maybeSingle();
-    if (runErr) { sendJsonHttp(res, 500, { error: runErr.message }); return; }
-
-    if (run) {
-      // Auto-approve all pending weekly_posts for this run so executeApprovedRun finds them
-      await supabase.from('weekly_posts')
-        .update({ status: 'approved' })
-        .eq('run_id', run.id)
-        .eq('status', 'pending_approval');
-      sendJsonHttp(res, 200, { ok: true, type: 'seo_run', id: run.id });
-      return;
+    try {
+      const outcome = await approveAction({ supabase, alertStore, actionId });
+      if (outcome.notFound) { sendJsonHttp(res, 404, { error: 'Action not found or already approved' }); return; }
+      sendJsonHttp(res, 200, { ok: true, type: outcome.type, id: outcome.id });
+    } catch (e) {
+      sendJsonHttp(res, 500, { error: e.message });
     }
-
-    // Try website_task
-    const { data: task, error: taskErr } = await supabase.from('website_tasks')
-      .update({ status: 'approved', approved_at: new Date().toISOString() })
-      .eq('id', actionId)
-      .select().maybeSingle();
-    if (taskErr) { sendJsonHttp(res, 500, { error: taskErr.message }); return; }
-
-    if (task) { sendJsonHttp(res, 200, { ok: true, type: 'website_task', id: task.id }); return; }
-
-    sendJsonHttp(res, 404, { error: 'Action not found or already approved' });
     return;
   }
 
   // ── POST /seo/actions/dismiss ────────────────
-    if (method === 'POST' && url.pathname === '/seo/actions/dismiss') {
-      const { actionId } = await readBody(req);
-      if (!actionId) { sendJsonHttp(res, 400, { error: 'actionId required' }); return; }
-
-      const dismissible = ['pending_approval', 'error', 'needs_verification'];
-
-      const { data: task, error: taskErr } = await supabase.from('website_tasks')
-        .update({ status: 'skipped', error: null })
-        .eq('id', actionId)
-        .in('status', dismissible)
-        .select().maybeSingle();
-      if (taskErr) { sendJsonHttp(res, 500, { error: taskErr.message }); return; }
-      if (task) {
-        alertStore.clearFault(task.run_id || task.id, task.id, 'failed');
-        alertStore.clearFault(task.run_id || task.id, task.id, 'stuck');
-        sendJsonHttp(res, 200, { ok: true, type: 'website_task', id: task.id, message: 'Task skipped.' });
-        return;
-      }
-
-      const { data: post, error: postErr } = await supabase.from('weekly_posts')
-        .update({ status: 'skipped', error: null })
-        .eq('id', actionId)
-        .in('status', dismissible)
-        .select().maybeSingle();
-      if (postErr) { sendJsonHttp(res, 500, { error: postErr.message }); return; }
-      if (post) {
-        alertStore.clearFault(post.run_id || post.id, post.id, 'failed');
-        alertStore.clearFault(post.run_id || post.id, post.id, 'stuck');
-        sendJsonHttp(res, 200, { ok: true, type: 'weekly_post', id: post.id, message: 'Post skipped.' });
-        return;
-      }
-
-      sendJsonHttp(res, 404, { error: 'Action not found or cannot be dismissed' });
-      return;
+  if (method === 'POST' && url.pathname === '/seo/actions/dismiss') {
+    const { actionId } = await readBody(req);
+    if (!actionId) { sendJsonHttp(res, 400, { error: 'actionId required' }); return; }
+    try {
+      const outcome = await dismissAction({ supabase, alertStore, actionId });
+      if (outcome.notFound) { sendJsonHttp(res, 404, { error: 'Action not found or cannot be dismissed' }); return; }
+      sendJsonHttp(res, 200, { ok: true, type: outcome.type, id: outcome.id, message: outcome.message });
+    } catch (e) {
+      sendJsonHttp(res, 500, { error: e.message });
     }
+    return;
+  }
 
     // ── POST /seo/actions/retry ──────────────────
     // Re-queue a failed/stuck action so the bridge poll picks it up again.

@@ -8,7 +8,7 @@ import {
   fetchLatestRunHealth,
   fetchWorkerStatus,
 } from './api.js';
-import { isPendingApproval, isWaitingOnOwner, isRecoveryItem, isOnGraph } from './status.js';
+import { isPendingApproval, isWaitingOnOwner, isAttentionItem, recoveryClass, RECOVERY_CLASS, isOnGraph } from './status.js';
 import { chicagoToday, sundayOfWeek, saturdayOfWeek, addDays } from './week.js';
 
 const EMPTY_HEALTH = { run: null, posts: [], live: 'idle', bucket: 'incomplete' };
@@ -99,16 +99,15 @@ export function useMarketingData() {
   const pendingPosts = posts.filter((p) => isPendingApproval(p.status));
   const pendingTasks = tasks.filter((t) => isPendingApproval(t.status));
   const waitingOnOwner = tasks.filter((t) => isWaitingOnOwner(t.status));
-  const runRecovery = [
-    ...posts,
-    ...tasks.filter((t) => t.run_id && health.run && t.run_id === health.run.id),
-  ].filter(isRecoveryItem);
-  const priorRecovery = [
-    ...lookbackPosts.filter(
-      (p) => isRecoveryItem(p) && (!health.run || p.run_id !== health.run.id),
-    ),
-    ...tasks.filter((t) => isRecoveryItem(t) && (!health.run || t.run_id !== health.run.id)),
-  ];
+  const currentRunId = health.run?.id || null;
+  // Primary attention = current-run execution / verification / owner items only.
+  // Historical/skipped backlog (other runs, skips) never enters the primary view.
+  const runRecovery = [...posts, ...tasks].filter((item) =>
+    isAttentionItem(item, { today, currentRunId }),
+  );
+  const priorRecovery = [...lookbackPosts, ...tasks].filter(
+    (item) => recoveryClass(item, { today, currentRunId }) === RECOVERY_CLASS.historical,
+  );
 
   return {
     configured,

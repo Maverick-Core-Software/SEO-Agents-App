@@ -29,10 +29,16 @@ if (fs.existsSync(envPath)) {
   }
 }
 
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_KEY
-);
+// Import-safe: tests import this module for autoApproveRun, so the Supabase
+// client and the CLI entrypoint only exist when invoked directly
+// (node scripts/supabase-sync.mjs). createClient throws on empty URL, hence the
+// conditional.
+const invokedDirectly = process.argv[1]
+  && fileURLToPath(import.meta.url) === path.resolve(process.argv[1]);
+
+const supabase = invokedDirectly
+  ? createClient(process.env.SUPABASE_URL || '', process.env.SUPABASE_SERVICE_KEY || '')
+  : null;
 
 const OUTPUTS = path.join(PROJECT_ROOT, 'outputs');
 
@@ -223,21 +229,74 @@ async function notifyApprovalGate({ runId, weekOf, fbCount, gbpCount, taskCount 
 
 /**
  * Same transition as mav-bridge POST /seo/actions/approve, minus the HTTP hop.
- * Returns true only if the seo_run actually moved pending_approval -> approved.
+ *
+ * Safe against partial run/post transitions: the run's pending posts are
+ * approved FIRST, then the seo_run row (CAS on pending_approval). Nothing
+ * publishes from the posts step alone — mav-bridge only executes runs whose
+ * seo_runs row is 'approved' and gbp-worker claims posts only after that gate —
+ * and if the run CAS fails the posts are rolled back to pending_approval, so
+ * neither side is ever left approved alone. Approving with zero pending posts
+ * is an invalid execution condition (mav-bridge would execute an empty run and
+ * mark it done with nothing published): refuse, leave the run at the MCC gate,
+ * and report. Returns { ok, reason, count }.
  */
-async function autoApproveRun(runId) {
+export async function autoApproveRun(runId, client = supabase) {
   const now = new Date().toISOString();
-  const { data: run, error: runErr } = await supabase.from('seo_runs')
+
+  // 1. Approve this run's pending posts first. Nothing publishes yet: mav-bridge
+  //    only executes seo_runs that are 'approved', and gbp-worker claims posts
+  //    only after the run gate is passed.
+  const { data: posts, error: postsErr } = await client.from('weekly_posts')
+    .update({ status: 'approved', approved_at: now })
+    .eq('run_id', runId).eq('status', 'pending_approval')
+    .select('id');
+  if (postsErr) {
+    console.error(`Auto-approve weekly_posts error: ${postsErr.message}`);
+    return { ok: false, reason: 'posts_error' };
+  }
+  if (!posts?.length) {
+    console.error(`Auto-approve refused for run ${runId}: zero pending_approval posts — invalid zero-post execution, leaving at the MCC gate`);
+    return { ok: false, reason: 'zero_posts' };
+  }
+
+  // 2. Now the run itself (CAS on pending_approval). If the CAS loses or errors,
+  //    roll the posts back so the run cannot execute against an approved post
+  //    set it does not own.
+  const { data: run, error: runErr } = await client.from('seo_runs')
     .update({ status: 'approved', approved_at: now })
     .eq('id', runId).eq('status', 'pending_approval')
     .select().maybeSingle();
-  if (runErr) { console.error(`Auto-approve seo_run error: ${runErr.message}`); return false; }
-  if (!run) { console.error('Auto-approve: run was not pending_approval'); return false; }
-  const { error: postsErr } = await supabase.from('weekly_posts')
-    .update({ status: 'approved', approved_at: now })
-    .eq('run_id', runId).eq('status', 'pending_approval');
-  if (postsErr) { console.error(`Auto-approve weekly_posts error: ${postsErr.message}`); return false; }
-  return true;
+  if (runErr) {
+    const rolled = await rollbackApprovedPosts(runId, client);
+    console.error(`Auto-approve seo_run error: ${runErr.message}; posts ${rolled ? 'rolled back to pending_approval' : 'ROLLBACK FAILED — check MCC'}`);
+    return { ok: false, reason: rolled ? 'run_update_error' : 'rollback_failed' };
+  }
+  if (!run) {
+    // CAS lost — the run left pending_approval between our two updates. If a
+    // concurrent actor already approved it, posts being approved is the same
+    // intent; otherwise put the posts back behind the gate.
+    const { data: cur } = await client.from('seo_runs').select('status').eq('id', runId).maybeSingle();
+    if (cur?.status === 'approved') {
+      console.log(`Auto-approve: run ${runId} already approved by another actor — ${posts.length} post(s) stay approved`);
+      return { ok: true, count: posts.length, reason: 'already_approved' };
+    }
+    const rolled = await rollbackApprovedPosts(runId, client);
+    console.error(`Auto-approve: run ${runId} was not pending_approval (status=${cur?.status || '?'}); posts ${rolled ? 'rolled back to pending_approval' : 'ROLLBACK FAILED — check MCC'}`);
+    return { ok: false, reason: rolled ? 'run_not_pending' : 'rollback_failed' };
+  }
+
+  console.log(`Auto-approve: ${posts.length} post(s) approved for run ${String(runId).slice(0, 8)}`);
+  return { ok: true, count: posts.length };
+}
+
+// CAS on status='approved' so only the rows this sync approved are rolled back
+// (rows already claimed/posted by a worker are left alone). Returns true if the
+// rollback landed.
+async function rollbackApprovedPosts(runId, client) {
+  const { error } = await client.from('weekly_posts')
+    .update({ status: 'pending_approval', approved_at: null })
+    .eq('run_id', runId).eq('status', 'approved');
+  return !error;
 }
 
 async function notifyAutoApproved({ runId, weekOf, fbCount, gbpCount, taskCount }) {
@@ -341,11 +400,21 @@ async function main() {
   // Website tasks stay pending_approval — they still need a human in MCC.
   const autoApprove = !tasksOnly && /^(1|true|yes)$/i.test(process.env.SEO_AUTO_APPROVE || '');
   if (autoApprove) {
-    const approved = await autoApproveRun(runId);
-    if (approved) {
+    const outcome = await autoApproveRun(runId);
+    if (outcome.ok) {
       console.log(`\nSync complete. Run ${runId} AUTO-APPROVED (SEO_AUTO_APPROVE=1) — mav-bridge will publish.`);
       await notifyAutoApproved({ runId, weekOf, fbCount, gbpCount, taskCount: tasks.length });
       return;
+    }
+    if (outcome.reason === 'zero_posts' || outcome.reason === 'rollback_failed') {
+      // Invalid execution condition or an inconsistent DB state — a human must
+      // look at the MCC gate; do not let this pass silently.
+      const why = outcome.reason === 'zero_posts'
+        ? 'zero posts to approve (empty week?)'
+        : 'post rollback failed after a partial transition (check MCC consistency)';
+      await sendHermesAlert(
+        `SEO auto-approve SKIPPED for run ${String(runId).slice(0, 8)}: ${why}. Run left pending_approval — inspect the weekly sync output.`,
+      ).catch((e) => console.error(`Auto-approve skip alert failed (non-fatal): ${e?.message || e}`));
     }
     console.error('Auto-approve failed — leaving run at the MCC approval gate.');
   }
@@ -364,4 +433,6 @@ async function main() {
   }
 }
 
-main().catch(e => { console.error(e.message); process.exit(1); });
+if (invokedDirectly) {
+  main().catch(e => { console.error(e.message); process.exit(1); });
+}

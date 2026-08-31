@@ -1,7 +1,17 @@
 import { useState } from 'react';
 import { useMarketingData, partitionPosts } from '../lib/useMarketingData.js';
 import { postHealth } from '../lib/postHealth.js';
-import { isPendingApproval, isWaitingOnOwner, isRecoveryItem, isOnGraph } from '../lib/status.js';
+import {
+  isPendingApproval,
+  isWaitingOnOwner,
+  isOnGraph,
+  isAttentionItem,
+  recoveryClass,
+  RECOVERY_CLASS,
+  ageLabel,
+  ownerFor,
+  nextActionFor,
+} from '../lib/status.js';
 import { ReadOnlyButton } from '../components/ReadOnlyButton.jsx';
 import { StatusChip } from '../components/StatusChip.jsx';
 import {
@@ -15,6 +25,7 @@ import {
   FIXTURE_TASKS,
   FIXTURE_HEALTH,
   FIXTURE_ADAPTERS,
+  FIXTURE_PRIOR_RECOVERY,
 } from '../fixtures/week.js';
 
 const C = {
@@ -35,11 +46,20 @@ const ADAPTER_DOT = {
   error: C.red,
 };
 
+const CLASS_SECTIONS = [
+  { cls: RECOVERY_CLASS.execution, title: 'Needs recovery', color: C.red, border: '#ef444466', accent: '●' },
+  { cls: RECOVERY_CLASS.verification, title: 'Needs verification', color: C.amber, border: '#f59e0b55', accent: '◆' },
+  { cls: RECOVERY_CLASS.owner, title: 'Waiting on owner', color: C.amber, border: '#f59e0b55', accent: '◈' },
+];
+
 function recoveryReason(item) {
   if (item?.error) return item.error;
   const status = String(item?.status || '');
   if (status === 'waiting_on_owner') return 'Waiting on owner';
   if (status === 'needs_verification') return 'Needs verification';
+  if (status === 'scheduled_native') return 'Queued for 9am tick — still not live';
+  if (status === 'scheduled') return 'Fallback schedule — not yet published';
+  if (status === 'skipped') return item?.error || 'Skipped';
   if (status === 'posting' && !item?.posted_at) return 'Stuck in posting state (no posted_at)';
   if (status === 'error') return item?.platform ? 'Post failed' : 'Task failed';
   return status || 'Needs recovery';
@@ -126,10 +146,17 @@ export default function TodayPage(props) {
     ? tasks.filter((t) => isWaitingOnOwner(t.status))
     : data.waitingOnOwner;
   const runRecovery = usingFixtures
-    ? [...posts, ...tasks].filter(isRecoveryItem)
+    ? [...posts, ...tasks].filter((i) => isAttentionItem(i, { today, currentRunId: FIXTURE_HEALTH.run?.id }))
     : data.runRecovery;
   const currentRecovery = runRecovery;
-  const priorRecovery = usingFixtures ? [] : data.priorRecovery;
+  const priorRecovery = usingFixtures ? FIXTURE_PRIOR_RECOVERY : data.priorRecovery;
+  const currentRunId = usingFixtures ? FIXTURE_HEALTH.run?.id : data.health?.run?.id;
+  const grouped = { execution: [], verification: [], owner: [] };
+  for (const item of currentRecovery) {
+    const cls = recoveryClass(item, { today, currentRunId });
+    if (grouped[cls]) grouped[cls].push(item);
+  }
+  const alertTotal = grouped.execution.length + grouped.verification.length + grouped.owner.length;
   const adapters = usingFixtures
     ? FIXTURE_ADAPTERS
     : deriveAdapters({ facebook, gbp, tasks, waitingOnOwner, runRecovery });
@@ -178,7 +205,7 @@ export default function TodayPage(props) {
           <div style={summaryLabel}>Waiting on owner</div>
         </div>
         <div style={summaryCard}>
-          <div style={{ color: health?.live === 'done' ? C.green : health?.live === 'error' ? C.red : C.indigo, fontSize: 18, fontWeight: 700 }}>
+          <div style={{ color: health?.live === 'done' ? C.green : health?.live === 'error' ? C.red : health?.live === 'needs_verification' ? C.amber : C.indigo, fontSize: 18, fontWeight: 700 }}>
             {health?.live || 'idle'}
           </div>
           <div style={summaryLabel}>Run {health?.bucket || 'incomplete'}</div>
@@ -204,19 +231,30 @@ export default function TodayPage(props) {
         </div>
       </div>
 
-      {currentRecovery.length > 0 ? (
+      {alertTotal > 0 ? (
         <div style={{
-          marginTop: 16, background: '#ef444411', border: '1px solid #ef444433',
+          marginTop: 16, background: '#161922', border: '1px solid #2a2f45',
           borderRadius: 8, padding: '10px 14px',
         }}>
-          <div style={{ color: C.red, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', marginBottom: 8 }}>
-            Alerts ({currentRecovery.length})
+          <div style={{ color: C.text, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', marginBottom: 8 }}>
+            Needs attention ({alertTotal})
+            <span style={{ color: C.muted, fontWeight: 500, letterSpacing: 0 }}>
+              {grouped.execution.length ? ` · ${grouped.execution.length} execution` : ''}
+              {grouped.verification.length ? ` · ${grouped.verification.length} verify` : ''}
+              {grouped.owner.length ? ` · ${grouped.owner.length} owner` : ''}
+            </span>
           </div>
-          {currentRecovery.map((item) => (
-            <div key={`alert-${item.id}`} style={{ color: C.red, fontSize: 12, marginBottom: 4 }}>
-              ⚠ {itemDate(item) ? `${itemDate(item)} · ` : ''}{item.platform ? `${item.platform} · ` : ''}{itemTitle(item)} — {recoveryReason(item)}
-            </div>
-          ))}
+          {CLASS_SECTIONS.map(({ cls, color, accent }) =>
+            grouped[cls].length ? (
+              <div key={cls} style={{ marginBottom: 6 }}>
+                {grouped[cls].map((item) => (
+                  <div key={`alert-${item.id}`} style={{ color, fontSize: 12, marginBottom: 3 }}>
+                    {accent} {itemDate(item) ? `${itemDate(item)} · ` : ''}{item.platform ? `${item.platform} · ` : ''}{itemTitle(item)} — {recoveryReason(item)}
+                  </div>
+                ))}
+              </div>
+            ) : null,
+          )}
         </div>
       ) : null}
 
@@ -230,7 +268,7 @@ export default function TodayPage(props) {
             cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6,
           }}
         >
-          {showPrior ? '▾' : '▸'} {priorRecovery.length} prior-week alert{priorRecovery.length === 1 ? '' : 's'}
+          {showPrior ? '▾' : '▸'} {priorRecovery.length} prior-week item{priorRecovery.length === 1 ? '' : 's'} (historical / skipped backlog)
         </button>
       ) : null}
 
@@ -240,39 +278,62 @@ export default function TodayPage(props) {
           borderRadius: 8, padding: '10px 14px',
         }}>
           {priorRecovery.map((item) => (
-            <div key={`prior-${item.id}`} style={{ color: C.muted, fontSize: 12, marginBottom: 4 }}>
-              ⚠ {itemDate(item) ? `${itemDate(item)} · ` : ''}{item.platform ? `${item.platform} · ` : ''}{itemTitle(item)} — {recoveryReason(item)}
+            <div key={`prior-${item.id}`} style={{ marginBottom: 6 }}>
+              <div style={{ color: C.muted, fontSize: 12 }}>
+                ⚠ {itemDate(item) ? `${itemDate(item)} · ` : ''}{item.platform ? `${item.platform} · ` : ''}{itemTitle(item)} — {recoveryReason(item)}
+              </div>
+              <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', color: '#6b7280', fontSize: 11, margin: '2px 0 0 12px' }}>
+                {ageLabel(item, today) ? <span>age <strong style={{ color: C.muted }}>{ageLabel(item, today)}</strong></span> : null}
+                <span>owner <strong style={{ color: C.muted }}>{ownerFor(item)}</strong></span>
+                <span>next <strong style={{ color: C.muted }}>{nextActionFor(item)}</strong></span>
+              </div>
             </div>
           ))}
         </div>
       ) : null}
 
-      <div style={{ marginTop: 20 }}>
-        <div style={{
-          color: C.red, fontSize: 12, fontWeight: 800, letterSpacing: 1,
-          textTransform: 'uppercase', marginBottom: 10,
-        }}>
-          Needs recovery
-        </div>
-        {currentRecovery.length === 0 ? (
-          <p>No items need recovery.</p>
-        ) : currentRecovery.map((item) => (
-          <div key={`rec-${item.id}`} style={{
-            background: C.surface, border: '1px solid #ef444466', borderRadius: 8,
-            padding: '12px 14px', marginBottom: 8,
+      {alertTotal === 0 ? (
+        <div style={{ marginTop: 20 }}>
+          <div style={{
+            color: C.red, fontSize: 12, fontWeight: 800, letterSpacing: 1,
+            textTransform: 'uppercase', marginBottom: 10,
           }}>
-            <div style={{ color: C.text, fontSize: 13, fontWeight: 600 }}>
-              {itemDate(item) ? `${itemDate(item)} · ` : ''}{item.platform ? `${item.platform} · ` : ''}{itemTitle(item)}
-            </div>
-            <div style={{ color: C.red, fontSize: 12, margin: '6px 0 10px' }}>{recoveryReason(item)}</div>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <ReadOnlyButton>Retry</ReadOnlyButton>
-              <ReadOnlyButton>Skip</ReadOnlyButton>
-              <ReadOnlyButton>Ack</ReadOnlyButton>
-            </div>
+            Needs recovery
           </div>
-        ))}
-      </div>
+          <p>No items need attention.</p>
+        </div>
+      ) : (
+        CLASS_SECTIONS.map(({ cls, title, color, border }) =>
+          grouped[cls].length ? (
+            <div key={cls} style={{ marginTop: 20 }}>
+              <div style={{ color, fontSize: 12, fontWeight: 800, letterSpacing: 1, textTransform: 'uppercase', marginBottom: 10 }}>
+                {title} ({grouped[cls].length})
+              </div>
+              {grouped[cls].map((item) => (
+                <div key={`rec-${item.id}`} style={{
+                  background: C.surface, border: `1px solid ${border}`, borderRadius: 8,
+                  padding: '12px 14px', marginBottom: 8,
+                }}>
+                  <div style={{ color: C.text, fontSize: 13, fontWeight: 600 }}>
+                    {itemDate(item) ? `${itemDate(item)} · ` : ''}{item.platform ? `${item.platform} · ` : ''}{itemTitle(item)}
+                  </div>
+                  <div style={{ color, fontSize: 12, margin: '6px 0 8px' }}>{recoveryReason(item)}</div>
+                  <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', color: C.muted, fontSize: 11, marginBottom: 10 }}>
+                    {ageLabel(item, today) ? <span>age <strong style={{ color: C.text }}>{ageLabel(item, today)}</strong></span> : null}
+                    <span>owner <strong style={{ color: C.text }}>{ownerFor(item)}</strong></span>
+                    <span>next <strong style={{ color: C.text }}>{nextActionFor(item)}</strong></span>
+                  </div>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <ReadOnlyButton>Retry</ReadOnlyButton>
+                    <ReadOnlyButton>Skip</ReadOnlyButton>
+                    <ReadOnlyButton>Ack</ReadOnlyButton>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : null,
+        )
+      )}
 
       <div style={{ display: 'flex', gap: 8, marginTop: 20, marginBottom: 16 }}>
         {[

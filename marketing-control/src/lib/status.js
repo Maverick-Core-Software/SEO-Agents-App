@@ -51,10 +51,15 @@ export function liveRunStatus(run, runPosts = []) {
 
   if (!runPosts || runPosts.length === 0) return frozen || 'idle';
 
-  const hasCurrentError = runPosts.some((p) =>
-    ['error', 'needs_verification'].includes(String(p.status || '')),
+  // Active execution failure outranks verify-needed: error/failed means the bridge
+  // must act, needs_verification means only a listing check (do not re-post).
+  const hasHardError = runPosts.some((p) =>
+    ['error', 'failed'].includes(String(p.status || '')),
   );
-  if (hasCurrentError) return 'error';
+  if (hasHardError) return 'error';
+  if (runPosts.some((p) => String(p.status || '') === 'needs_verification')) {
+    return 'needs_verification';
+  }
 
   const statuses = runPosts.map((p) => String(p.status || ''));
   const allTerminal = statuses.every((s) => TERMINAL_CLOSED.has(s));
@@ -83,6 +88,7 @@ export function bucketStatusCount(liveStatus) {
   if (ls === 'done') return 'complete';
   if (ls === 'posting' || ls === 'executing') return 'partial';
   if (ls === 'error') return 'blocked';
+  if (ls === 'needs_verification') return 'verify';
   return 'incomplete';
 }
 
@@ -103,7 +109,7 @@ export function countRunStatuses(runs, postsByRun, options = {}) {
     windowed = runs.slice(0, 2);
   }
 
-  const statusCounts = { complete: 0, partial: 0, blocked: 0, incomplete: 0 };
+  const statusCounts = { complete: 0, partial: 0, blocked: 0, incomplete: 0, verify: 0 };
   const details = [];
   for (const r of windowed) {
     const ls = liveRunStatus(r, postsByRun?.[r.id] || []);
@@ -123,7 +129,7 @@ export const POST_STATUS_COLOR = {
   pending_approval: '#f59e0b',
   posting: '#8b5cf6',
   skipped: '#4b5563',
-  needs_verification: '#ef4444',
+  needs_verification: '#f59e0b',
   error: '#ef4444',
   waiting_on_owner: '#f59e0b',
   failed: '#ef4444',
@@ -134,7 +140,7 @@ export const POST_STATUS_LABEL = {
   posted: 'POSTED',
   done: 'POSTED',
   scheduled: 'SCHEDULED',
-  scheduled_native: 'AUTO 9AM',
+  scheduled_native: '9AM TICK',
   approved: 'QUEUED',
   pending_approval: 'PENDING',
   posting: 'POSTING…',
@@ -142,6 +148,9 @@ export const POST_STATUS_LABEL = {
   needs_verification: 'NEEDS VERIFY',
   error: 'ERROR',
 };
+
+// scheduled_native is "queued for the 9am Playwright tick", not a Google-side
+// queue — the tick publishes, so the chip says 9AM TICK, not "AUTO 9AM".
 
 /** True when the item still needs a human or bridge action. */
 export function isRecoveryItem(item) {
@@ -160,10 +169,101 @@ export function isWaitingOnOwner(status) {
   return String(status || '').toLowerCase() === 'waiting_on_owner';
 }
 
-/** True when the post is live on the platform Graph (scheduled or published). */
+/**
+ * True when the post is live on the platform Graph (scheduled or published).
+ * Corrected GBP semantics: GBP scheduled/scheduled_native is queued for the 9am
+ * Playwright tick — not on the listing yet. Live GBP = posted + platform_post_id.
+ * Facebook Graph API scheduling is genuinely on the graph; unknown platforms keep
+ * the old behavior as fallback.
+ */
 export function isOnGraph(post) {
   const s = String(post?.status || '');
-  return Boolean(post?.platform_post_id) && (s === 'scheduled' || s === 'posted' || s === 'done');
+  if (!post?.platform_post_id || !['scheduled', 'posted', 'done'].includes(s)) return false;
+  if (String(post?.platform || '').toLowerCase() === 'gbp') {
+    return s === 'posted' || s === 'done';
+  }
+  return true;
+}
+
+/** Attention classes for the dashboard recovery zone. */
+export const RECOVERY_CLASS = {
+  execution: 'execution',
+  verification: 'verification',
+  owner: 'owner',
+  historical: 'historical',
+};
+
+/**
+ * Classify one item for the dashboard attention view.
+ * - execution: active execution failure (error/failed/stuck posting, or a past
+ *   fallback `scheduled` day the 9am live-post path never published)
+ * - verification: needs_verification, or a past `scheduled_native` day queued for
+ *   the 9am Playwright tick that never went live (check listing, do not re-post)
+ * - owner: waiting_on_owner — a human must act
+ * - historical: prior-run backlog or skipped items — never primary attention
+ * - null: nothing to do
+ */
+export function recoveryClass(item, { today, currentRunId } = {}) {
+  if (!item) return null;
+  const status = String(item.status || '');
+  if (status === 'skipped') return RECOVERY_CLASS.historical;
+  if (currentRunId && item.run_id && item.run_id !== currentRunId) {
+    return RECOVERY_CLASS.historical;
+  }
+  if (status === 'waiting_on_owner') return RECOVERY_CLASS.owner;
+  if (status === 'error' || status === 'failed') return RECOVERY_CLASS.execution;
+  if (status === 'needs_verification') return RECOVERY_CLASS.verification;
+  if (status === 'posting' && !item.posted_at) return RECOVERY_CLASS.execution;
+  if (status === 'scheduled' || status === 'scheduled_native') {
+    const date = String(item.post_date || '');
+    const isPast = today && date && /^\d{4}-\d{2}-\d{2}$/.test(date) && date < String(today);
+    if (isPast && !item.posted_at && !item.platform_post_id) {
+      return status === 'scheduled_native' ? RECOVERY_CLASS.verification : RECOVERY_CLASS.execution;
+    }
+  }
+  return null;
+}
+
+/** True when the item belongs in the primary attention view (not historical/skipped). */
+export function isAttentionItem(item, options = {}) {
+  const cls = recoveryClass(item, options);
+  return Boolean(cls) && cls !== RECOVERY_CLASS.historical;
+}
+
+/** Compact age for a recovery item: today, 1d, 3d, 2w, 5w+. Falls back to the caller's today. */
+export function ageLabel(item, today = new Date().toISOString().slice(0, 10)) {
+  const raw = item?.post_date || item?.due_date || item?.week_of || item?.created_at || item?.updated_at;
+  if (!raw || !today) return null;
+  const date = String(raw).slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+  const days = Math.round((Date.parse(String(today)) - Date.parse(date)) / 86400000);
+  if (days <= 0) return 'today';
+  if (days === 1) return '1d';
+  if (days < 7) return `${days}d`;
+  return `${Math.floor(days / 7)}w`;
+}
+
+/** Who must act to resolve the item. */
+export function ownerFor(item) {
+  const status = String(item?.status || '');
+  if (status === 'waiting_on_owner') return 'Owner';
+  if (status === 'needs_verification') return 'Verification';
+  if (status === 'scheduled_native' || status === 'scheduled') return '9am tick';
+  if (status === 'posting' || status === 'error' || status === 'failed') return 'Bridge worker';
+  return '—';
+}
+
+/** Expected healer / next action copy for the item. */
+export function nextActionFor(item) {
+  const status = String(item?.status || '');
+  if (status === 'waiting_on_owner') return 'Owner approves or provides input';
+  if (status === 'needs_verification') return 'Verify listing — do not re-post';
+  if (status === 'scheduled_native') return '9am Playwright tick publishes; verify if still queued';
+  if (status === 'scheduled') return '9am live-post path publishes (fallback)';
+  if (status === 'posting') return 'Stuck-post reset after TTL; retry via bridge';
+  if (status === 'error' || status === 'failed') return 'Retry via bridge or dismiss';
+  if (status === 'skipped') return 'Skipped — backlog, no action';
+  return '—';
 }
 
 export const RUN_STATUS_LABEL = {
@@ -173,6 +273,7 @@ export const RUN_STATUS_LABEL = {
   approved: 'APPROVED',
   executing: 'EXECUTING',
   posting: 'POSTING…',
+  needs_verification: 'NEEDS VERIFY',
   rejected: 'REJECTED',
   dismissed: 'DISMISSED',
   cancelled: 'CANCELLED',
@@ -184,6 +285,7 @@ export const TASK_STATUS_LABEL = {
   error: 'ERROR',
   pending_approval: 'PENDING',
   waiting_on_owner: 'WAITING ON OWNER',
+  needs_verification: 'NEEDS VERIFY',
   skipped: 'SKIPPED',
   executing: 'EXECUTING',
 };

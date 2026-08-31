@@ -39,6 +39,27 @@ export function isOwnerWaitStatus(status) {
   return false;
 }
 
+// Owner-confirmation phrasing. Safety-first: an approved task whose description
+// demands owner action must never run a live edit; a false positive only parks
+// the task for review, a false negative edits the site without owner sign-off.
+const OWNER_GATE_RE =
+  /\b(?:owner|homeowner)\s+(?:must|needs?|has\s+to|to\s+confirm|to\s+approve|to\s+provide|to\s+review|to\s+verify|to\s+decide|to\s+respond|to\s+share|to\s+send|to\s+input|confirmation|approval|input|decision)\b|(?:awaiting?|waiting\s*_?\s*(?:on|for)|pending|requires?|needs?|confirm\s+with|check\s+with|verify\s+with)\s+(?:the\s+)?(?:owner|homeowner)\b/i;
+
+// Explicit blocker markers. Requires a preposition/label so prose like "the
+// blocked form submission" is not mistaken for a blocker.
+const BLOCKER_RE = /\bblocked\s+(?:until|on|by)\b|\bblocker\s*:|status\s*:\s*blocked\b/i;
+
+/**
+ * True when a description demands owner action or names an explicit blocker —
+ * such tasks must never auto-execute. Used by the final_report parser and the
+ * runner's live-execution gate.
+ */
+export function isOwnerGatedDescription(description) {
+  const d = String(description || '');
+  if (!d) return false;
+  return OWNER_GATE_RE.test(d) || BLOCKER_RE.test(d);
+}
+
 export function stripCodeFence(text) {
   return text.replace(/^```(?:markdown)?\s*/i, '').replace(/\s*```\s*$/, '').trim();
 }
@@ -236,8 +257,9 @@ function pushTask(tasks, seenTitles, task) {
 
 /**
  * Build website_tasks rows from report Markdown.
- * Owner-wait / blocked queue statuses are preserved as non-executable rows
- * (status waiting_on_owner), never pending_approval.
+ * Owner-wait / blocked queue statuses AND final_report rows whose description
+ * contains owner-confirmation or blocker content are preserved as
+ * non-executable rows (status waiting_on_owner), never pending_approval.
  */
 export function parseWebsiteTasks(executionQueueText, finalReportText) {
   const tasks = [];
@@ -247,23 +269,24 @@ export function parseWebsiteTasks(executionQueueText, finalReportText) {
     const clean = stripCodeFence(finalReportText);
 
     const incompleteSection =
-      clean.match(/##\s+Incomplete[^#]*([\s\S]*?)(?=\n##|$)/i)?.[1] || '';
+      clean.match(/##\s+Incomplete\b([\s\S]*?)(?=\n##|$)/i)?.[1] || '';
     const tableRows = [
-      ...incompleteSection.matchAll(/\|\s*(T\d+)\s*\|\s*([^|]+)\|\s*([^|]+)\|\s*([^|]+)\|/g),
+      ...incompleteSection.matchAll(/\|\s*(T[A-Z0-9-]*\d)\s*\|\s*([^|]+)\|\s*([^|]+)\|\s*([^|]+)\|/g),
     ];
     for (const [, id, title, missing, next] of tableRows) {
       const t = title.trim();
       if (!t || isFormatInstructionTitle(t)) continue;
+      const description = `Missing: ${missing.trim()}\nNext step: ${next.trim()}`;
       pushTask(tasks, seenTitles, {
         type: 'seo_fix',
         priority: 'high',
         title: t,
-        description: `Missing: ${missing.trim()}\nNext step: ${next.trim()}`,
+        description,
         details: mergeClassification(
           { task_id: id.trim(), source: 'final_report' },
-          { title: t, description: `Missing: ${missing.trim()}\nNext step: ${next.trim()}` },
+          { title: t, description },
         ),
-        status: 'pending_approval',
+        status: isOwnerGatedDescription(description) ? 'waiting_on_owner' : 'pending_approval',
       });
     }
 
@@ -295,7 +318,7 @@ export function parseWebsiteTasks(executionQueueText, finalReportText) {
           { task_id: taskId, source: 'final_report' },
           { title, description },
         ),
-        status: 'pending_approval',
+        status: isOwnerGatedDescription(description) ? 'waiting_on_owner' : 'pending_approval',
       });
     }
 
@@ -304,7 +327,7 @@ export function parseWebsiteTasks(executionQueueText, finalReportText) {
         /###[^\n]*?\b(T[A-Z0-9-]*\d)\b[^\n]*?[—–-]\s*(PARTIAL|INCOMPLETE|BLOCKED|NOT[ _]?DONE|FAILED)[^\n]*\n([\s\S]*?)(?=\n###|\n##(?!#)|$)/gi,
       ),
     ];
-    for (const [, taskId, , body] of statusBlocks) {
+    for (const [, taskId, statusWord, body] of statusBlocks) {
       const title = extractTaskTitle(body);
       if (!title) continue;
       const blocker = extractLabeledField(body, 'Blocker');
@@ -314,6 +337,10 @@ export function parseWebsiteTasks(executionQueueText, finalReportText) {
       const description = [blocker && `Blocker: ${blocker}`, next && `Next step: ${next}`]
         .filter(Boolean)
         .join('\n');
+      // BLOCKED header or a Blocker field / owner-gated next step ⇒ owner wait.
+      const ownerWait =
+        String(statusWord || '').toUpperCase() === 'BLOCKED' ||
+        isOwnerGatedDescription(description);
       pushTask(tasks, seenTitles, {
         type: mapTaskType(title),
         priority: 'high',
@@ -323,7 +350,7 @@ export function parseWebsiteTasks(executionQueueText, finalReportText) {
           { task_id: taskId, source: 'final_report' },
           { title, description },
         ),
-        status: 'pending_approval',
+        status: ownerWait ? 'waiting_on_owner' : 'pending_approval',
       });
     }
   }
@@ -458,18 +485,31 @@ export function shouldSkipStaleWebsitePending(task, { latestRunId } = {}) {
 }
 
 /**
- * Runner-side gate: only approved (or mid-flight executing), non-owner-wait,
- * non-garbage-title tasks may run live website edits.
+ * Why a task cannot live-execute, or null when it can. Single source of truth
+ * for the runner gate and the parking reason recorded when a wrongly-approved
+ * task is pulled back to waiting_on_owner.
+ *
+ * Blocks: not approved, garbage format-instruction titles, owner-wait queue
+ * statuses, owner-gated/blocker descriptions, and any platform other than
+ * website (the executor only ever runs website edits — a gbp/social/directory
+ * task must surface as non-executable, never be claimed and run).
  */
-export function isWebsiteTaskExecutable(task) {
-  if (!task) return false;
+export function websiteTaskBlockReason(task) {
+  if (!task) return 'no-task';
   const status = String(task.status || '').toLowerCase();
   // Only approved tasks start; 'executing' is mid-flight after CAS claim.
-  if (status !== 'approved' && status !== 'executing') return false;
-  if (isFormatInstructionTitle(task.title || '')) return false;
-  if (isOwnerWaitStatus(status)) return false;
+  if (status !== 'approved' && status !== 'executing') return `status=${status || 'unset'}`;
+  if (isFormatInstructionTitle(task.title || '')) return 'format-instruction-title';
   const qs = task.details?.queue_status || task.details?.status_from_queue || '';
-  if (isOwnerWaitStatus(qs)) return false;
-  if (/blocked until|waiting_on_owner/i.test(String(task.description || ''))) return false;
-  return true;
+  if (isOwnerWaitStatus(qs)) return `queue_status=${qs}`;
+  if (isOwnerGatedDescription(task.description)) return 'owner-gated description';
+  const platform = String(task.details?.platform || '').toLowerCase();
+  if (platform && platform !== 'website') return `unsupported platform=${platform}`;
+  return null;
+}
+
+/** Runner-side gate: only approved (or mid-flight executing), non-owner-wait,
+ * non-garbage-title, website-platform tasks may run live website edits. */
+export function isWebsiteTaskExecutable(task) {
+  return websiteTaskBlockReason(task) === null;
 }

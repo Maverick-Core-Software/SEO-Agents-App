@@ -19,13 +19,13 @@ describe('chipForPost', () => {
     assert.equal(chip.color, '#ef4444');
   });
 
-  it('scheduled_native + past is not overdue (AUTO 9AM / native)', () => {
+  it('scheduled_native + past is not overdue (9AM TICK / native)', () => {
     const chip = chipForPost({ status: 'scheduled_native', post_date: '2026-08-25' }, TODAY);
     assert.notEqual(chip.kind, 'overdue');
     assert.notEqual(chip.label, 'OVERDUE');
     assert.notEqual(chip.label, 'POST TODAY');
     assert.equal(chip.kind, 'native');
-    assert.equal(chip.label, 'AUTO 9AM');
+    assert.equal(chip.label, '9AM TICK');
   });
 
   it('posted + downgraded → CHECK', () => {

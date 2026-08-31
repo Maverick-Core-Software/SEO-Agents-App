@@ -2,6 +2,16 @@
  * Pure helpers for SEO run live-status and dashboard statusCounts.
  * Used by mav-bridge /seo/status so terminal post outcomes (skipped/rejected/…)
  * are not mislabeled as still-executing "partial" runs.
+ *
+ * Reliability rules (see artifacts/diag-status-autoapprove.md):
+ *  - A finished run (seo_runs.status='done') is finished even when a post is
+ *    faulted or still open — GBP posts finish asynchronously AFTER the run row
+ *    is marked done, so one needs_verification/error post must not paint the
+ *    whole closed week as error/executing forever. Post faults stay visible at
+ *    the post level (mav-bridge /seo/status `faults` array).
+ *  - Run-level 'error' is reserved for runs actually still in flight: a post
+ *    fault during execution is a run fault; a post fault under a settled run is
+ *    not.
  */
 
 /** Rolling window for statusCounts so historical audit noise does not dominate. */
@@ -52,13 +62,24 @@ export function liveRunStatus(run, runPosts = []) {
 
   if (!runPosts || runPosts.length === 0) return frozen || 'idle';
 
+  const statuses = runPosts.map((p) => String(p.status || ''));
+  const allTerminal = statuses.every((s) => TERMINAL_CLOSED.has(s));
+
+  // A finished run is finished. GBP posts finish asynchronously after the run is
+  // marked done (worker-owned), so an open or faulted post must not flip the
+  // closed week to error/executing forever — the fault stays visible at the post
+  // level. This also covers partial-transition residue (e.g. an old auto-approve
+  // failure leaving posts pending under a done run). All-terminal posts still
+  // fall through to the shared mapping (all-dismissed → dismissed, not done).
+  if (frozen === 'done' && !allTerminal) return 'done';
+
   const hasCurrentError = runPosts.some((p) =>
     ['error', 'needs_verification'].includes(String(p.status || '')),
   );
-  if (hasCurrentError) return 'error';
+  // Run-level error is reserved for runs actually in flight: a post fault during
+  // execution is a run fault; a post fault under a settled run is not.
+  if (hasCurrentError && FROZEN_IN_FLIGHT.has(frozen)) return 'error';
 
-  const statuses = runPosts.map((p) => String(p.status || ''));
-  const allTerminal = statuses.every((s) => TERMINAL_CLOSED.has(s));
   if (!allTerminal) {
     // Still has open work — if frozen says in-flight, keep that signal.
     if (FROZEN_IN_FLIGHT.has(frozen)) {

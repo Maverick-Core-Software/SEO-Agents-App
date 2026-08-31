@@ -58,6 +58,41 @@ function makeSupabaseStub({ tables = {}, claimRow = 'first' } = {}) {
 
 const baseDeps = { log: async () => {}, seoAgentsExe: 'C:/fake/seo-agents.exe', projectRoot: process.cwd() };
 
+// ── executeNextWebsiteTask: owner-gated description → parked, never executed ──
+{
+  const task = { id: 't1', run_id: 'r1', priority: 'high', created_at: '2026-07-01', title: 'Update Hours', description: 'Owner must confirm holiday hours before publishing.', details: { platform: 'website' } };
+  const { supabase, updates } = makeSupabaseStub({ tables: { website_tasks: [task] } });
+  let ran = false;
+  const execFileAsync = async () => { ran = true; return { stdout: '{"status":"pushed"}' }; };
+
+  const claimedId = await executeNextWebsiteTask([task], { ...baseDeps, supabase, execFileAsync });
+
+  assert.equal(claimedId, null);
+  assert.equal(ran, false, 'owner-gated task must not execute');
+  const park = updates.find(u => u.vals.status === 'waiting_on_owner');
+  assert.ok(park, 'task parked as waiting_on_owner');
+  assert.equal(park.vals.details.execution_blocked, true);
+  assert.match(park.vals.details.execution_blocked_reason, /owner-gated/);
+  console.log('ok executeNextWebsiteTask owner-gated parked');
+}
+
+// ── executeNextWebsiteTask: unsupported platform → parked, never claimed ──
+{
+  const task = { id: 't1', run_id: 'r1', priority: 'high', created_at: '2026-07-01', title: 'GBP listing', description: 'Verify listing', details: { platform: 'gbp' } };
+  const { supabase, updates } = makeSupabaseStub({ tables: { website_tasks: [task] } });
+  let ran = false;
+  const execFileAsync = async () => { ran = true; return { stdout: '{"status":"pushed"}' }; };
+
+  const claimedId = await executeNextWebsiteTask([task], { ...baseDeps, supabase, execFileAsync });
+
+  assert.equal(claimedId, null);
+  assert.equal(ran, false, 'unsupported platform must not execute');
+  const park = updates.find(u => u.vals.status === 'waiting_on_owner');
+  assert.ok(park, 'task parked as waiting_on_owner');
+  assert.match(park.vals.details.execution_blocked_reason, /unsupported platform=gbp/);
+  console.log('ok executeNextWebsiteTask unsupported platform parked');
+}
+
 // ── executeNextWebsiteTask: pushed result → claim + done, one task only ──
 {
   const tasks = [
@@ -200,6 +235,21 @@ const baseDeps = { log: async () => {}, seoAgentsExe: 'C:/fake/seo-agents.exe', 
   assert.equal(claimedId, null);
   assert.equal(updates.length, 0, 'no claim attempted when every run is in-flight');
   console.log('ok sweepOrphanWebsiteTasks no-op');
+}
+
+// ── executeNextWebsiteTask: healthy website task still runs (regression) ──
+{
+  const task = { id: 't1', run_id: 'r1', priority: 'high', created_at: '2026-07-01', title: 'Fix FAQ', description: 'Add FAQ', details: { website_action_type: 'website_faq_update', platform: 'website' } };
+  const { supabase, updates } = makeSupabaseStub({ tables: { website_tasks: [task] } });
+  const calls = [];
+  const execFileAsync = async (exe, args) => { calls.push(args); return { stdout: '{"status":"pushed","url":"https://x"}' }; };
+
+  const claimedId = await executeNextWebsiteTask([task], { ...baseDeps, supabase, execFileAsync });
+
+  assert.equal(claimedId, 't1');
+  assert.equal(calls.length, 1, 'healthy task executes normally');
+  assert.ok(updates.find(u => u.vals.status === 'done'), 'task marked done');
+  console.log('ok executeNextWebsiteTask healthy regression');
 }
 
 console.log('ok website-task-runner');
