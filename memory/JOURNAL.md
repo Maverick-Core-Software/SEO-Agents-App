@@ -1,5 +1,26 @@
 # SEO Agents App — Journal
 
+## 2026-08-30 close — engine committed; next = Grizzly Local Grok Bot
+
+**Agent:** Grok 4.6 (cockle + dispatched implement tab)
+**Outcome:** 9am always-post committed in cockle. Next session creates Grizzly Local (public verify). Live Active worker still needs a land before 8/31 9am.
+
+- Graph stays Facebook publisher. Grok Bot verifies public GBP/FB only. No Google login on the shared Agent Computer.
+- Pack: `brain/projects/grok-bot/bots/grizzly-local.md` + 09:20 routine (paused until watched Test).
+- Pickup: `docs/NEXT-SESSION.md`, inbox `2026-08-30-grizzly-local-grok-bot.md`.
+
+## 2026-08-30 — 9am always-post implemented in cockle (live worker not yet restarted)
+
+**Agent:** Grok 4.6 (cockle worktree)
+**Outcome:** Engine fixed in `barnscarter-ops/cockle`. Live Active worker still has the skip.
+
+- `runDailyGbp` always runs Playwright for `scheduled` and `scheduled_native`. Listing duplicate-guard: live/queued → do not compose. Workbook Posted gate kept.
+- Last-miss → `needs_verification`, not `error`. All-posts modal scrolls; Posts click force (iframe intercept).
+- Stale listing check: 8/15–17, 8/19–20 live → posted + `verified-no-url`. 8/29 Recessed Lighting not on listing → `needs_verification`. No re-post.
+- Website: 52 prior-week `pending_approval` skipped; kept Fix `/contact/` 404. Topic fingerprints on sync. Auto-approve still posts-only.
+- Tests: `gbp-listing.test.mjs`, `gbp-runner.test.mjs`, `driver.selfcheck.mjs`, `parse-website-tasks.test.mjs`.
+- Next: land this branch on the tree the scheduled task runs, restart worker before 8/31 9am.
+
 ## 2026-08-30 evening — probed weekly harden; GBP 9am is Playwright (not native schedule)
 
 **Agent:** Grok 4.6 (cockle worktree)

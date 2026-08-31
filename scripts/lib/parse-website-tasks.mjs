@@ -429,6 +429,34 @@ export function parseWebsiteTasks(executionQueueText, finalReportText) {
   return tasks;
 }
 
+/** Recurring owner-wait topics that must not duplicate across weekly runs. */
+export function websiteTaskTopicFingerprint(title) {
+  const t = String(title || '').toLowerCase().replace(/\s+/g, ' ');
+  if (/gbp claim/.test(t)) return 'gbp-claim';
+  if (/homepage.*stat|stat counter|placeholder stat/.test(t)) return 'homepage-stats';
+  if (/24\s*\/\s*7|24-7|emergency staffing/.test(t)) return '24-7';
+  if (/\/contact\/|contact.*404|404.*contact/.test(t)) return 'contact-404';
+  if (/weekly blog|\[blog post\]|blog post/.test(t)) return 'weekly-blog';
+  return null;
+}
+
+export function isDuplicateOwnerWaitTopic(task, existing = []) {
+  const fp = websiteTaskTopicFingerprint(task?.title);
+  if (!fp) return false;
+  return existing.some((row) => {
+    if (websiteTaskTopicFingerprint(row?.title) !== fp) return false;
+    const st = String(row?.status || '').toLowerCase();
+    return st === 'waiting_on_owner' || st === 'pending_approval' || st === 'approved';
+  });
+}
+
+// Prior-week pending_approval is backlog, not this week's work. Keep the latest run.
+export function shouldSkipStaleWebsitePending(task, { latestRunId } = {}) {
+  if (!task || String(task.status || '').toLowerCase() !== 'pending_approval') return false;
+  if (!latestRunId) return false;
+  return task.run_id !== latestRunId;
+}
+
 /**
  * Runner-side gate: only approved (or mid-flight executing), non-owner-wait,
  * non-garbage-title tasks may run live website edits.

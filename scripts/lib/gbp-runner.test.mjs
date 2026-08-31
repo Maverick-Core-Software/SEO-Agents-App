@@ -4,6 +4,7 @@ import {
   excelDateToIso,
   parseDriverJson,
   gbpNeedsVerificationMessage,
+  gbpListingUnverifiedMessage,
   gbpDailyStatusForExit,
   gbpScheduleStatusForExit,
   gbpVerifyDisposition,
@@ -46,13 +47,36 @@ assert.equal(gbpVerifyDisposition({
 }).action, 'confirmed');
 assert.equal(gbpVerifyDisposition({
   ok: false, exitCode: 3221226505, stdout: '', currentStatus: 'posted',
-}).status, 'posted');
+}).action, 'crash');
+assert.equal(gbpVerifyDisposition({
+  ok: false, exitCode: 3221226505, stdout: '', currentStatus: 'posted',
+}).status, 'needs_verification');
+assert.equal(gbpVerifyDisposition({
+  ok: false, exitCode: 3221226505, stdout: '', currentStatus: 'posted', platformPostId: 'https://x/post',
+}).action, 'confirmed');
 assert.equal(gbpVerifyDisposition({
   ok: false, exitCode: 3221226505, stdout: '', currentStatus: 'needs_verification',
 }).action, 'crash');
 assert.equal(gbpVerifyDisposition({
   ok: true, exitCode: 0, stdout: '{"result":"complete","verified":0,"failed":1}\n', currentStatus: 'posted',
 }).action, 'miss');
+assert.equal(gbpVerifyDisposition({
+  ok: true, exitCode: 0, stdout: '{"result":"complete","verified":0,"failed":1}\n', currentStatus: 'posted', lastAttempt: true,
+}).action, 'unverified');
+assert.equal(gbpVerifyDisposition({
+  ok: true, exitCode: 0, stdout: '{"result":"complete","verified":0,"failed":1}\n', currentStatus: 'posted', lastAttempt: true,
+}).status, 'needs_verification');
+assert.ok(gbpVerifyDisposition({
+  ok: true, exitCode: 0, stdout: '{"result":"complete","verified":0,"failed":1}\n', currentStatus: 'posted', lastAttempt: true,
+}).error.includes('do not re-post'));
+assert.equal(gbpVerifyDisposition({
+  ok: true, exitCode: 0, stdout: '{"result":"complete","verified":0,"error":"GBP session expired (marketing page shown)"}\n', currentStatus: 'posted',
+}).action, 'crash');
+assert.ok(gbpListingUnverifiedMessage().includes('do not re-post'));
+assert.deepEqual(gbpDailyStatusForExit(0, { result: 'already_live', postUrl: 'https://x/post' }),
+  { status: 'posted', error: null, archive: true, platform_post_id: 'https://x/post' });
+assert.deepEqual(gbpDailyStatusForExit(0, { result: 'already_queued' }),
+  { status: 'posted', error: null, archive: false, platform_post_id: null });
 
 // centralDateHour: 2026-06-27 14:30 UTC is 09:30 CDT (UTC-5 in June)
 const { todayDate, cstHour } = centralDateHour(new Date('2026-06-27T14:30:00Z'));
@@ -112,7 +136,7 @@ console.log('ok gbpScheduleStatusForExit');
   assert.equal(posted.platform_post_id, 'https://x/post');
 }
 
-// --- runDailyGbp native flip: a scheduled_native row flips to posted without driver run ---
+// --- runDailyGbp 9am path: scheduled_native must run the driver (no skip) ---
 {
   const updates = [];
   const makeQb = (rows) => {
@@ -126,11 +150,11 @@ console.log('ok gbpScheduleStatusForExit');
     };
     return qb;
   };
-  const supabase = makeQb([{ id: 'p1', run_id: 'r1', post_date: '2026-07-12', photo_file: '', status: 'scheduled_native' }]);
+  const supabase = makeQb([{ id: 'p1', run_id: 'r1', post_date: '2026-08-31', photo_file: '', status: 'scheduled_native' }]);
   const runPhaseCalls = [];
   const runPhase = async (runId, phase, cmd, args) => {
     runPhaseCalls.push({ cmd, args });
-    return { ok: true, exitCode: 0, stdout: '{}', stderr: '' };
+    return { ok: true, exitCode: 0, stdout: '{"result":"posted","verified":true,"postUrl":"https://x/post"}', stderr: '' };
   };
 
   await runDailyGbp({
@@ -138,14 +162,55 @@ console.log('ok gbpScheduleStatusForExit');
     runPhase,
     log: async () => {},
     env: {},
-    todayDate: '2026-07-12',
+    todayDate: '2026-08-31',
     gbpPosterPath: 'C:/fake/driver.mjs',
     projectRoot: process.cwd(),
   });
 
-  assert.equal(runPhaseCalls.length, 0, 'runPhase should never be called for scheduled_native rows');
-  const flipped = updates.find(u => u.status === 'posted' && u.platform_post_id === null);
-  assert.ok(flipped, 'runDailyGbp should flip scheduled_native to posted with null platform_post_id');
+  assert.equal(runPhaseCalls.length, 1, 'runDailyGbp must invoke the driver for scheduled_native rows');
+  assert.equal(runPhaseCalls[0].args[0], 'C:/fake/driver.mjs');
+  assert.ok(runPhaseCalls[0].args.includes('--date'));
+  assert.ok(runPhaseCalls[0].args.includes('2026-08-31'));
+  assert.equal(runPhaseCalls[0].args.includes('--schedule'), false, '9am path is a live post, not --schedule');
+  const posted = updates.find(u => u.status === 'posted');
+  assert.ok(posted, 'runDailyGbp should mark scheduled_native posted after a verified driver run');
+  assert.equal(posted.platform_post_id, 'https://x/post');
+}
+
+// --- runDailyGbp 9am path: scheduled rows still post (unchanged fallback) ---
+{
+  const updates = [];
+  const makeQb = (rows) => {
+    const qb = {
+      from: () => qb,
+      select: () => qb,
+      in: () => qb,
+      eq: () => qb,
+      order: () => Promise.resolve({ data: rows }),
+      update: (vals) => { updates.push(vals); return { eq: () => Promise.resolve({ data: null, error: null }) }; },
+    };
+    return qb;
+  };
+  const supabase = makeQb([{ id: 'p2', run_id: 'r1', post_date: '2026-08-31', photo_file: '', status: 'scheduled' }]);
+  const runPhaseCalls = [];
+  const runPhase = async (_runId, _phase, _cmd, args) => {
+    runPhaseCalls.push(args);
+    return { ok: true, exitCode: 0, stdout: '{"result":"posted","verified":true,"postUrl":"https://x/sched"}', stderr: '' };
+  };
+
+  await runDailyGbp({
+    supabase,
+    runPhase,
+    log: async () => {},
+    env: {},
+    todayDate: '2026-08-31',
+    gbpPosterPath: 'C:/fake/driver.mjs',
+    projectRoot: process.cwd(),
+  });
+
+  assert.equal(runPhaseCalls.length, 1);
+  assert.equal(runPhaseCalls[0].includes('--schedule'), false);
+  assert.equal(updates.find(u => u.status === 'posted')?.platform_post_id, 'https://x/sched');
 }
 
 console.log('ok gbp-runner orchestration');

@@ -180,9 +180,8 @@ async function poll() {
     //    the process gets interrupted (exit code mismatch, timeout, bash kill),
     //    the row may sit at 'posted' with no platform_post_id.
     //
-    //    Flow: wait 10min → check every 15min up to 4 attempts → mark error if
-    //    still unverified. This is driven by verifyQueue, populated when a post
-    //    is freshly claimed/posted and the result is missing a platform_post_id.
+    //    Flow: wait 10min → check every 15min up to 4 attempts → needs_verification
+    //    if still unverified (never error just because posted_at was stamped).
     const now = Date.now();
 
     // Seed the queue: find posted rows from the last 24h with no platform_post_id
@@ -236,6 +235,7 @@ async function poll() {
           stdout: r.stdout,
           currentStatus: rowNow?.status,
           platformPostId: rowNow?.platform_post_id,
+          lastAttempt: isLast,
         });
 
         if (disposition.action === 'confirmed') {
@@ -264,11 +264,13 @@ async function poll() {
           continue;
         }
 
-        if (isLast) {
+        if (disposition.action === 'unverified' || isLast) {
+          const error = disposition.error
+            || 'GBP post not found on listing after 4 checks. Check listing, do not re-post.';
           await log(item.runId, 'gbp', 'warn',
-            `Verification failed after ${VERIFY_MAX_ATTEMPTS} attempts for ${item.date} — marking error`);
+            `Verification did not find ${item.date} after ${VERIFY_MAX_ATTEMPTS} attempts — needs_verification (do not re-post)`);
           await supabase.from('weekly_posts')
-            .update({ status: 'error', error: 'GBP verification failed after 4 attempts over 1hr — post may not be live' })
+            .update({ status: 'needs_verification', error })
             .eq('id', item.postId);
           verifyQueue = verifyQueue.filter(q => q.postId !== item.postId);
         } else {

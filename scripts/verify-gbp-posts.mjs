@@ -24,6 +24,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
+import {
+  captionSnippet,
+  findSnippetInAllPosts,
+  gbpListingUnverifiedMessage,
+  isGbpSessionExpiredText,
+  assertGbpLoggedIn,
+  openAllPostsModal,
+} from './lib/gbp-listing.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '..');
@@ -46,10 +54,14 @@ const LOOKBACK_DAYS = 14;
 
 // ── Parse args ───────────────────────────────────────────────────────────────────
 function parseArgs(argv) {
-  const args = { date: null, headless: false, once: true };
+  const args = { date: null, dates: [], headless: false, once: true };
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === '--date' && argv[i + 1]) { args.date = argv[++i]; }
-    else if (argv[i] === '--headless') { args.headless = true; }
+    if (argv[i] === '--date' && argv[i + 1]) {
+      const value = argv[++i];
+      const parts = String(value).split(',').map((s) => s.trim()).filter(Boolean);
+      args.dates.push(...parts);
+      args.date = args.dates[0];
+    } else if (argv[i] === '--headless') { args.headless = true; }
     else if (argv[i] === '--once') { args.once = true; }
   }
   return args;
@@ -68,14 +80,6 @@ function requireEnv() {
   return createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 }
 
-// ── Caption matching ────────────────────────────────────────────────────────────
-// Match on the first meaningful line, trimmed, max 60 chars. Same logic as driver.mjs.
-function captionSnippet(caption) {
-  if (!caption) return '';
-  const line = caption.split(/\n/).find(l => l.trim().length > 10) || caption;
-  return line.trim().replace(/\s+/g, ' ').slice(0, 60);
-}
-
 // ── Session checks (mirrors driver.mjs) ───────────────────────────────────────
 async function detectBlockingInterstitial(page) {
   if (/\/sorry\/|recaptcha/i.test(page.url())) {
@@ -92,93 +96,7 @@ async function detectBlockingInterstitial(page) {
 }
 
 async function assertLoggedIn(page) {
-  if (/accounts\.google\.com/.test(page.url())) {
-    throw new Error('GBP session expired (redirected to sign-in). Re-authenticate with: node scripts/gbp-poster/driver.mjs --auth');
-  }
-  const signIn = page.locator('a:has-text("Sign in"), button:has-text("Sign in")').first();
-  if (await signIn.isVisible({ timeout: 1000 }).catch(() => false)) {
-    throw new Error('GBP session expired (Sign in button visible). Re-authenticate with: node scripts/gbp-poster/driver.mjs --auth');
-  }
-  const marketing = page.getByText(/Stand out on Google|free Business Profile|Get your free Business Profile/i).first();
-  if (await marketing.isVisible({ timeout: 1000 }).catch(() => false)) {
-    throw new Error('GBP session expired (marketing page shown). Re-authenticate with: node scripts/gbp-poster/driver.mjs --auth');
-  }
-}
-
-// ── Post visibility check (three-tier, same as driver.mjs checkPostVisible) ────
-async function checkPostVisible(page, snippet) {
-  // 1. Main page text
-  let visible = await page.getByText(snippet, { exact: false }).first()
-    .isVisible({ timeout: 5000 }).catch(() => false);
-
-  // 2. Posts iframe
-  if (!visible) {
-    const iframeLocator = page.frameLocator(
-      'iframe[src*="contribute"], iframe[src*="posts"], iframe[src*="local/business"]'
-    );
-    visible = await iframeLocator.getByText(snippet, { exact: false }).first()
-      .isVisible({ timeout: 8000 }).catch(() => false);
-  }
-
-  // 3. Click Posts button and re-check
-  if (!visible) {
-    const postsBtn = page.locator('button:has-text("Posts")').first();
-    if (await postsBtn.count()) {
-      await postsBtn.click({ timeout: 5000 }).catch(() => {});
-      await page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => {});
-      visible = await page.getByText(snippet, { exact: false }).first()
-        .isVisible({ timeout: 8000 }).catch(() => false);
-    }
-  }
-
-  return visible;
-}
-
-// ── Extract post URL from the page ────────────────────────────────────────────
-async function extractPostUrl(page, snippet) {
-  // Try to find the link that contains the snippet text
-  const postUrl = await page.evaluate((text) => {
-    // Look for anchor tags near the matching text
-    const allAnchors = [...document.querySelectorAll('a[href*="localPost"], a[href*="/posts/"]')];
-    if (allAnchors.length) return allAnchors[0].href;
-
-    // Fallback: find any element matching the text, then walk up to find a link
-    const walker = document.createTreeWalker(
-      document.body, NodeFilter.SHOW_ELEMENT,
-    );
-    let node;
-    while ((node = walker.nextNode())) {
-      if (node.textContent && node.textContent.includes(text)) {
-        const link = node.closest('a[href]');
-        if (link) return link.href;
-        // Check parent for link
-        const parentLink = node.parentElement?.closest('a[href]');
-        if (parentLink) return parentLink.href;
-      }
-    }
-    return null;
-  }, snippet).catch(() => null);
-
-  // Also check inside iframes
-  if (!postUrl) {
-    const iframeUrl = await page.evaluate(() => {
-      const frames = document.querySelectorAll(
-        'iframe[src*="contribute"], iframe[src*="posts"], iframe[src*="local/business"]'
-      );
-      for (const frame of frames) {
-        try {
-          const doc = frame.contentDocument;
-          if (!doc) continue;
-          const anchor = [...doc.querySelectorAll('a[href*="localPost"], a[href*="/posts/"]')];
-          if (anchor.length) return anchor[0].href;
-        } catch { /* cross-origin */ }
-      }
-      return null;
-    }).catch(() => null);
-    if (iframeUrl) return iframeUrl;
-  }
-
-  return postUrl;
+  await assertGbpLoggedIn(page);
 }
 
 // ── Debug screenshot ──────────────────────────────────────────────────────────
@@ -198,15 +116,8 @@ async function navigateToPosts(page) {
   await detectBlockingInterstitial(page);
   await assertLoggedIn(page);
 
-  // Click "Posts" if visible to get to the posts list
-  const postsBtn = page.locator('button:has-text("Posts")').first();
-  if (await postsBtn.isVisible({ timeout: 5000 }).catch(() => false)) {
-    await postsBtn.click({ timeout: 5000 });
-    await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
-  }
-
-  // Wait a beat for posts to render
-  await page.waitForTimeout(3000);
+  await openAllPostsModal(page);
+  await page.waitForTimeout(1500);
 }
 
 // ── Verify a single post ───────────────────────────────────────────────────────
@@ -220,17 +131,17 @@ async function verifyOnePost(page, post, supabase) {
 
   log(`  Checking ${post.post_date}: "${snippet}"`);
 
-  const visible = await checkPostVisible(page, snippet);
+  const found = await findSnippetInAllPosts(page, snippet);
 
-  if (visible) {
-    const postUrl = await extractPostUrl(page, snippet);
-    log(`  FOUND ${post.post_date}${postUrl ? ` → ${postUrl}` : ' (no URL extracted)'}`);
+  if (found.match === 'live') {
+    const postUrl = found.postUrl || 'verified-no-url';
+    log(`  FOUND ${post.post_date}${found.postUrl ? ` → ${found.postUrl}` : ' (no URL extracted)'}`);
 
     // Update Supabase — a live match is posted, even if the row was previously error.
     const update = {
       status: 'posted',
       error: null,
-      platform_post_id: postUrl || 'verified-no-url',
+      platform_post_id: postUrl,
       media_status: 'photo',
     };
     if (!post.posted_at) {
@@ -242,8 +153,14 @@ async function verifyOnePost(page, post, supabase) {
     return { id: post.id, date: post.post_date, verified: true, postUrl };
   }
 
-  log(`  NOT FOUND ${post.post_date}: "${snippet}" not visible on page`);
-  return { id: post.id, date: post.post_date, verified: false, reason: 'not_visible' };
+  log(`  NOT FOUND ${post.post_date}: "${snippet}" ${found.match === 'scheduled' ? 'is scheduled, not live' : 'not visible after scrolling All posts'}`);
+  if (!post.platform_post_id && ['error', 'posted', 'needs_verification'].includes(post.status)) {
+    await supabase.from('weekly_posts').update({
+      status: 'needs_verification',
+      error: gbpListingUnverifiedMessage(),
+    }).eq('id', post.id);
+  }
+  return { id: post.id, date: post.post_date, verified: false, reason: found.match === 'scheduled' ? 'scheduled_not_live' : 'not_visible' };
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
@@ -256,17 +173,17 @@ async function main() {
   // Build Supabase query
   const cutoff = new Date(Date.now() - LOOKBACK_DAYS * 86400000).toISOString();
 
-  if (args.date) {
-    log(`Verifying single date: ${args.date}`);
+  if (args.dates.length) {
+    log(`Verifying date(s): ${args.dates.join(', ')}`);
   }
 
   let posts;
-  if (args.date) {
+  if (args.dates.length) {
     const { data } = await supabase
       .from('weekly_posts')
       .select('id, run_id, post_date, status, body, hook, platform_post_id, posted_at')
       .eq('platform', 'gbp')
-      .eq('post_date', args.date);
+      .in('post_date', args.dates);
     posts = data || [];
   } else {
     const { data } = await supabase
@@ -323,9 +240,10 @@ async function main() {
         results.errors.push({ id: post.id, date: post.post_date, error: msg });
         results.failed++;
 
-        // If session expired, bail — remaining checks will all fail
-        if (/session expired|sign in|accounts\.google\.com/i.test(msg)) {
+        // Session-expired / marketing page is a crash, not a miss.
+        if (isGbpSessionExpiredText(msg)) {
           log('Session expired — aborting remaining checks');
+          fatal = e;
           break;
         }
       }
@@ -345,10 +263,12 @@ async function main() {
   // aborted with STATUS_STACK_BUFFER_OVERRUN after a live match, and the
   // worker used to treat the missing JSON as a failed post.
   log(`Done: ${results.verified} verified, ${results.failed} not found/error`);
-  if (fatal && /session expired|sign in|captcha|accounts\.google\.com/i.test(String(fatal.message || fatal))) {
-    emit({ result: 'fatal', error: String(fatal.message || fatal), ...results });
+  const fatalMsg = fatal ? String(fatal.message || fatal) : '';
+  const fatalCrash = Boolean(fatal) && (isGbpSessionExpiredText(fatalMsg) || /captcha|unusual traffic/i.test(fatalMsg));
+  if (fatalCrash) {
+    emit({ result: 'fatal', error: fatalMsg, ...results });
   } else {
-    emit({ result: fatal ? 'fatal' : 'complete', ...results, error: fatal ? String(fatal.message || fatal) : undefined });
+    emit({ result: fatal ? 'fatal' : 'complete', ...results, error: fatal ? fatalMsg : undefined });
   }
 
   try {
@@ -357,7 +277,7 @@ async function main() {
     log(`context.close failed: ${e.message || e}`);
   }
 
-  if (fatal && /session expired|sign in|captcha|accounts\.google\.com/i.test(String(fatal.message || fatal))) {
+  if (fatalCrash) {
     throw fatal;
   }
 }

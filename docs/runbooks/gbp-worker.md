@@ -78,14 +78,16 @@ Note: the service still runs under LocalSystem, so GBP will only actually work t
 the service itself has been moved to a user session — otherwise this rollback restores
 the *old broken* behavior. Prefer fixing the worker.
 
-## Native scheduling (Days 2–7) + CTA button
+## Daily 9am post (Playwright is the publisher) + CTA button
 
-Since the `feat/gbp-native-schedule` change, the worker no longer live-posts every
-morning. On an approved weekly run it posts **Day 1 immediately** (unchanged) and then
-invokes the driver once per remaining day with `--schedule`, which uses GBP's native
-"Schedule this post" toggle. Google's servers publish Days 2–7 at **9:00 AM**
-(`SCHEDULE_TIME_LABEL` in `scripts/gbp-poster/driver.mjs`); the worker only has to be
-alive to *verify*.
+GBP `scheduled` / `scheduled_native` on the dashboard is **not** a Google-side
+queue you can trust. Friday `--schedule` may create Google "Scheduled" cards for
+some days and miss others. Live GBP = `status=posted` **and** a `platform_post_id`.
+`posted_at` alone is a worker stamp.
+
+On an approved weekly run the worker still posts **Day 1 immediately**, then
+invokes the driver with `--schedule` for Days 2–7 (status `scheduled_native`).
+The 9am tick is what actually publishes.
 
 Status flow:
 
@@ -97,24 +99,27 @@ Status flow:
                                             else   → scheduled         (old daily path posts it — fallback)
 
     daily ≥9am Central:
-      status='scheduled'        & post_date=today → driver posts it (fallback, unchanged)
-      status='scheduled_native' & post_date=today → flip row to posted, posted_at=now,
-                                                    platform_post_id=null (NO driver run)
-                                                    → verify sweep picks it up 10 min later
+      status in (scheduled, scheduled_native) & post_date=today
+        → always run driver --date today (Playwright). Never skip on scheduled_native.
+        → driver listing-checks the All posts modal (scrolls past scheduled cards):
+            already live     → posted + id, do not compose
+            queued today     → posted + posted_at, no id (verify confirms after Google publishes)
+            missing          → compose and live-post
+        → workbook Posted=TRUE is the hard double-post lock
     verify success → markGbpPostedAndArchive (Excel Posted=TRUE + photo → archive)
-    verify failure ×4 → status='error' (mav-bridge alerting fires)
+    verify last-miss (no id) → needs_verification ("check listing, do not re-post")
+    session-expired / marketing page → crash, not a miss
 
 Rules to know:
 
-- **`scheduled_native`** means "Google owns publishing this post; we only verify."
+- **`scheduled_native`** means "queued for the 9am Playwright tick", not "Google will publish."
 - **Duplicate guard:** driver exit 3 in schedule mode (error *after* the Post click)
-  stays `scheduled_native` — it must never fall back to `scheduled`, because a
-  fallback repost of an actually-scheduled day would double-post. Daily verification
-  confirms it or alerts.
+  stays `scheduled_native` — it must never fall back to `scheduled`. The 9am listing
+  check refuses to compose if today's caption is already live or queued on the listing.
 - **Fallback:** any pre-submit scheduling failure marks that day `scheduled`, and the
-  old daily-post path handles it — one bad day never blocks the rest of the week.
-- Excel `Posted=TRUE` + photo archiving for natively scheduled days happen at
-  **verification time**, not schedule time.
+  9am live-post path handles it — one bad day never blocks the rest of the week.
+- Excel `Posted=TRUE` + photo archiving happen after a verified live post, not at
+  schedule time.
 - **CTA button:** every post gets a "Learn more" button. The URL comes from
   `cta_url_map` in `config/gbp-poster.config.json` (topic matched before caption,
   first key wins) with `default_cta_url` (homepage) as fallback. A CTA failure never
