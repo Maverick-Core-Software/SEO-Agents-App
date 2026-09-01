@@ -282,12 +282,19 @@ export default function TodayPage(props) {
                 {title} ({grouped[cls].length})
               </div>
               {grouped[cls].map((item) => (
-                <button
+                <article
                   key={`rec-${item.id}`}
-                  type="button"
                   className="recoveryCard"
                   style={{ border: `1px solid ${border}` }}
+                  role="link"
+                  tabIndex={0}
                   onClick={() => openItem(item)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      openItem(item);
+                    }
+                  }}
                 >
                   <div style={{ color: C.text, fontSize: 13, fontWeight: 600 }}>
                     {itemDate(item) ? `${itemDate(item)} · ` : ''}{item.platform ? `${item.platform} · ` : ''}{itemTitle(item)}
@@ -303,7 +310,7 @@ export default function TodayPage(props) {
                     <ReadOnlyButton>Skip</ReadOnlyButton>
                     <ReadOnlyButton>Ack</ReadOnlyButton>
                   </div>
-                </button>
+                </article>
               ))}
             </div>
           ) : null,

@@ -19,4 +19,10 @@ describe('TodayPage polish', () => {
     assert.ok(src.includes("key: 'website'"));
     assert.ok(src.includes('deriveAdapters'));
   });
+
+  it('does not nest write buttons inside a recovery-card button', () => {
+    assert.ok(src.includes('className="recoveryCard"'));
+    assert.equal(/<button[^>]*className="recoveryCard"/.test(src), false);
+    assert.ok(src.includes('<article'));
+  });
 });
