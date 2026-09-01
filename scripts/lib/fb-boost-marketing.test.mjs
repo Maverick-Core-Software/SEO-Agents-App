@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  BOOST_START_PAD_MS,
+  MIN_DAILY_BUDGET_DURATION_MS,
   buildBoostPlan,
   buildTargeting,
   captionMatchTokens,
@@ -67,18 +69,39 @@ test('buildTargeting pins Dallas radius and optional interests', () => {
 });
 
 test('buildBoostPlan produces minor-unit budget and object_story_id', () => {
+  const now = new Date('2026-08-17T15:00:00Z');
   const plan = buildBoostPlan({
     week: '2026-08-17',
     pick: { key: 'day1-panel-upgrade', daily: 25, days: 2 },
     pageId: '108',
     postId: '108_999',
     ages: { min: 28, max: 65 },
-    now: new Date('2026-08-17T15:00:00Z'),
+    now,
   });
   assert.equal(plan.daily_budget_minor, 2500);
   assert.equal(plan.object_story_id, '108_999');
   assert.equal(plan.optimization_goal, 'POST_ENGAGEMENT');
   assert.ok(plan.end_time > plan.start_time);
+  assert.equal(Date.parse(plan.start_time), now.getTime() + BOOST_START_PAD_MS);
+  assert.equal(Date.parse(plan.end_time) - Date.parse(plan.start_time), 2 * 86_400_000);
+});
+
+test('buildBoostPlan 1-day window is at least 25h with a future start', () => {
+  const now = new Date('2026-08-31T14:00:00Z');
+  const plan = buildBoostPlan({
+    week: '2026-08-31',
+    pick: { key: 'day1-electrical-panel-upgrade', daily: 25, days: 1 },
+    pageId: '108',
+    postId: '108_999',
+    ages: { min: 28, max: 65 },
+    now,
+  });
+  const start = Date.parse(plan.start_time);
+  const end = Date.parse(plan.end_time);
+  assert.equal(start, now.getTime() + BOOST_START_PAD_MS);
+  assert.ok(start > now.getTime());
+  assert.equal(end - start, MIN_DAILY_BUDGET_DURATION_MS);
+  assert.ok(end - start > 24 * 3_600_000);
 });
 
 test('readBoostConfig reports missing ad account', () => {

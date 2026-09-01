@@ -154,6 +154,12 @@ export function buildTargeting({
   return targeting;
 }
 
+// Daily-budget ad sets must run ≥24h (Graph subcode 1487793). Exact 24h from
+// `now` fails because start_time is already in the past by the time Meta
+// receives the request, so remaining duration drops under the floor.
+export const BOOST_START_PAD_MS = 2 * 60_000;
+export const MIN_DAILY_BUDGET_DURATION_MS = 25 * 3_600_000;
+
 export function buildBoostPlan({
   week,
   pick,
@@ -170,9 +176,9 @@ export function buildBoostPlan({
 }) {
   const storyId = objectStoryId(pageId, postId);
   const dailyMinor = dollarsToMinor(pick.daily);
-  const start = new Date(now);
-  // Meta requires end >= ~30h from start for many boost-like ad sets; use full day count.
-  const end = new Date(start.getTime() + Number(pick.days) * 86_400_000);
+  const start = new Date(now.getTime() + BOOST_START_PAD_MS);
+  const durationMs = Math.max(Number(pick.days) * 86_400_000, MIN_DAILY_BUDGET_DURATION_MS);
+  const end = new Date(start.getTime() + durationMs);
   const nameBase = `SEO ${week} ${pick.key}`.slice(0, 100);
   return {
     nameBase,
