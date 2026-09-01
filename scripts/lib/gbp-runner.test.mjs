@@ -213,6 +213,81 @@ console.log('ok gbpScheduleStatusForExit');
   assert.equal(updates.find(u => u.status === 'posted')?.platform_post_id, 'https://x/sched');
 }
 
+// --- runDailyGbp shifted-schedule recovery: driver "No post found" → restore
+// workbook row from Supabase → retry the driver once ---
+{
+  const updates = [];
+  const makeQb = (rows) => {
+    const qb = {
+      from: () => qb,
+      select: () => qb,
+      in: () => qb,
+      eq: () => qb,
+      order: () => Promise.resolve({ data: rows }),
+      update: (vals) => { updates.push(vals); return { eq: () => Promise.resolve({ data: null, error: null }) }; },
+    };
+    return qb;
+  };
+  const supabase = makeQb([{
+    id: 'p1', run_id: 'r1', post_date: '2026-08-31', photo_file: 'IMG_4931.JPG', status: 'scheduled_native',
+    day: 4, service: 'Generator Interlock / Inlet', hook: 'Portable Generator + Interlock = Real Backup Power',
+    body: 'Body copy', cta: 'CTA copy',
+  }]);
+  const runPhaseCalls = [];
+  const runPhase = async () => {
+    runPhaseCalls.push(runPhaseCalls.length + 1);
+    if (runPhaseCalls.length === 1) {
+      return { ok: false, exitCode: 1, stdout: '{"result":"failed","failure_reason":"data","error":"No post found for date: 2026-08-31"}', stderr: 'No post found for date: 2026-08-31' };
+    }
+    return { ok: true, exitCode: 0, stdout: '{"result":"posted","verified":true,"postUrl":"https://x/post"}', stderr: '' };
+  };
+  const restored = [];
+  const syncGbpRow = async ({ post }) => { restored.push(post); return true; };
+
+  await runDailyGbp({
+    supabase, runPhase, log: async () => {}, env: {},
+    todayDate: '2026-08-31', gbpPosterPath: 'C:/fake/driver.mjs', projectRoot: process.cwd(),
+    syncGbpRow,
+  });
+
+  assert.equal(runPhaseCalls.length, 2, 'data-missing driver failure must retry once after workbook restore');
+  assert.equal(restored.length, 1, 'syncGbpRow must be called with today row');
+  assert.equal(restored[0].post_date, '2026-08-31');
+  assert.equal(restored[0].day, 4);
+  assert.equal(updates.find(u => u.status === 'posted')?.platform_post_id, 'https://x/post');
+}
+
+// --- runDailyGbp recovery guard: if the workbook restore fails, do NOT retry ---
+{
+  const updates = [];
+  const makeQb = (rows) => {
+    const qb = {
+      from: () => qb,
+      select: () => qb,
+      in: () => qb,
+      eq: () => qb,
+      order: () => Promise.resolve({ data: rows }),
+      update: (vals) => { updates.push(vals); return { eq: () => Promise.resolve({ data: null, error: null }) }; },
+    };
+    return qb;
+  };
+  const supabase = makeQb([{ id: 'p1', run_id: 'r1', post_date: '2026-08-31', photo_file: '', status: 'scheduled_native' }]);
+  const runPhaseCalls = [];
+  const runPhase = async () => {
+    runPhaseCalls.push(1);
+    return { ok: false, exitCode: 1, stdout: '{"result":"failed","failure_reason":"data","error":"No post found for date: 2026-08-31"}', stderr: '' };
+  };
+
+  await runDailyGbp({
+    supabase, runPhase, log: async () => {}, env: {},
+    todayDate: '2026-08-31', gbpPosterPath: 'C:/fake/driver.mjs', projectRoot: process.cwd(),
+    syncGbpRow: async () => false,
+  });
+
+  assert.equal(runPhaseCalls.length, 1, 'no retry when the workbook restore fails');
+  assert.ok(updates.find(u => u.status === 'error'), 'row marked error when restore fails');
+}
+
 console.log('ok gbp-runner orchestration');
 
 // --- runGbpForApprovedRun: Day 1's workbook approval gate must be stamped

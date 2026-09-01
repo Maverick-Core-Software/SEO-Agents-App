@@ -79,6 +79,24 @@ export function parseGbpScheduleMarkdown(text) {
   return posts;
 }
 
+// Rebuild a single weekly_posts row as schedule markdown so the daily worker can
+// re-materialize a shifted date into the workbook without a full LLM re-run.
+export function gbpPostToScheduleMarkdown(post) {
+  const f = (v) => String(v ?? '').trim();
+  return [
+    `**DAY:** ${f(post.day)}`,
+    `**DATE:** ${String(f(post.post_date)).slice(0, 10)}`,
+    `**SERVICE:** ${f(post.service)}`,
+    `**TOPIC:** ${f(post.topic || post.service)}`,
+    `**HEADLINE:** ${f(post.hook || post.headline || post.topic)}`,
+    `**BODY:** ${f(post.body)}`,
+    `**CAPTION:** ${f(post.caption)}`,
+    `**PHOTO_FILE:** ${f(post.photo_file)}`,
+    `**CTA:** ${f(post.cta)}`,
+    `**STATUS:** Approved`,
+  ].join('\n');
+}
+
 export function captionForGbpPost(post) {
   const clean = (value) => String(value || '')
     .replace(/\+?1?[\s.-]*\(?\d{3}\)?[\s.-]*\d{3}[\s.-]*\d{4}/g, '')

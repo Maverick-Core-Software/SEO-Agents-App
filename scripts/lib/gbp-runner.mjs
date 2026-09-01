@@ -5,6 +5,8 @@ import xlsx from 'xlsx';
 import fs from 'node:fs';
 import path from 'node:path';
 import { gbpListingUnverifiedMessage, isGbpSessionExpiredText } from './gbp-listing.mjs';
+import { defaultGbpPhotoDirs } from './gbp-paths.mjs';
+import { syncGbpScheduleToWorkbook, gbpPostToScheduleMarkdown } from '../sync-gbp-schedule.mjs';
 
 export { gbpListingUnverifiedMessage, isGbpSessionExpiredText };
 
@@ -306,12 +308,45 @@ export async function runGbpForApprovedRun({ runId, gbpPosts, deps }) {
   await log(runId, 'gbp', 'info', `Days 2-7 scheduling: ${nativeCount} scheduled_native, ${fallbackCount} fallback scheduled`);
 }
 
+// A driver data failure means the workbook lacks the date's row (or caption /
+// workbook file) — not a Google/UI problem. A shifted or late-approved run can
+// leave today's row in Supabase but not in the workbook the driver reads.
+export function isGbpDataMissing(result) {
+  const blob = `${result?.stdout || ''} ${result?.stderr || ''} ${result?.error || ''}`;
+  return /no post found for date|no caption|workbook not found/i.test(blob);
+}
+
+// Write one weekly_posts row back into the workbook the driver reads. Supabase is
+// the live queue; the workbook is only a materialized view of it.
+export async function syncGbpRowToWorkbook({ post, env, log, runId }) {
+  const workbookPath = env.GBP_WORKBOOK_PATH || '';
+  if (!workbookPath) return false;
+  try {
+    const { localCache, curatedPreferred } = defaultGbpPhotoDirs(env);
+    await syncGbpScheduleToWorkbook({
+      scheduleText: gbpPostToScheduleMarkdown(post),
+      workbookPath,
+      curatedPreferred,
+      localCache,
+    });
+    await log(runId, 'gbp', 'info', `Workbook row restored for ${post.post_date} (shifted-schedule recovery)`);
+    return true;
+  } catch (e) {
+    await log(runId, 'gbp', 'warn', `Workbook row restore failed for ${post.post_date}: ${e.message}`);
+    return false;
+  }
+}
+
 // Daily poster: post today's scheduled GBP rows. Caller gates this to once/day >=9am
 // Central using centralDateHour(). GBP is not a trustworthy native queue — Playwright
 // always runs for both `scheduled` and `scheduled_native`. The driver refuses to
 // compose when the workbook Posted gate is set or the All-posts listing already
 // shows today's caption as live/queued.
-export async function runDailyGbp({ supabase, runPhase, log, env, todayDate, gbpPosterPath, projectRoot }) {
+//
+// Shifted/late-approved runs can leave today's row in Supabase but missing from the
+// workbook (driver: "No post found for date"). Restore the row from Supabase and
+// retry the driver once before giving up.
+export async function runDailyGbp({ supabase, runPhase, log, env, todayDate, gbpPosterPath, projectRoot, syncGbpRow = syncGbpRowToWorkbook }) {
   const { data: todayGbp } = await supabase
     .from('weekly_posts')
     .select('id, run_id, post_date, photo_file, status')
@@ -322,7 +357,13 @@ export async function runDailyGbp({ supabase, runPhase, log, env, todayDate, gbp
 
   for (const post of todayGbp || []) {
     await log(post.run_id, 'gbp', 'info', `Posting GBP for ${post.post_date} (was ${post.status})`);
-    const result = await runPhase(post.run_id, 'gbp', 'node', [gbpPosterPath, '--date', post.post_date], projectRoot);
+    let result = await runPhase(post.run_id, 'gbp', 'node', [gbpPosterPath, '--date', post.post_date], projectRoot);
+    if (isGbpDataMissing(result)) {
+      await log(post.run_id, 'gbp', 'warn', `Driver found no ${post.post_date} row in the workbook — restoring from Supabase and retrying once`);
+      if (await syncGbpRow({ post, env, log, runId: post.run_id })) {
+        result = await runPhase(post.run_id, 'gbp', 'node', [gbpPosterPath, '--date', post.post_date], projectRoot);
+      }
+    }
     const status = await applyDriverResult({ supabase, post, result, env, log });
     await log(post.run_id, 'gbp', status === 'error' ? 'error' : 'info', `Daily GBP ${post.post_date} → ${status} (exit ${result.exitCode})`);
   }

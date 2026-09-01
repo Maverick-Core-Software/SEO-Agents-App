@@ -8,6 +8,7 @@ import {
   captionForGbpPost,
   syncGbpScheduleToWorkbook,
   markGbpDatesApproved,
+  gbpPostToScheduleMarkdown,
   GBP_WORKBOOK_HEADERS,
 } from './sync-gbp-schedule.mjs';
 
@@ -70,6 +71,41 @@ assert.deepEqual(approved.approved, ['2026-08-21']);
 assert.deepEqual(approved.skipped, ['2026-08-99']);
 const stamped = xlsx.utils.sheet_to_json(xlsx.readFile(wbPath).Sheets.Posts, { defval: '' });
 assert.equal(stamped[0].Status, 'Approved');
+
+// --- shifted-schedule recovery: a weekly_posts row round-trips through the
+// markdown builder and syncs a NEW workbook row (Approved, Posted=false) ---
+const dbRow = {
+  id: 'p1', run_id: 'r1', day: 4, post_date: '2026-08-31',
+  service: 'Generator Interlock / Inlet',
+  hook: 'Portable Generator + Interlock = Real Backup Power',
+  body: 'A portable generator with a proper interlock kit is a fraction of the cost.',
+  cta: 'Request service for a free generator interlock quote.',
+  photo_file: 'IMG_4931.JPG',
+};
+const rebuilt = parseGbpScheduleMarkdown(gbpPostToScheduleMarkdown(dbRow));
+assert.equal(rebuilt.length, 1);
+assert.equal(rebuilt[0].date, '2026-08-31');
+assert.equal(rebuilt[0].headline, 'Portable Generator + Interlock = Real Backup Power');
+assert.equal(rebuilt[0].photo_file, 'IMG_4931.JPG');
+assert.equal(rebuilt[0].status, 'Approved');
+
+const recovery = syncGbpScheduleToWorkbook({
+  scheduleText: gbpPostToScheduleMarkdown(dbRow),
+  workbookPath: wbPath,
+  localCache: cache,
+  curatedPreferred: path.join(tmp, 'missing-curated'),
+  now: () => '2026-08-31T09:00:00Z',
+});
+assert.equal(recovery.updates[0].new, true, 'shifted row must be inserted as a new workbook row');
+assert.equal(recovery.updates[0].date, '2026-08-31');
+const rowsAfter = xlsx.utils.sheet_to_json(xlsx.readFile(wbPath).Sheets.Posts, { defval: '' });
+assert.equal(rowsAfter.length, 2);
+const shifted = rowsAfter.find(r => String(r.Date).slice(0, 10) === '2026-08-31');
+assert.ok(shifted, 'workbook must contain the shifted date after recovery sync');
+assert.equal(shifted.Status, 'Approved');
+assert.equal(shifted.Posted, false, 'Posted lock must stay false for a restored row');
+assert.ok(String(shifted.CaptionDraft).includes('Portable Generator + Interlock'));
+assert.equal(shifted.AssetIdOrDescription, path.join(cache, 'IMG_4931.JPG'));
 
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log('ok sync-gbp-schedule');
