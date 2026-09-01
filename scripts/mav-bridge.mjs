@@ -32,6 +32,7 @@ import { makeRunPhase } from './lib/run-phase.mjs';
 import { runGbpForApprovedRun, runDailyGbp, centralDateHour } from './lib/gbp-runner.mjs';
 import { fetchApprovedWebsiteTasks, executeNextWebsiteTask, sweepOrphanWebsiteTasks } from './lib/website-task-runner.mjs';
 import { liveRunStatus as deriveLiveRunStatus, countRunStatuses } from './lib/seo-run-status.mjs';
+import { MAX_JSON_BODY_BYTES, parseJsonBody } from './lib/http-json.mjs';
 
 const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -855,9 +856,24 @@ function sendJsonHttp(res, status, data) {
 }
 
 async function readBody(req) {
-  let body = '';
-  for await (const chunk of req) body += chunk;
-  return body ? JSON.parse(body) : {};
+  let bytes = 0;
+  const chunks = [];
+  for await (const chunk of req) {
+    bytes += chunk.length;
+    if (bytes > MAX_JSON_BODY_BYTES) {
+      const error = new Error(`Request body exceeds ${MAX_JSON_BODY_BYTES} byte limit`);
+      error.status = 413;
+      throw error;
+    }
+    chunks.push(chunk);
+  }
+  const parsed = parseJsonBody(Buffer.concat(chunks).toString('utf8'));
+  if (!parsed.ok) {
+    const error = new Error(parsed.error);
+    error.status = parsed.status;
+    throw error;
+  }
+  return parsed.data;
 }
 
 async function handleHttpRequest(req, res) {
@@ -1390,7 +1406,9 @@ const httpServer = http.createServer((req, res) => {
     // Inbound hop: Vercel → Tailscale → server.mjs → here. Tag it so a failure
     // in request handling is attributable to this boundary (Fix 5).
     console.error(`[mav-bridge][server.mjs→mav-bridge][error] ${req.method} ${req.url}: ${e.message}`);
-    try { sendJsonHttp(res, 500, { error: 'Internal server error', hop: 'mav-bridge', detail: e.message }); } catch {}
+    const status = Number.isInteger(e.status) ? e.status : 500;
+    const error = status < 500 ? e.message : 'Internal server error';
+    try { sendJsonHttp(res, status, { error, hop: 'mav-bridge' }); } catch {}
   });
 });
 httpServer.listen(BRIDGE_PORT, '127.0.0.1', () => {
