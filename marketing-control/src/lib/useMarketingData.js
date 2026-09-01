@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { createContext, createElement, useCallback, useContext, useEffect, useState } from 'react';
 import { isSupabaseAvailable } from '../supabase.js';
 import {
   fetchRuns,
@@ -13,6 +13,7 @@ import { chicagoToday, sundayOfWeek, saturdayOfWeek, addDays } from './week.js';
 
 const EMPTY_HEALTH = { run: null, posts: [], live: 'idle', bucket: 'incomplete' };
 const EMPTY_WORKER = { ok: false, unreachable: true };
+const MarketingDataContext = createContext(null);
 
 export function partitionPosts(posts) {
   const facebook = [];
@@ -32,7 +33,7 @@ export function spanFromPosts(list, fallbackStart, fallbackEnd) {
   return { weekStart: dates[0], weekEnd: dates[dates.length - 1] };
 }
 
-export function useMarketingData() {
+function useMarketingDataState() {
   const today = chicagoToday();
   const calWeekStart = sundayOfWeek(today);
   const calWeekEnd = saturdayOfWeek(today);
@@ -49,6 +50,7 @@ export function useMarketingData() {
   const [logs, setLogs] = useState([]);
   const [health, setHealth] = useState(EMPTY_HEALTH);
   const [worker, setWorker] = useState(EMPTY_WORKER);
+  const [loadedAt, setLoadedAt] = useState(null);
 
   const reload = useCallback(async () => {
     if (!isSupabaseAvailable) {
@@ -61,6 +63,7 @@ export function useMarketingData() {
       setLogs([]);
       setHealth(EMPTY_HEALTH);
       setWorker(EMPTY_WORKER);
+      setLoadedAt(null);
       return;
     }
     setLoading(true);
@@ -82,6 +85,7 @@ export function useMarketingData() {
       setLogs(nextLogs);
       setHealth(nextHealth);
       setWorker(nextWorker || EMPTY_WORKER);
+      setLoadedAt(new Date().toISOString());
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -134,6 +138,21 @@ export function useMarketingData() {
     priorRecovery,
     facebookOnGraph: facebook.filter(isOnGraph).length,
     gbpOnGraph: gbp.filter(isOnGraph).length,
+    loadedAt,
     reload,
   };
+}
+
+export function MarketingDataProvider({ children }) {
+  const value = useMarketingDataState();
+  return createElement(MarketingDataContext.Provider, { value }, children);
+}
+
+/** Shared live marketing snapshot. Pages must render under MarketingDataProvider. */
+export function useMarketingData() {
+  const ctx = useContext(MarketingDataContext);
+  if (!ctx) {
+    throw new Error('useMarketingData requires MarketingDataProvider');
+  }
+  return ctx;
 }

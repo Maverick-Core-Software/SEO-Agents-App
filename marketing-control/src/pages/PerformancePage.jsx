@@ -84,6 +84,9 @@ export default function PerformancePage(props) {
       <div>
         <h1 style={{ color: C.text }}>Performance</h1>
         <p style={muted}>{outputsDirNote()}</p>
+        <p className="liveNote">
+          These numbers are bundled fixtures. Live week-over-week trends wait on a structured store (Phase 2).
+        </p>
       </div>
 
       <section style={card} aria-labelledby="perf-engagement">

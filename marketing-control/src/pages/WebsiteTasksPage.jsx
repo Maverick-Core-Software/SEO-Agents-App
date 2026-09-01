@@ -155,25 +155,21 @@ export default function WebsiteTasksPage(props) {
 
       <div style={card}>
         <h2 style={h2}>Queue</h2>
-        <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-          {TABS.map((t) => (
-            <button
-              key={t.key}
-              onClick={() => setTab(t.key)}
-              style={{
-                padding: '4px 12px',
-                borderRadius: 999,
-                border: `1px solid ${tab === t.key ? '#6366f1' : '#2a2f45'}`,
-                background: tab === t.key ? '#6366f1' : '#0f1117',
-                color: tab === t.key ? '#ffffff' : '#f1f5f9',
-                fontSize: 12,
-                fontWeight: 600,
-                cursor: 'pointer',
-              }}
-            >
-              {t.label}
-            </button>
-          ))}
+        <div className="tabRow" style={{ marginTop: 0 }}>
+          {TABS.map((t) => {
+            const count = sortByPriority((usingLive ? tasks : FIXTURE_TASKS).filter((row) => inTab(row, t.key))).length;
+            return (
+              <button
+                key={t.key}
+                type="button"
+                className={tab === t.key ? 'tabBtn active' : 'tabBtn'}
+                onClick={() => setTab(t.key)}
+              >
+                {t.label}
+                <span className="tabCount">{count}</span>
+              </button>
+            );
+          })}
         </div>
         {list.length === 0 ? (
           <p>No website tasks.</p>

@@ -1,8 +1,7 @@
-import { useEffect, useState } from 'react';
-import { fetchPosts, fetchRuns, fetchWebsiteTasks } from '../lib/api.js';
-import { addDays, chicagoToday, sundayOfWeek, saturdayOfWeek } from '../lib/week.js';
+import { useState } from 'react';
 import { isPendingApproval, isWaitingOnOwner, POST_STATUS_COLOR, statusLabelFor } from '../lib/status.js';
 import { isSupabaseAvailable } from '../supabase.js';
+import { useMarketingData } from '../lib/useMarketingData.js';
 import { StatusChip } from '../components/StatusChip.jsx';
 import { ReadOnlyButton } from '../components/ReadOnlyButton.jsx';
 import { FIXTURE_QUEUE } from '../fixtures/approval.js';
@@ -155,50 +154,19 @@ function QueueCard({ item }) {
 
 export default function ApprovalInboxPage(props) {
   void props;
-  const [items, setItems] = useState(() => FIXTURE_QUEUE.map((row) => normalizeItem(row, row.type)));
-  const [source, setSource] = useState('fixture');
-  const [latestRunId, setLatestRunId] = useState(null);
+  const data = useMarketingData();
   const [showAll, setShowAll] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      const today = chicagoToday();
-      try {
-        const [runs, posts, tasks] = await Promise.all([
-          fetchRuns(),
-          fetchPosts(addDays(sundayOfWeek(today), -21), saturdayOfWeek(addDays(today, 21))),
-          fetchWebsiteTasks(),
-        ]);
-        if (cancelled) return;
-        const isPending = (status) => isPendingApproval(status) || isWaitingOnOwner(status);
-        const groupOf = (row, base) => (isWaitingOnOwner(row.status) ? 'waiting_on_owner' : base);
-        const live = [
-          ...runs.filter((row) => isPending(row.status)).map((row) => normalizeItem(row, groupOf(row, 'seo_run'))),
-          ...posts.filter((row) => isPending(row.status)).map((row) => normalizeItem(row, groupOf(row, 'weekly_post'))),
-          ...tasks.filter((row) => isPending(row.status)).map((row) => normalizeItem(row, groupOf(row, 'website_task'))),
-        ];
-        if (isSupabaseAvailable && live.length) {
-          setItems(live);
-          setLatestRunId(runs[0]?.id || null);
-          setSource('live');
-        } else if (isSupabaseAvailable) {
-          setItems([]);
-          setSource('live');
-        } else {
-          setItems(FIXTURE_QUEUE.map((row) => normalizeItem(row, row.type)));
-          setSource('fixture');
-        }
-      } catch {
-        if (cancelled) return;
-        setItems(FIXTURE_QUEUE.map((row) => normalizeItem(row, row.type)));
-        setSource('fixture');
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  const isPending = (status) => isPendingApproval(status) || isWaitingOnOwner(status);
+  const groupOf = (row, base) => (isWaitingOnOwner(row.status) ? 'waiting_on_owner' : base);
+  const source = isSupabaseAvailable ? 'live' : 'fixture';
+  const latestRunId = data.runs?.[0]?.id || null;
+  const items = source === 'live'
+    ? [
+        ...(data.runs || []).filter((row) => isPending(row.status)).map((row) => normalizeItem(row, groupOf(row, 'seo_run'))),
+        ...(data.lookbackPosts || []).filter((row) => isPending(row.status)).map((row) => normalizeItem(row, groupOf(row, 'weekly_post'))),
+        ...(data.tasks || []).filter((row) => isPending(row.status)).map((row) => normalizeItem(row, groupOf(row, 'website_task'))),
+      ]
+    : FIXTURE_QUEUE.map((row) => normalizeItem(row, row.type));
 
   const inDefaultView = (item) =>
     item.type === 'waiting_on_owner' ||
@@ -208,12 +176,13 @@ export default function ApprovalInboxPage(props) {
   return (
     <section className="page">
       <h1>Approval Inbox</h1>
-      <p style={{ marginBottom: 12 }}>
+      <p className="liveNote">
         {visible.length} item{visible.length === 1 ? '' : 's'} awaiting approval. Writes are disabled.
       </p>
+      {data.error ? <div className="errorBanner" role="alert">{data.error}</div> : null}
       {source === 'fixture' ? (
-        <p style={{ marginBottom: 12 }}>
-          Showing fixture queue (Supabase is not configured or returned no pending_approval rows).
+        <p className="liveNote">
+          Showing fixture queue (Supabase is not configured).
         </p>
       ) : null}
       {source === 'live' ? (

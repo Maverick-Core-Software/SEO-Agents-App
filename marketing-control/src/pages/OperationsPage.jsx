@@ -1,10 +1,9 @@
-import { useEffect, useState } from 'react';
 import { ReadOnlyButton } from '../components/ReadOnlyButton.jsx';
 import { StatusChip } from '../components/StatusChip.jsx';
 import { FIXTURE_ADAPTERS, FIXTURE_LOGS, FIXTURE_RUNS } from '../fixtures/detail.js';
-import { fetchWorkerStatus } from '../lib/api.js';
+import { deriveAdapters } from '../lib/adapters.js';
 import { useMarketingData } from '../lib/useMarketingData.js';
-import { bucketStatusCount, liveRunStatus, POST_STATUS_COLOR, POST_STATUS_LABEL, statusLabelFor, statusColorFor, isOnGraph, isRecoveryItem, isWaitingOnOwner } from '../lib/status.js';
+import { bucketStatusCount, liveRunStatus, POST_STATUS_COLOR, POST_STATUS_LABEL, statusLabelFor, statusColorFor } from '../lib/status.js';
 
 const SECRET_KEY = /token|secret|password|passwd|api[_-]?key|anon[_-]?key|authorization|cookie|credential|private[_-]?key|service[_-]?role/i;
 
@@ -100,33 +99,6 @@ function liveOrFrozen(run, runPosts) {
   return run?.status || 'idle';
 }
 
-// Same derivation as TodayPage (duplicated here by design; do not edit TodayPage).
-function deriveAdapters({ facebook, gbp, tasks, waitingOnOwner, runRecovery }) {
-  const platformRecovery = (platform) =>
-    runRecovery.some((i) => String(i.platform || '') === platform);
-  const facebookStatus = platformRecovery('facebook')
-    ? 'error'
-    : facebook.some((p) => isOnGraph(p) || p.status === 'posted' || p.status === 'done')
-      ? 'live_ready'
-      : 'unknown';
-  const gbpStatus = platformRecovery('gbp')
-    ? 'error'
-    : gbp.some((p) => p.status === 'posted' || p.status === 'done')
-      ? 'live_ready'
-      : gbp.some((p) => p.status === 'scheduled_native')
-        ? 'worker'
-        : 'unknown';
-  const websiteStatus =
-    waitingOnOwner.length || tasks.some((t) => t.status === 'error' || t.status === 'failed')
-      ? 'error'
-      : 'unknown';
-  return [
-    { id: 'facebook', label: 'Facebook', status: facebookStatus },
-    { id: 'gbp', label: 'GBP', status: gbpStatus },
-    { id: 'website', label: 'Website', status: websiteStatus },
-  ];
-}
-
 // Short, readable fault lines for the worker card (strings only, no secrets).
 function faultStrings(data) {
   const list = Array.isArray(data?.faults) ? data.faults : [];
@@ -138,22 +110,8 @@ function faultStrings(data) {
 }
 
 export default function OperationsPage(props) {
-  const { configured, loading, error, runs, posts, logs, health, facebook, gbp, tasks, waitingOnOwner, runRecovery } = useMarketingData();
-  const [worker, setWorker] = useState(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    fetchWorkerStatus()
-      .then((result) => {
-        if (!cancelled) setWorker(result);
-      })
-      .catch(() => {
-        if (!cancelled) setWorker({ ok: false, unreachable: true });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  void props;
+  const { configured, loading, error, runs, posts, logs, health, facebook, gbp, tasks, waitingOnOwner, runRecovery, worker } = useMarketingData();
 
   const usingLive = configured;
   const runList = usingLive ? runs : FIXTURE_RUNS;

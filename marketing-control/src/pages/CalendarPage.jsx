@@ -1,8 +1,7 @@
-import { useEffect, useState } from 'react';
-import { fetchPosts, fetchWebsiteTasks } from '../lib/api.js';
-import { addDays, chicagoToday, sundayOfWeek, saturdayOfWeek } from '../lib/week.js';
+import { addDays, chicagoToday, sundayOfWeek } from '../lib/week.js';
 import { POST_STATUS_COLOR, POST_STATUS_LABEL } from '../lib/status.js';
 import { StatusChip } from '../components/StatusChip.jsx';
+import { useMarketingData } from '../lib/useMarketingData.js';
 import { FIXTURE_CALENDAR_POSTS, FIXTURE_CALENDAR_TASKS } from '../fixtures/approval.js';
 
 const C = {
@@ -139,7 +138,7 @@ function PostChip({ post }) {
   );
 }
 
-function WeekCard({ weekStart, posts, tasks, isCurrent }) {
+function WeekCard({ weekStart, posts, tasks, isCurrent, today }) {
   const days = [0, 1, 2, 3, 4, 5, 6].map((n) => addDays(weekStart, n));
   const weekPosts = posts.filter((p) => inWeek(String(p.post_date || ''), weekStart));
   const weekTasks = tasks.filter((t) => inWeek(itemDate(t, posts), weekStart));
@@ -195,8 +194,8 @@ function WeekCard({ weekStart, posts, tasks, isCurrent }) {
         <div style={grid}>
           <div />
           {days.map((date, i) => (
-            <div key={date} style={{ color: C.muted, fontSize: 11 }}>
-              <div>{DOW[i]}</div>
+            <div key={date} className={date === today ? 'todayCell' : undefined} style={{ color: C.muted, fontSize: 11, padding: 4 }}>
+              <div>{DOW[i]}{date === today ? ' · today' : ''}</div>
               <div style={{ color: C.text }}>{formatMd(date)}</div>
             </div>
           ))}
@@ -220,9 +219,24 @@ function WeekCard({ weekStart, posts, tasks, isCurrent }) {
           {days.map((date) => {
             const n = cellTasks(date).length;
             return (
-              <div key={`web-${date}`} style={{ color: n ? C.text : C.muted, fontSize: 12, paddingTop: 4 }}>
+              <button
+                key={`web-${date}`}
+                type="button"
+                onClick={() => { if (n) window.location.hash = '#/website'; }}
+                disabled={!n}
+                style={{
+                  color: n ? C.text : C.muted,
+                  fontSize: 12,
+                  paddingTop: 4,
+                  background: 'transparent',
+                  border: 0,
+                  textAlign: 'left',
+                  cursor: n ? 'pointer' : 'default',
+                  font: 'inherit',
+                }}
+              >
                 {n ? `${n} task${n === 1 ? '' : 's'}` : '—'}
-              </div>
+              </button>
             );
           })}
         </div>
@@ -233,53 +247,29 @@ function WeekCard({ weekStart, posts, tasks, isCurrent }) {
 
 export default function CalendarPage(props) {
   void props;
-  const today = chicagoToday();
+  const data = useMarketingData();
+  const today = data.today || chicagoToday();
   const currentSunday = sundayOfWeek(today);
   const weekStarts = [0, -7, -14, -21].map((n) => addDays(currentSunday, n));
-  const [posts, setPosts] = useState(FIXTURE_CALENDAR_POSTS);
-  const [tasks, setTasks] = useState(FIXTURE_CALENDAR_TASKS);
-  const [source, setSource] = useState('fixture');
-
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const [livePosts, liveTasks] = await Promise.all([
-          fetchPosts(addDays(sundayOfWeek(today), -21), saturdayOfWeek(addDays(today, 21))),
-          fetchWebsiteTasks(),
-        ]);
-        if (cancelled) return;
-        if (livePosts.length) {
-          setPosts(livePosts);
-          setTasks(liveTasks);
-          setSource('live');
-        } else {
-          setPosts(FIXTURE_CALENDAR_POSTS);
-          setTasks(FIXTURE_CALENDAR_TASKS);
-          setSource('fixture');
-        }
-      } catch {
-        if (cancelled) return;
-        setPosts(FIXTURE_CALENDAR_POSTS);
-        setTasks(FIXTURE_CALENDAR_TASKS);
-        setSource('fixture');
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [today]);
+  const usingFixtures = !data.configured;
+  const posts = usingFixtures ? FIXTURE_CALENDAR_POSTS : data.lookbackPosts;
+  const tasks = usingFixtures ? FIXTURE_CALENDAR_TASKS : data.tasks;
+  const source = usingFixtures ? 'fixture' : 'live';
 
   return (
     <section className="page">
       <h1>Content Calendar</h1>
-      <p style={{ marginBottom: 12 }}>
+      <p className="liveNote">
         Current week and previous 3 weeks. Click a post to open Content Detail.
       </p>
+      {data.error ? <div className="errorBanner" role="alert">{data.error}</div> : null}
       {source === 'fixture' ? (
-        <p style={{ marginBottom: 12 }}>
-          Showing fixture calendar (Supabase is not configured or returned no posts in range).
+        <p className="liveNote">
+          Showing fixture calendar (Supabase is not configured).
         </p>
+      ) : null}
+      {data.configured && !data.loading && posts.length === 0 ? (
+        <p className="liveNote">No posts in the last 4 weeks.</p>
       ) : null}
       {weekStarts.map((weekStart) => (
         <WeekCard
@@ -288,6 +278,7 @@ export default function CalendarPage(props) {
           posts={posts}
           tasks={tasks}
           isCurrent={weekStart === currentSunday}
+          today={today}
         />
       ))}
     </section>

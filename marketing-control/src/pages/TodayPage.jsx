@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useMarketingData, partitionPosts } from '../lib/useMarketingData.js';
+import { deriveAdapters } from '../lib/adapters.js';
 import { postHealth } from '../lib/postHealth.js';
 import {
   isPendingApproval,
@@ -29,14 +30,12 @@ import {
 } from '../fixtures/week.js';
 
 const C = {
-  surface: '#161922',
-  border: '#2a2f45',
   text: '#f1f5f9',
   muted: '#94a3b8',
-  indigo: '#6366f1',
   red: '#ef4444',
   green: '#10b981',
   amber: '#f59e0b',
+  indigo: '#6366f1',
 };
 
 const ADAPTER_DOT = {
@@ -74,30 +73,12 @@ function openPost(post) {
   window.location.hash = `#/detail/${post.id}`;
 }
 
-function deriveAdapters({ facebook, gbp, tasks, waitingOnOwner, runRecovery }) {
-  const platformRecovery = (platform) =>
-    runRecovery.some((i) => String(i.platform || '') === platform);
-  const facebookStatus = platformRecovery('facebook')
-    ? 'error'
-    : facebook.some((p) => isOnGraph(p) || p.status === 'posted' || p.status === 'done')
-      ? 'live_ready'
-      : 'unknown';
-  const gbpStatus = platformRecovery('gbp')
-    ? 'error'
-    : gbp.some((p) => p.status === 'posted' || p.status === 'done')
-      ? 'live_ready'
-      : gbp.some((p) => p.status === 'scheduled_native')
-        ? 'worker'
-        : 'unknown';
-  const websiteStatus =
-    waitingOnOwner.length || tasks.some((t) => t.status === 'error' || t.status === 'failed')
-      ? 'error'
-      : 'unknown';
-  return [
-    { id: 'facebook', label: 'Facebook', status: facebookStatus },
-    { id: 'gbp', label: 'GBP', status: gbpStatus },
-    { id: 'website', label: 'Website', status: websiteStatus },
-  ];
+function openItem(item) {
+  if (item?.platform) {
+    openPost(item);
+    return;
+  }
+  window.location.hash = '#/website';
 }
 
 function itemTitle(item) {
@@ -116,12 +97,13 @@ function postedCount(list) {
 }
 
 export default function TodayPage(props) {
+  void props;
   const data = useMarketingData();
   const [tab, setTab] = useState('facebook');
   const [showPrior, setShowPrior] = useState(false);
 
   const configured = data.configured;
-  const waiting = configured && data.loading;
+  const waiting = configured && data.loading && !data.posts.length;
   const usingFixtures = !configured && !waiting;
 
   const today = usingFixtures ? FIXTURE_TODAY : data.today;
@@ -132,6 +114,10 @@ export default function TodayPage(props) {
   const health = usingFixtures ? FIXTURE_HEALTH : data.health;
 
   const { facebook, gbp } = partitionPosts(posts);
+  const weekTasks = tasks.filter((t) => {
+    const d = itemDate(t);
+    return !d || (d >= weekStart && d <= weekEnd);
+  });
   const activePosts = (tab === 'gbp' ? gbp : facebook)
     .slice()
     .sort((a, b) => String(a.post_date).localeCompare(b.post_date));
@@ -164,6 +150,10 @@ export default function TodayPage(props) {
   const fbPosted = postedCount(facebook);
   const gbpPosted = postedCount(gbp);
   const gbpNative = gbp.filter((p) => p.status === 'scheduled_native').length;
+  const runColor = health?.live === 'done' ? C.green
+    : health?.live === 'error' ? C.red
+      : health?.live === 'needs_verification' ? C.amber
+        : C.indigo;
 
   if (waiting) {
     return (
@@ -183,60 +173,51 @@ export default function TodayPage(props) {
       </div>
 
       {data.error ? (
-        <div style={{
-          marginTop: 12, padding: '10px 14px', borderRadius: 8,
-          background: '#ef444422', border: '1px solid #ef444444', color: C.red, fontSize: 13,
-        }}>
+        <div className="errorBanner" role="alert">
           Live data unavailable. {data.error}
         </div>
       ) : null}
 
-      <div style={{ display: 'flex', gap: 12, marginTop: 16, flexWrap: 'wrap' }}>
-        <div style={summaryCard}>
-          <div style={{ color: C.amber, fontSize: 22, fontWeight: 700 }}>{pendingPosts.length}</div>
-          <div style={summaryLabel}>Posts pending</div>
+      <div className="summaryGrid">
+        <div className="summaryCard">
+          <div className="summaryValue" style={{ color: C.amber }}>{pendingPosts.length}</div>
+          <div className="summaryLabel">Posts pending</div>
         </div>
-        <div style={summaryCard}>
-          <div style={{ color: C.amber, fontSize: 22, fontWeight: 700 }}>{pendingTasks.length}</div>
-          <div style={summaryLabel}>Website pending</div>
+        <div className="summaryCard">
+          <div className="summaryValue" style={{ color: C.amber }}>{pendingTasks.length}</div>
+          <div className="summaryLabel">Website pending</div>
         </div>
-        <div style={summaryCard}>
-          <div style={{ color: C.amber, fontSize: 22, fontWeight: 700 }}>{waitingOnOwner.length}</div>
-          <div style={summaryLabel}>Waiting on owner</div>
+        <div className="summaryCard">
+          <div className="summaryValue" style={{ color: C.amber }}>{waitingOnOwner.length}</div>
+          <div className="summaryLabel">Waiting on owner</div>
         </div>
-        <div style={summaryCard}>
-          <div style={{ color: health?.live === 'done' ? C.green : health?.live === 'error' ? C.red : health?.live === 'needs_verification' ? C.amber : C.indigo, fontSize: 18, fontWeight: 700 }}>
+        <div className="summaryCard">
+          <div className="summaryValue" style={{ color: runColor, fontSize: 18 }}>
             {health?.live || 'idle'}
           </div>
-          <div style={summaryLabel}>Run {health?.bucket || 'incomplete'}</div>
+          <div className="summaryLabel">Run {health?.bucket || 'incomplete'}</div>
         </div>
-        <div style={{ ...summaryCard, textAlign: 'left' }}>
+        <div className="summaryCard" style={{ textAlign: 'left' }}>
           <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', justifyContent: 'space-between' }}>
             {adapters.map((a) => (
               <div key={a.id} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 <span
+                  className="adapterDot"
                   aria-hidden="true"
-                  style={{
-                    width: 8, height: 8, borderRadius: 99,
-                    background: ADAPTER_DOT[a.status] || C.muted,
-                    display: 'inline-block',
-                  }}
+                  style={{ background: ADAPTER_DOT[a.status] || C.muted }}
                 />
                 <span style={{ color: C.text, fontSize: 12, fontWeight: 600 }}>{a.label}</span>
                 <span style={{ color: C.muted, fontSize: 11 }}>{a.status.replace(/_/g, ' ')}</span>
               </div>
             ))}
           </div>
-          <div style={{ ...summaryLabel, marginTop: 8 }}>Adapter readiness</div>
+          <div className="summaryLabel">Adapter readiness</div>
         </div>
       </div>
 
       {alertTotal > 0 ? (
-        <div style={{
-          marginTop: 16, background: '#161922', border: '1px solid #2a2f45',
-          borderRadius: 8, padding: '10px 14px',
-        }}>
-          <div style={{ color: C.text, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', marginBottom: 8 }}>
+        <div className="attentionBox">
+          <div className="attentionHead">
             Needs attention ({alertTotal})
             <span style={{ color: C.muted, fontWeight: 500, letterSpacing: 0 }}>
               {grouped.execution.length ? ` · ${grouped.execution.length} execution` : ''}
@@ -248,41 +229,42 @@ export default function TodayPage(props) {
             grouped[cls].length ? (
               <div key={cls} style={{ marginBottom: 6 }}>
                 {grouped[cls].map((item) => (
-                  <div key={`alert-${item.id}`} style={{ color, fontSize: 12, marginBottom: 3 }}>
+                  <button
+                    key={`alert-${item.id}`}
+                    type="button"
+                    className="ghostBtn"
+                    style={{ display: 'block', color, fontSize: 12, marginBottom: 3, textAlign: 'left' }}
+                    onClick={() => openItem(item)}
+                  >
                     {accent} {itemDate(item) ? `${itemDate(item)} · ` : ''}{item.platform ? `${item.platform} · ` : ''}{itemTitle(item)} — {recoveryReason(item)}
-                  </div>
+                  </button>
                 ))}
               </div>
             ) : null,
           )}
         </div>
-      ) : null}
+      ) : (
+        <div className="allClear">All clear — nothing in this run needs attention.</div>
+      )}
 
       {priorRecovery.length > 0 ? (
         <button
           type="button"
+          className="ghostBtn"
           onClick={() => setShowPrior((v) => !v)}
-          style={{
-            marginTop: 8, background: 'transparent', border: '1px solid #2a2f45',
-            borderRadius: 6, padding: '4px 10px', color: C.muted, fontSize: 11,
-            cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6,
-          }}
         >
           {showPrior ? '▾' : '▸'} {priorRecovery.length} prior-week item{priorRecovery.length === 1 ? '' : 's'} (historical / skipped backlog)
         </button>
       ) : null}
 
       {showPrior && priorRecovery.length > 0 ? (
-        <div style={{
-          marginTop: 8, background: '#161922', border: '1px solid #2a2f45',
-          borderRadius: 8, padding: '10px 14px',
-        }}>
+        <div className="attentionBox">
           {priorRecovery.map((item) => (
             <div key={`prior-${item.id}`} style={{ marginBottom: 6 }}>
               <div style={{ color: C.muted, fontSize: 12 }}>
                 ⚠ {itemDate(item) ? `${itemDate(item)} · ` : ''}{item.platform ? `${item.platform} · ` : ''}{itemTitle(item)} — {recoveryReason(item)}
               </div>
-              <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', color: '#6b7280', fontSize: 11, margin: '2px 0 0 12px' }}>
+              <div className="recoveryMeta" style={{ margin: '2px 0 0 12px' }}>
                 {ageLabel(item, today) ? <span>age <strong style={{ color: C.muted }}>{ageLabel(item, today)}</strong></span> : null}
                 <span>owner <strong style={{ color: C.muted }}>{ownerFor(item)}</strong></span>
                 <span>next <strong style={{ color: C.muted }}>{nextActionFor(item)}</strong></span>
@@ -292,74 +274,58 @@ export default function TodayPage(props) {
         </div>
       ) : null}
 
-      {alertTotal === 0 ? (
-        <div style={{ marginTop: 20 }}>
-          <div style={{
-            color: C.red, fontSize: 12, fontWeight: 800, letterSpacing: 1,
-            textTransform: 'uppercase', marginBottom: 10,
-          }}>
-            Needs recovery
-          </div>
-          <p>No items need attention.</p>
-        </div>
-      ) : (
-        CLASS_SECTIONS.map(({ cls, title, color, border }) =>
+      {alertTotal > 0
+        ? CLASS_SECTIONS.map(({ cls, title, color, border }) =>
           grouped[cls].length ? (
-            <div key={cls} style={{ marginTop: 20 }}>
-              <div style={{ color, fontSize: 12, fontWeight: 800, letterSpacing: 1, textTransform: 'uppercase', marginBottom: 10 }}>
+            <div key={cls} className="recoveryList">
+              <div className="recoveryHead" style={{ color }}>
                 {title} ({grouped[cls].length})
               </div>
               {grouped[cls].map((item) => (
-                <div key={`rec-${item.id}`} style={{
-                  background: C.surface, border: `1px solid ${border}`, borderRadius: 8,
-                  padding: '12px 14px', marginBottom: 8,
-                }}>
+                <button
+                  key={`rec-${item.id}`}
+                  type="button"
+                  className="recoveryCard"
+                  style={{ border: `1px solid ${border}` }}
+                  onClick={() => openItem(item)}
+                >
                   <div style={{ color: C.text, fontSize: 13, fontWeight: 600 }}>
                     {itemDate(item) ? `${itemDate(item)} · ` : ''}{item.platform ? `${item.platform} · ` : ''}{itemTitle(item)}
                   </div>
                   <div style={{ color, fontSize: 12, margin: '6px 0 8px' }}>{recoveryReason(item)}</div>
-                  <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', color: C.muted, fontSize: 11, marginBottom: 10 }}>
+                  <div className="recoveryMeta">
                     {ageLabel(item, today) ? <span>age <strong style={{ color: C.text }}>{ageLabel(item, today)}</strong></span> : null}
                     <span>owner <strong style={{ color: C.text }}>{ownerFor(item)}</strong></span>
                     <span>next <strong style={{ color: C.text }}>{nextActionFor(item)}</strong></span>
                   </div>
-                  <div style={{ display: 'flex', gap: 8 }}>
+                  <div style={{ display: 'flex', gap: 8 }} onClick={(e) => e.stopPropagation()}>
                     <ReadOnlyButton>Retry</ReadOnlyButton>
                     <ReadOnlyButton>Skip</ReadOnlyButton>
                     <ReadOnlyButton>Ack</ReadOnlyButton>
                   </div>
-                </div>
+                </button>
               ))}
             </div>
           ) : null,
         )
-      )}
+        : null}
 
-      <div style={{ display: 'flex', gap: 8, marginTop: 20, marginBottom: 16 }}>
+      <div className="tabRow">
         {[
           { key: 'facebook', label: 'Facebook', posted: fbPosted, total: facebook.length, onGraph: facebookOnGraph },
           { key: 'gbp', label: 'Google Business', posted: gbpPosted, total: gbp.length, native: gbpNative },
+          { key: 'website', label: 'Website', posted: tasks.filter((t) => t.status === 'done').length, total: weekTasks.length },
         ].map((t) => {
           const active = tab === t.key;
           return (
             <button
               key={t.key}
               type="button"
+              className={active ? 'tabBtn active' : 'tabBtn'}
               onClick={() => setTab(t.key)}
-              style={{
-                padding: '7px 14px', borderRadius: 6, border: '1px solid',
-                borderColor: active ? C.indigo : C.border,
-                background: active ? 'rgba(99, 102, 241, 0.13)' : 'transparent',
-                color: active ? '#818cf8' : C.muted,
-                fontSize: 12, fontWeight: 600, cursor: 'pointer',
-                display: 'flex', alignItems: 'center', gap: 6,
-              }}
             >
               {t.label}
-              <span style={{
-                background: C.border, borderRadius: 10, padding: '1px 6px',
-                fontSize: 10, color: C.muted,
-              }}>
+              <span className="tabCount">
                 {t.native != null
                   ? `${t.posted}/${t.total} · ${t.native} native`
                   : t.onGraph > t.posted
@@ -371,7 +337,35 @@ export default function TodayPage(props) {
         })}
       </div>
 
-      {activePosts.length === 0 ? (
+      {tab === 'website' ? (
+        weekTasks.length === 0 ? (
+          <p>No website tasks this week.</p>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {weekTasks.map((task) => (
+              <button
+                key={task.id || task.title}
+                type="button"
+                className="postRow"
+                onClick={() => { window.location.hash = '#/website'; }}
+              >
+                <div style={{ flex: 1, minWidth: 140 }}>
+                  <div style={{ color: C.text, fontSize: 13, fontWeight: 600 }}>
+                    {task.title || task.id}
+                  </div>
+                  <div style={{ color: C.muted, fontSize: 11, marginTop: 2 }}>
+                    {task.type || 'task'} · {task.priority || '—'}
+                  </div>
+                </div>
+                <StatusChip
+                  label={String(task.status || '—').replace(/_/g, ' ').toUpperCase()}
+                  color={task.status === 'done' ? C.green : task.status === 'error' || task.status === 'failed' ? C.red : C.amber}
+                />
+              </button>
+            ))}
+          </div>
+        )
+      ) : activePosts.length === 0 ? (
         <p>No posts scheduled this week.</p>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -379,21 +373,14 @@ export default function TodayPage(props) {
             const chip = chipForPost(post, today);
             const healthRow = postHealth(post);
             const isToday = post.post_date === today;
-            const rowBorder = healthRow.state === 'red'
-              ? '1px solid #ef444466'
-              : isToday ? '1px solid #6366f144' : `1px solid ${C.border}`;
-            const rowBackground = healthRow.state === 'red' ? '#1e1518' : isToday ? '#1e2235' : C.surface;
+            const rowClass = `postRow${healthRow.state === 'red' ? ' alert' : isToday ? ' today' : ''}`;
             return (
               <button
                 key={post.id}
                 type="button"
+                className={rowClass}
                 onClick={() => openPost(post)}
                 aria-label={`Open ${post.platform || 'post'} ${post.post_date || ''}`}
-                style={{
-                  background: rowBackground, border: rowBorder, borderRadius: 7,
-                  padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
-                  width: '100%', textAlign: 'left', font: 'inherit', color: 'inherit', cursor: 'pointer',
-                }}
               >
                 <div style={{ minWidth: 42, textAlign: 'center' }}>
                   <div style={{
@@ -406,7 +393,7 @@ export default function TodayPage(props) {
                     {post.post_date}
                   </div>
                 </div>
-                <div style={{ width: 1, height: 36, background: C.border, flexShrink: 0 }} />
+                <div style={{ width: 1, height: 36, background: '#2a2f45', flexShrink: 0 }} />
                 <div style={{ flex: 1, minWidth: 140 }}>
                   <div style={{
                     color: C.text, fontSize: 13, fontWeight: 600,
@@ -443,21 +430,3 @@ export default function TodayPage(props) {
     </section>
   );
 }
-
-const summaryCard = {
-  background: '#1a1d26',
-  border: '1px solid #2a2f45',
-  borderRadius: 8,
-  padding: '12px 18px',
-  flex: 1,
-  minWidth: 140,
-  textAlign: 'center',
-};
-
-const summaryLabel = {
-  color: '#6b7280',
-  fontSize: 11,
-  textTransform: 'uppercase',
-  letterSpacing: 1,
-  marginTop: 4,
-};

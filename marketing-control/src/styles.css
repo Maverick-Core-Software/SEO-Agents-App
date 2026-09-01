@@ -45,6 +45,9 @@ body {
   flex-wrap: wrap;
   align-items: center;
   gap: 12px 20px;
+  position: sticky;
+  top: 0;
+  z-index: 20;
 }
 
 .appTitle {
@@ -140,6 +143,351 @@ body {
   font: inherit;
 }
 
+.skipLink {
+  position: absolute;
+  left: -999px;
+  top: 8px;
+  background: var(--indigo);
+  color: #fff;
+  padding: 8px 12px;
+  border-radius: 6px;
+  z-index: 40;
+}
+
+.skipLink:focus {
+  left: 8px;
+}
+
+.headerBrand {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 180px;
+}
+
+.headerMeta {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.headerActions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.reloadBtn {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 12px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.reloadBtn:hover:not(:disabled) {
+  background: var(--indigo-dim);
+}
+
+.reloadBtn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.navBadge {
+  display: inline-flex;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 5px;
+  margin-left: 6px;
+  border-radius: 999px;
+  background: #ef4444;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  align-items: center;
+  justify-content: center;
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  margin-top: 16px;
+}
+
+.cardTitle {
+  margin: 0 0 12px;
+  font-size: 16px;
+  font-weight: 650;
+  color: var(--text);
+}
+
+.summaryGrid {
+  display: flex;
+  gap: 12px;
+  margin-top: 16px;
+  flex-wrap: wrap;
+}
+
+.summaryCard {
+  background: #1a1d26;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 18px;
+  flex: 1;
+  min-width: 140px;
+  text-align: center;
+}
+
+.summaryValue {
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.summaryLabel {
+  color: #6b7280;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-top: 4px;
+}
+
+.errorBanner {
+  margin-top: 12px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: #ef444422;
+  border: 1px solid #ef444444;
+  color: #ef4444;
+  font-size: 13px;
+}
+
+.liveNote {
+  margin: 0 0 12px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.allClear {
+  margin-top: 20px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: #052e1a;
+  border: 1px solid #10b98155;
+  color: #10b981;
+  font-weight: 650;
+}
+
+.attentionBox {
+  margin-top: 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 14px;
+}
+
+.attentionHead {
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+
+.recoveryList {
+  margin-top: 20px;
+}
+
+.recoveryHead {
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  margin-bottom: 10px;
+}
+
+.recoveryCard {
+  background: var(--surface);
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin-bottom: 8px;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.recoveryCard:hover {
+  filter: brightness(1.08);
+}
+
+.recoveryMeta {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  color: var(--muted);
+  font-size: 11px;
+  margin: 6px 0 8px;
+}
+
+.tabRow {
+  display: flex;
+  gap: 8px;
+  margin-top: 20px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.tabBtn {
+  padding: 7px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tabBtn.active {
+  border-color: var(--indigo);
+  background: var(--indigo-dim);
+  color: #818cf8;
+}
+
+.tabCount {
+  background: var(--border);
+  border-radius: 10px;
+  padding: 1px 6px;
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.postRow {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.postRow:hover {
+  filter: brightness(1.06);
+}
+
+.postRow.today {
+  background: #1e2235;
+  border-color: #6366f144;
+}
+
+.postRow.alert {
+  background: #1e1518;
+  border-color: #ef444466;
+}
+
+.dataTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.dataTable th {
+  text-align: left;
+  color: var(--muted);
+  font-weight: 600;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.dataTable td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+  color: var(--text);
+}
+
+.fieldRow {
+  display: flex;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.fieldLabel {
+  width: 168px;
+  flex-shrink: 0;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.fieldValue {
+  color: var(--text);
+  min-width: 0;
+  flex: 1;
+}
+
+.backLink {
+  display: inline-block;
+  margin-bottom: 10px;
+  color: #818cf8;
+  text-decoration: none;
+  font-size: 13px;
+}
+
+.backLink:hover {
+  text-decoration: underline;
+}
+
+.ghostBtn {
+  margin-top: 8px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 10px;
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.adapterDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 99px;
+  display: inline-block;
+}
+
+.weekGrid {
+  display: grid;
+  grid-template-columns: 72px repeat(7, minmax(88px, 1fr));
+  gap: 6px;
+  min-width: 720px;
+}
+
+.todayCell {
+  outline: 1px solid var(--indigo);
+  outline-offset: -1px;
+  border-radius: 4px;
+}
+
 @media (max-width: 720px) {
   .appHeader {
     flex-direction: column;
@@ -147,13 +495,29 @@ body {
     padding: 12px;
   }
 
+  .headerActions {
+    margin-left: 0;
+  }
+
   .appNav {
-    flex-direction: column;
-    max-height: 264px;
-    flex-wrap: wrap;
+    flex-direction: row;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    max-height: none;
+    padding-bottom: 4px;
   }
 
   .navLink {
-    display: block;
+    display: inline-flex;
+    white-space: nowrap;
+  }
+
+  .fieldRow {
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .fieldLabel {
+    width: auto;
   }
 }

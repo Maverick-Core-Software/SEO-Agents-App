@@ -156,6 +156,7 @@ export default function ContentDetailPage() {
   if (!post) {
     return (
       <section className="page">
+        <a className="backLink" href="#/today">← Back to This Week</a>
         <h1>Content Detail</h1>
         <p>Read-only post/action view — pick a post from Today or Calendar.</p>
       </section>
@@ -170,6 +171,7 @@ export default function ContentDetailPage() {
 
   return (
     <section className="page">
+      <a className="backLink" href="#/today">← Back to This Week</a>
       <h1>Content Detail</h1>
       <p>
         Read-only post/action view
