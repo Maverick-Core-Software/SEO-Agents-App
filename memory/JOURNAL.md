@@ -1,5 +1,19 @@
 # SEO Agents App — Journal
 
+## 2026-09-01 close — 1-day boost duration pad; Day 1 $25 applied
+
+**Agent:** Grok 4.6 (Active `main`)
+**Outcome:** Morning 8/31 booster **did run**. Post body was live. Boost create failed Meta 1487793 (1-day window < 24h). Padded duration, retried, boost live. Commit `75a227c` pushed.
+
+- Reel: https://www.facebook.com/reel/1414714420575070/
+- Ad `6914478004679` / adset `6914477983279` / campaign `6914477981879` — $25/day, 25h window
+- Ledger remaining $25 for Wed 9/2 EV charger
+- Failed-create empty campaigns deleted; failure SMS did not send (`notified: false`)
+- mav-bridge not restarted (spawned node picks up the file)
+- Left unrelated dirty tree alone
+
+Pickup: `brain/inbox/2026-09-01-fb-boost-1day-duration.md`
+
 ## 2026-08-30 close — engine committed; next = Grizzly Local Grok Bot
 
 **Agent:** Grok 4.6 (cockle + dispatched implement tab)

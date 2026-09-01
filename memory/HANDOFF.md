@@ -1,10 +1,14 @@
 # SEO Agents App — Handoff State
 
-**Last updated:** 2026-08-30 close
-**Branch:** `barnscarter-ops/cockle`
-**Next session:** create **Grizzly Local** Grok Bot (public listing verify). Pickup `docs/NEXT-SESSION.md` + `brain/inbox/2026-08-30-grizzly-local-grok-bot.md`. Pack: `brain/projects/grok-bot/bots/grizzly-local.md`.
+**Last updated:** 2026-09-01 close
+**Branch:** `main` @ `75a227c` (pushed)
+**This close:** 1-day FB boost duration pad + Day 1 $25 boost applied. Pickup `brain/inbox/2026-09-01-fb-boost-1day-duration.md`.
 
-9am always-post is in this worktree (commit on this close). Live Active worker may still have the old skip until landed. Graph publishes Facebook; Playwright posts GBP; Bot verifies public listings only. Do not redo UI. Do not re-post 8/29.
+**Next ops tick:** Wed 2026-09-02 9:00 CT mav-bridge should boost Day 3 EV charger ($25 × 1 day) with the 25h pad. No PM2/mav-bridge restart.
+
+Day 1 reel live: https://www.facebook.com/reel/1414714420575070/ — boost ad `6914478004679`. Ledger week `2026-08-31`: $25 spent, $25 remaining.
+
+Still true: Graph publishes Facebook; Playwright posts GBP; Bot verifies public listings only. Do not redo UI. Do not re-post 8/29. Do not touch the unrelated dirty files (`classify-electrical.mjs`, `vision-benchmark.mjs`, `dump-gbp-dates.mjs`, uncommitted `fb-boost-ledger.mjs` week-header regex).
 
 Older Facebook-media notes below are historical (2026-08-17).
 
