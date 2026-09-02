@@ -212,11 +212,64 @@ def pick_trending_topic() -> str:
     return fallback_topic
 
 
+def preflight() -> list[str]:
+    """Fail closed before the crew if the Friday host cannot import or ping.
+
+    Returns a list of fatal errors. Empty list = ok to launch.
+    """
+    errors: list[str] = []
+    py = Path(sys.executable)
+    try:
+        r = subprocess.run(
+            [str(py), "-c", "import pydantic_core, seo_agents"],
+            cwd=str(PROJECT_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env={**os.environ, "PYTHONPATH": str(PROJECT_ROOT / "src")},
+        )
+        if r.returncode != 0:
+            errors.append(
+                f"interpreter cannot import pydantic_core/seo_agents: "
+                f"{(r.stderr or r.stdout or 'exit ' + str(r.returncode)).strip()[:400]}"
+            )
+    except Exception as e:
+        errors.append(f"preflight import probe failed: {e}")
+
+    if not (os.environ.get("SUPABASE_URL") or "").strip() or not (
+        os.environ.get("SUPABASE_SERVICE_KEY") or ""
+    ).strip():
+        errors.append("SUPABASE_URL / SUPABASE_SERVICE_KEY missing")
+
+    hermes = Path(
+        os.environ.get("HERMES_CLI")
+        or r"C:\Users\carte\AppData\Local\hermes\hermes-agent\venv\Scripts\hermes.exe"
+    )
+    smtp = (os.environ.get("SMTP_APP_PASSWORD") or "").strip()
+    if not hermes.exists() and not smtp:
+        errors.append(
+            f"both alert channels dead: hermes missing ({hermes}) and SMTP_APP_PASSWORD empty"
+        )
+
+    gbp_dir = os.environ.get("GBP_BROWSER_SESSION_DIR", "").strip()
+    if gbp_dir and not Path(gbp_dir).exists():
+        log_line(f"[run-weekly-seo] WARNING: GBP_BROWSER_SESSION_DIR does not exist: {gbp_dir}")
+
+    return errors
+
+
 def main() -> None:
     # Mark "started" immediately so the monitor can tell a real run from a no-show,
     # even if topic selection or the crew launch fails below.
     write_runner_health("started")
     log_line(f"[run-weekly-seo] Starting — {date.today().isoformat()} (Friday run)")
+
+    fatal = preflight()
+    if fatal:
+        msg = "; ".join(fatal)
+        log_line(f"[run-weekly-seo] PREFLIGHT FAILED: {msg}")
+        write_runner_health("failed", error=f"preflight: {msg}")
+        sys.exit(1)
 
     try:
         topic = pick_trending_topic()

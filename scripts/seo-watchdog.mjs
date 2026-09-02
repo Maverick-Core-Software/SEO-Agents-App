@@ -15,10 +15,13 @@
  * Checks (any hit → alert via hermes SMS, SMTP best-effort secondary):
  *   1. Run-day no-show: it's the expected run day, past the deadline, and the
  *      health marker was not written today.
- *   2. Run-day failure: today's health marker says 'failed' (covers the case
- *      where the monitor never launched to report it).
- *   3. Staleness: the health marker is older than STALE_DAYS — the trigger has
- *      been dead long enough that a whole week slipped. Fires daily until fixed.
+ *   2. Run-day failure: today's health marker says 'failed'.
+ *   3. Run-day hung: health still says 'started' ≥90 min after it was written.
+ *   4. Notify miss: health says success but outputs/approval-notify.json is
+ *      missing or sent !== true (2026-08-28 silent success).
+ *   5. Auto-approve miss: SEO_AUTO_APPROVE is on and latest run is still
+ *      pending_approval.
+ *   6. Staleness: the health marker is older than STALE_DAYS.
  *
  * Single-shot: checks once, alerts if needed, exits. Exit codes:
  *   0 = healthy or alert delivered; 1 = alert needed but ALL channels failed
@@ -51,7 +54,9 @@ const NO_SHOW_DEADLINE_HHMM = process.env.SEO_NO_SHOW_DEADLINE || '09:00';
 const EXPECTED_RUN_DOW      = parseInt(process.env.SEO_RUN_DOW ?? '5', 10); // 0=Sun … 5=Fri
 const STALE_DAYS            = parseInt(process.env.SEO_WATCHDOG_STALE_DAYS ?? '8', 10);
 const RUNNER_HEALTH_FILE    = path.join(PROJECT_ROOT, 'outputs', 'weekly-runner-health.json');
+const NOTIFY_RESULT_FILE    = path.join(PROJECT_ROOT, 'outputs', 'approval-notify.json');
 const LOG_FILE              = path.join(PROJECT_ROOT, 'outputs', 'watchdog.jsonl');
+const HUNG_MINUTES          = parseInt(process.env.SEO_WATCHDOG_HUNG_MINUTES ?? '90', 10);
 
 const DOW_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
@@ -82,8 +87,8 @@ async function sendAlert(subject, body) {
     log('warn', 'Hermes alert failed', { subject, error: e.message });
   }
   const smtpPass = process.env.SMTP_APP_PASSWORD || '';
-  const smtpFrom = process.env.SMTP_FROM || 'barnscarter@gmail.com';
-  const smtpTo   = process.env.SMTP_TO   || 'barnscarter@gmail.com';
+  const smtpFrom = process.env.SMTP_FROM || process.env.SMTP_FROM_EMAIL || 'barnscarter@gmail.com';
+  const smtpTo   = process.env.SMTP_TO   || process.env.SMTP_TO_EMAIL   || 'barnscarter@gmail.com';
   if (smtpPass) {
     try {
       const { createTransport } = await import('nodemailer');
@@ -98,27 +103,27 @@ async function sendAlert(subject, body) {
   return delivered;
 }
 
-function readHealth() {
-  try {
-    return JSON.parse(fs.readFileSync(RUNNER_HEALTH_FILE, 'utf8'));
-  } catch {
-    return null;
-  }
-}
-
-async function main() {
-  const now = new Date();
+export function evaluateWatchdog({
+  now,
+  health,
+  notify,
+  autoApprove = false,
+  latestRun = null,
+  staleDays = STALE_DAYS,
+  deadline = NO_SHOW_DEADLINE_HHMM,
+  expectedDow = EXPECTED_RUN_DOW,
+  hungMinutes = HUNG_MINUTES,
+} = {}) {
   const today = localDateISO(now);
-  const health = readHealth();
+  const hhmm = localHHMM(now);
+  const isRunDay = now.getDay() === expectedDow;
+  const pastDeadline = hhmm >= deadline;
   const problems = [];
-
-  const isRunDay = now.getDay() === EXPECTED_RUN_DOW;
-  const pastDeadline = localHHMM(now) >= NO_SHOW_DEADLINE_HHMM;
 
   if (isRunDay && pastDeadline && (!health || health.date !== today)) {
     problems.push(
-      `NO-SHOW: today is ${DOW_NAMES[EXPECTED_RUN_DOW]} (run day), it is past ` +
-      `${NO_SHOW_DEADLINE_HHMM} local, and the weekly runner never started ` +
+      `NO-SHOW: today is ${DOW_NAMES[expectedDow]} (run day), it is past ` +
+      `${deadline} local, and the weekly runner never started ` +
       `(health marker ${health ? `is from ${health.date}` : 'does not exist'}). ` +
       `Check the 'Grizzly SEO Weekly Run' scheduled task on CartersPC.`
     );
@@ -127,27 +132,78 @@ async function main() {
       `RUN FAILED today: ${health.error || 'no error captured'} ` +
       `(see ${health.log_file || 'outputs/'}).`
     );
+  } else if (isRunDay && pastDeadline && health?.date === today && health.status === 'started') {
+    const ageMin = health.at ? (now - new Date(health.at)) / 60_000 : Infinity;
+    if (ageMin >= hungMinutes) {
+      problems.push(
+        `HUNG: weekly runner still 'started' after ${ageMin.toFixed(0)} min ` +
+        `(threshold ${hungMinutes}m). Check Task Scheduler / crew log.`
+      );
+    }
+  }
+
+  if (isRunDay && pastDeadline && health?.date === today && health.status === 'success') {
+    const notified = notify && notify.sent === true;
+    if (!notified) {
+      problems.push(
+        `NOTIFY MISS: runner succeeded but approval-notify.json ` +
+        `${notify ? `sent=${notify.sent} reason=${notify.reason || '?'}` : 'is missing'}. ` +
+        `Hermes/SMTP did not confirm a ping — last week's silent Saturday-approve loop.`
+      );
+    }
+    if (autoApprove) {
+      const took = notify && notify.autoApprove === true;
+      const stillPending = latestRun
+        ? latestRun.status === 'pending_approval'
+        : !took;
+      if (stillPending && !took) {
+        problems.push(
+          `AUTO-APPROVE DID NOT TAKE: SEO_AUTO_APPROVE is on but ` +
+          `${latestRun ? `seo_runs ${latestRun.id || ''} is still pending_approval` : 'approval-notify.json does not show autoApprove=true'}.`
+        );
+      }
+    }
   }
 
   if (health?.at) {
     const ageDays = (now - new Date(health.at)) / 86_400_000;
-    if (ageDays > STALE_DAYS) {
+    if (ageDays > staleDays) {
       problems.push(
         `STALE: last weekly-runner activity was ${health.date} (${ageDays.toFixed(1)} days ago, ` +
-        `threshold ${STALE_DAYS}d). The Friday trigger is likely dead or disabled — a full week ` +
+        `threshold ${staleDays}d). The Friday trigger is likely dead or disabled — a full week ` +
         `has been missed. Check Task Scheduler on CartersPC.`
       );
     }
-  } else if (!health && !isRunDay) {
-    // No marker at all and it's not run day: either a fresh checkout or someone
-    // deleted outputs/. Worth one line in the log, not an SMS.
+  }
+
+  return problems;
+}
+
+function readJson(file) {
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+async function main() {
+  const now = new Date();
+  const health = readJson(RUNNER_HEALTH_FILE);
+  const notify = readJson(NOTIFY_RESULT_FILE);
+  const autoApprove = /^(1|true|yes)$/i.test(process.env.SEO_AUTO_APPROVE || '');
+
+  if (!health && now.getDay() !== EXPECTED_RUN_DOW) {
     log('warn', 'No runner health marker found', { file: RUNNER_HEALTH_FILE });
   }
+
+  const problems = evaluateWatchdog({ now, health, notify, autoApprove });
 
   if (problems.length === 0) {
     log('info', 'Healthy', {
       last_run_date: health?.date ?? null,
       last_status: health?.status ?? null,
+      notify_sent: notify?.sent ?? null,
     });
     return;
   }
@@ -162,7 +218,13 @@ async function main() {
   }
 }
 
-main().catch((e) => {
-  log('error', 'Watchdog crashed', { error: e.message });
-  process.exitCode = 1;
-});
+const invokedDirectly = process.argv[1]
+  && fs.realpathSync.native(fileURLToPath(import.meta.url))
+    === fs.realpathSync.native(path.resolve(process.argv[1]));
+
+if (invokedDirectly) {
+  main().catch((e) => {
+    log('error', 'Watchdog crashed', { error: e.message });
+    process.exitCode = 1;
+  });
+}

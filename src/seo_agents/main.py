@@ -56,6 +56,7 @@ from seo_agents.run_context import (
     build_run_context,
     release_run_context,
 )
+from seo_agents.week_spec import load_or_create_week_spec
 from seo_agents.status import (
     build_workflow_status,
     format_status_text,
@@ -135,8 +136,16 @@ def _send_failure_alert(phase: str, error: str, topic: str, at: str) -> None:
     delivered = _send_hermes_alert(f"{subject}\n{body}")
 
     app_password = os.getenv("SMTP_APP_PASSWORD", "").strip()
-    from_addr = os.getenv("SMTP_FROM_EMAIL", "barnscarter@gmail.com").strip()
-    to_addr = os.getenv("SMTP_TO_EMAIL", "barnscarter@gmail.com").strip()
+    from_addr = (
+        os.getenv("SMTP_FROM_EMAIL", "").strip()
+        or os.getenv("SMTP_FROM", "").strip()
+        or "barnscarter@gmail.com"
+    )
+    to_addr = (
+        os.getenv("SMTP_TO_EMAIL", "").strip()
+        or os.getenv("SMTP_TO", "").strip()
+        or "barnscarter@gmail.com"
+    )
     if app_password:
         msg = MIMEText(body)
         msg["Subject"] = subject
@@ -478,27 +487,62 @@ def _fetch_completed_tasks() -> str:
 
 
 def _run_supabase_sync(week_of: str = "") -> None:
-    """Push the current outputs to Supabase after a pipeline phase completes."""
+    """Push the current outputs to Supabase after a pipeline phase completes.
+
+    ``week_of`` is required (the Monday key). Clock fallback in supabase-sync
+    was how weeks got filed under the wrong unique key.
+    """
     import subprocess
+
+    if not week_of:
+        print("❌ supabase-sync refused: week_of is required (pass the Monday WeekSpec)")
+        sys.exit(1)
 
     script = Path(__file__).parent.parent.parent / "scripts" / "supabase-sync.mjs"
     if not script.exists():
-        print("⚠ supabase-sync.mjs not found — skipping Supabase sync")
-        return
-    cmd = ["node", str(script)]
-    if week_of:
-        cmd += ["--week-of", week_of]
+        print("❌ supabase-sync.mjs not found")
+        sys.exit(1)
+    cmd = ["node", str(script), "--week-of", week_of]
     print("\n🔄 Syncing to Supabase...")
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30, cwd=str(script.parent.parent))
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=90, cwd=str(script.parent.parent)
+        )
         if proc.stdout:
             print(proc.stdout.strip())
         if proc.returncode != 0:
-            print(f"⚠ Supabase sync failed (exit {proc.returncode}): {proc.stderr.strip()}")
-        else:
-            print("✅ Supabase sync complete")
+            print(f"❌ Supabase sync failed (exit {proc.returncode}): {proc.stderr.strip()}")
+            sys.exit(proc.returncode or 1)
+        print("✅ Supabase sync complete")
+    except subprocess.TimeoutExpired:
+        print("❌ Supabase sync timed out after 90s")
+        sys.exit(1)
     except Exception as exc:
-        print(f"⚠ Supabase sync error: {exc}")
+        print(f"❌ Supabase sync error: {exc}")
+        sys.exit(1)
+
+
+def _count_day_headers(path: Path) -> int:
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return 0
+    return sum(1 for line in text.splitlines() if line.lstrip().startswith(("DAY:", "**DAY:")))
+
+
+def _require_fresh_schedule(path: Path, min_days: int, label: str) -> None:
+    if not path.exists():
+        print(f"❌ {label} schedule missing: {path}")
+        sys.exit(1)
+    # st_mtime is wall clock; kickoff just wrote it. Allow 5s of clock skew.
+    age_s = time.time() - path.stat().st_mtime
+    if age_s > 3600:
+        print(f"❌ {label} schedule is stale ({age_s:.0f}s old): {path}")
+        sys.exit(1)
+    n = _count_day_headers(path)
+    if n < min_days:
+        print(f"❌ {label} schedule has {n} DAY: blocks (need ≥ {min_days})")
+        sys.exit(1)
 
 
 def parse_args() -> argparse.Namespace:
@@ -661,6 +705,13 @@ def _run_execute_pipeline() -> None:
         print("   seo-agents research <topic>")
         sys.exit(1)
 
+    week = load_or_create_week_spec(OUTPUT_DIR)
+    start_date = week.gbp_start
+    print(
+        f"📅 WeekSpec run_friday={week.run_friday} week_of={week.week_of} "
+        f"gbp_start={week.gbp_start}"
+    )
+
     crew = build_executor_crew()
     t0 = time.monotonic()
     try:
@@ -678,7 +729,7 @@ def _run_execute_pipeline() -> None:
         write_workflow_status(
             phase="execute",
             phase_status="complete",
-            extra={"archived_final_report": archived_path},
+            extra={"archived_final_report": archived_path, "week_of": week.week_of},
         )
     except Exception as e:
         write_run_health("execute", "failed", error=str(e), started_at=t0)
@@ -686,18 +737,15 @@ def _run_execute_pipeline() -> None:
         print(f"\n❌ Executor crew failed: {e}")
         sys.exit(1)
 
-    # Day 1 (today, Friday) posts immediately on approval.
-    # Days 2-7 (Saturday through Thursday) are the 6-day scheduled queue via daily cron.
-    start_date = date.today().isoformat()
-
     print(f"\n{'─'*60}")
-    print(f"📅 Auto-running GBP post schedule (starting {start_date})...")
+    print(f"📅 Auto-running GBP post schedule (starting {start_date}, week_of {week.week_of})...")
     t1 = time.monotonic()
     try:
         gbp_crew = build_poster_crew(start_date=start_date, days=7)
         gbp_result = gbp_crew.kickoff()
         print(gbp_result)
         schedule_path = OUTPUT_DIR / "gbp_posting_schedule.md"
+        _require_fresh_schedule(schedule_path, 7, "GBP")
         photo_path = os.getenv("GBP_PHOTO_PATH", r"C:\Workspace\Shared\Assets\Media\Grizzly\GBP Post Photos")
         archived_photos = archive_used_photos(schedule_path, Path(photo_path))
         if archived_photos:
@@ -706,29 +754,36 @@ def _run_execute_pipeline() -> None:
         write_workflow_status(
             phase="post_schedule",
             phase_status="complete",
-            args={"start_date": start_date, "days": 7},
+            args={"start_date": start_date, "days": 7, "week_of": week.week_of},
             extra={"archived_photos": archived_photos},
         )
-        print(f"✅ GBP posting schedule saved")
+        print("✅ GBP posting schedule saved")
+    except SystemExit:
+        raise
     except Exception as e:
         write_run_health("post_schedule", "failed", error=str(e), started_at=t1)
         write_workflow_status(phase="post_schedule", phase_status="failed", error=str(e))
-        print(f"⚠ GBP post schedule failed (non-fatal): {e}")
+        print(f"❌ GBP post schedule failed: {e}")
+        sys.exit(1)
 
     print(f"\n{'─'*60}")
-    print(f"📘 Auto-running Facebook post schedule (starting {start_date})...")
+    print(f"📘 Auto-running Facebook post schedule (starting {start_date}, week_of {week.week_of})...")
     t2 = time.monotonic()
     try:
         fb_crew = build_facebook_crew(start_date=start_date, days=7)
         fb_result = fb_crew.kickoff()
         print(fb_result)
+        _require_fresh_schedule(OUTPUT_DIR / "facebook_posting_schedule.md", 4, "Facebook")
         write_run_health("facebook_schedule", "success", started_at=t2)
-        print(f"✅ Facebook posting schedule saved")
+        print("✅ Facebook posting schedule saved")
+    except SystemExit:
+        raise
     except Exception as e:
         write_run_health("facebook_schedule", "failed", error=str(e), started_at=t2)
-        print(f"⚠ Facebook schedule failed (non-fatal): {e}")
+        print(f"❌ Facebook schedule failed: {e}")
+        sys.exit(1)
 
-    _run_supabase_sync()
+    _run_supabase_sync(week_of=week.week_of)
 
 
 def main() -> None:
@@ -826,20 +881,10 @@ def main() -> None:
             release_run_context(ctx)
             return
 
-        # Live mode — proceed with baseline compaction and Supabase fetch.
-        print("\n🗜  Compacting baselines before research...")
-        try:
-            compact_result = compact_baselines()
-        except Exception as _compact_err:
-            print(f"   WARNING: Baseline compaction failed (non-fatal): {_compact_err}")
-            compact_result = {"status": "skipped"}
-        if compact_result["status"] == "compacted":
-            print(f"   ✅ Baselines compacted: {len(compact_result['archived_files'])} files → {compact_result['output']} ({compact_result['reduction_pct']}% smaller)")
-        elif compact_result["status"] == "nothing_to_compact":
-            print("   ℹ  No baseline files to compact — continuing.")
-        else:
-            print(f"   ℹ  Baselines: {compact_result['status']}")
-
+        # Live mode — fetch prior context, then research. Do not compact
+        # baselines here: weekly compact archived real knowledge into an
+        # 800-word stub that still claimed WordPress/CF7. Use
+        # `seo-agents compact-baselines` monthly instead.
         previous_context = load_previous_run_context()
         print("📋 Fetching completed tasks from Supabase...")
         completed_tasks = _fetch_completed_tasks()
@@ -908,7 +953,8 @@ def main() -> None:
                     f"Failures: {len(finalize_result['gate_result']['failures'])}, "
                     f"Warnings: {len(finalize_result['gate_result']['warnings'])}"
                 )
-                write_run_health("finalize", "blocked", topic=topic, error=msg, started_at=t0)
+                # 'failed' (not 'blocked') so the Friday wrapper + watchdog SMS fire.
+                write_run_health("finalize", "failed", topic=topic, error=msg, started_at=t0)
                 write_workflow_status(
                     phase="finalize",
                     phase_status="blocked",
@@ -919,6 +965,7 @@ def main() -> None:
                 print(f"\n{'─' * 60}")
                 print(f"🚫 {msg}")
                 print(f"{'─' * 60}")
+                sys.exit(1)
             elif skip_execute:
                 print(f"\n{'─' * 60}")
                 print("⏭  --skip-execute: research complete — skipping execution pipeline.")
@@ -986,7 +1033,8 @@ def main() -> None:
                 args={"start_date": start_date, "days": getattr(args, "days", 7)},
                 extra={"archived_photos": archived},
             )
-            _run_supabase_sync(week_of=start_date)
+            from seo_agents.week_spec import compute_week_spec
+            _run_supabase_sync(week_of=compute_week_spec(date.fromisoformat(start_date)).week_of)
         except Exception as e:
             write_run_health("post_schedule", "failed", error=str(e), started_at=t0)
             write_workflow_status(
@@ -1121,7 +1169,8 @@ def main() -> None:
             result = crew.kickoff()
             print(f"\n✅ Facebook schedule written to: outputs/facebook_posting_schedule.md")
             print("  Run `seo-agents actions` to see the new Facebook post actions in the queue.")
-            _run_supabase_sync(week_of=start_date)
+            from seo_agents.week_spec import compute_week_spec
+            _run_supabase_sync(week_of=compute_week_spec(date.fromisoformat(start_date)).week_of)
         except Exception as e:
             print(f"\n❌ Facebook Schedule crew failed: {e}")
             sys.exit(1)
