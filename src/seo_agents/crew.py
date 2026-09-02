@@ -1020,6 +1020,21 @@ def build_poster_crew(
     content_report = read_output("content_report.md")
     gbp_report = read_output("gbp_report.md")
 
+    gbp_date_table = ""
+    if start_date:
+        try:
+            gbp_anchor = date.fromisoformat(start_date)
+            rows = []
+            for d in range(1, days + 1):
+                dt = gbp_anchor + timedelta(days=d - 1)
+                rows.append(
+                    f"  DAY {d} -> DATE: {dt.isoformat()} "
+                    f"({dt.strftime('%A')}, {dt.strftime('%B')} {dt.day}, {dt.year})"
+                )
+            gbp_date_table = "\n".join(rows)
+        except ValueError:
+            gbp_date_table = ""
+
     poster_context = (
         f"GBP_PHOTO_PATH: {photo_path}\n"
         f"MANIFEST: {manifest_path}\n"
@@ -1029,8 +1044,16 @@ def build_poster_crew(
         "MANIFEST RULE: Only select photos from the AVAILABLE PHOTOS list above. "
         "Photos already marked used/archived in the manifest are excluded and must not be reused.\n\n"
         f"START DATE: {start_date or 'Next business day'}\n"
-        f"DAYS TO SCHEDULE: {days}\n\n"
-        "CONTENT REPORT (research phase):\n\n"
+        f"DAYS TO SCHEDULE: {days}\n"
+    )
+    if gbp_date_table:
+        poster_context += (
+            "\nEXACT POSTING DATES — copy these verbatim into the DATE field. Do NOT "
+            "compute, shift, or re-label them, and do not use today's date:\n"
+            f"{gbp_date_table}\n"
+        )
+    poster_context += (
+        "\nCONTENT REPORT (research phase):\n\n"
         f"{content_report}\n\n"
         "GBP REPORT (research phase, includes trend signals):\n\n"
         f"{gbp_report}"
@@ -1052,6 +1075,8 @@ def build_poster_crew(
             "and recommended post topics — use them directly. Do not search for additional trend data.\n\n"
             f"{DAY_TOPIC_BINDING_RULE}\n"
             f"Build a {days}-day GBP posting schedule starting from {start_date or 'the next business day'}. "
+            "Use the EXACT POSTING DATES above for every DATE field when they are provided — "
+            "do not compute or shift them. "
             "For TREND_TIE, quote the specific trend signal from the GBP REPORT that drove each post's topic choice. "
             "CRITICAL: Only assign photos from the AVAILABLE PHOTOS list — never repeat a photo "
             "already in the manifest with status used/archived/posted. "

@@ -8,7 +8,7 @@
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { autoApproveRun } from './supabase-sync.mjs';
+import { autoApproveRun, resolveWeekOf, parseFbWeekHeader } from './supabase-sync.mjs';
 
 // Fluent supabase-js builder mock: every chain is thenable and resolves to the
 // next scripted { data, error } for its table, in call order.
@@ -118,5 +118,37 @@ describe('autoApproveRun', () => {
     });
     const out = await autoApproveRun('r1', c);
     assert.deepEqual(out, { ok: false, reason: 'rollback_failed' });
+  });
+});
+
+describe('resolveWeekOf', () => {
+  it('prefers --week-of', () => {
+    assert.equal(
+      resolveWeekOf({ argv: ['--week-of', '2026-08-31'], fbText: '' }),
+      '2026-08-31',
+    );
+  });
+
+  it('parses FB "week of YYYY-MM-DD" when flag missing', () => {
+    const text = 'Build a 4-post Facebook schedule for the week of 2026-08-31 using the EXACT';
+    assert.equal(parseFbWeekHeader(text), '2026-08-31');
+    assert.equal(resolveWeekOf({ argv: [], fbText: text }), '2026-08-31');
+  });
+
+  it('throws when flag and header disagree', () => {
+    assert.throws(
+      () => resolveWeekOf({
+        argv: ['--week-of', '2026-08-31'],
+        fbText: 'week of 2026-09-07',
+      }),
+      /disagree/,
+    );
+  });
+
+  it('throws when neither flag nor header is present (no clock fallback)', () => {
+    assert.throws(
+      () => resolveWeekOf({ argv: [], fbText: 'no dates here' }),
+      /week_of required/,
+    );
   });
 });

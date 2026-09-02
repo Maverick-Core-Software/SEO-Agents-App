@@ -19,6 +19,7 @@ import { parseWebsiteTasks, stripCodeFence, isDuplicateOwnerWaitTopic } from './
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '..');
 const APPROVAL_NOTIFY_STATE = path.join(PROJECT_ROOT, 'state', 'approval-notified.json');
+const APPROVAL_NOTIFY_RESULT = path.join(PROJECT_ROOT, 'outputs', 'approval-notify.json');
 
 // Load .env
 const envPath = path.join(PROJECT_ROOT, '.env');
@@ -47,19 +48,33 @@ const OUTPUTS = path.join(PROJECT_ROOT, 'outputs');
 // Helpers
 // ─────────────────────────────────────────────
 
+export function parseFbWeekHeader(text) {
+  if (!text) return '';
+  const m = String(text).match(/week of\s+(\d{4}-\d{2}-\d{2})/i);
+  return m ? m[1] : '';
+}
+
+export function resolveWeekOf({ argv = process.argv.slice(2), fbText = '' } = {}) {
+  const idx = argv.indexOf('--week-of');
+  const fromArg = (idx !== -1 && argv[idx + 1]) ? argv[idx + 1] : '';
+  const fromHeader = parseFbWeekHeader(fbText);
+  if (fromArg && fromHeader && fromArg !== fromHeader) {
+    throw new Error(`week_of disagree: --week-of ${fromArg} vs FB header ${fromHeader}`);
+  }
+  const weekOf = fromArg || fromHeader;
+  if (!weekOf || !/^\d{4}-\d{2}-\d{2}$/.test(weekOf)) {
+    throw new Error('week_of required: pass --week-of YYYY-MM-DD or write a "week of YYYY-MM-DD" FB header');
+  }
+  return weekOf;
+}
+
 function getWeekOf() {
-  const args = process.argv.slice(2);
-  const idx = args.indexOf('--week-of');
-  if (idx !== -1 && args[idx + 1]) return args[idx + 1];
-  // Default: next Monday, formatted in LOCAL time. toISOString() converts to
-  // UTC first, so any run after ~19:00 CDT rolled the date forward a day —
-  // that's how the 2026-07-28 22:53 manual run got filed as week_of 2026-08-04
-  // (a Tuesday), stranding its posts under a week no other query looked at.
-  const d = new Date();
-  const day = d.getDay();
-  const diff = day === 0 ? 1 : 8 - day;
-  d.setDate(d.getDate() + diff);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  // Clock fallback is gone. Kept as a thin wrapper so older comments/tests
+  // that mention getWeekOf still have a name to grep.
+  return resolveWeekOf({
+    argv: process.argv.slice(2),
+    fbText: readFile('facebook_posting_schedule.md') || '',
+  });
 }
 
 function readFile(filename) {
@@ -181,6 +196,49 @@ function loadApprovalNotifyState() {
   }
 }
 
+function writeNotifyResult(payload) {
+  try {
+    fs.mkdirSync(path.dirname(APPROVAL_NOTIFY_RESULT), { recursive: true });
+    fs.writeFileSync(
+      APPROVAL_NOTIFY_RESULT,
+      JSON.stringify({ at: new Date().toISOString(), ...payload }, null, 2) + '\n',
+      'utf8',
+    );
+  } catch (err) {
+    console.error(`Could not write approval-notify.json: ${err.message || err}`);
+  }
+}
+
+async function sendDualAlert(message) {
+  let hermesOk = false;
+  let smtpOk = false;
+  let reason = '';
+  try {
+    await sendHermesAlert(message);
+    hermesOk = true;
+  } catch (err) {
+    reason = String(err.message || err);
+    console.error(`Hermes alert failed (non-fatal so far): ${reason}`);
+  }
+  const smtpPass = process.env.SMTP_APP_PASSWORD || '';
+  const smtpFrom = process.env.SMTP_FROM || process.env.SMTP_FROM_EMAIL || 'barnscarter@gmail.com';
+  const smtpTo = process.env.SMTP_TO || process.env.SMTP_TO_EMAIL || 'barnscarter@gmail.com';
+  if (smtpPass) {
+    try {
+      const { createTransport } = await import('nodemailer');
+      const transport = createTransport({ service: 'gmail', auth: { user: smtpFrom, pass: smtpPass } });
+      await transport.sendMail({ from: smtpFrom, to: smtpTo, subject: message.split('\n')[0].slice(0, 80), text: message });
+      smtpOk = true;
+    } catch (err) {
+      console.error(`SMTP alert failed: ${err.message || err}`);
+      if (!reason) reason = String(err.message || err);
+    }
+  }
+  const sent = hermesOk || smtpOk;
+  const channel = [hermesOk && 'hermes', smtpOk && 'smtp'].filter(Boolean).join('+') || 'none';
+  return { sent, channel, reason: sent ? '' : (reason || 'all_channels_failed') };
+}
+
 function markApprovalNotified(dedupeKey, meta) {
   const state = loadApprovalNotifyState();
   state[dedupeKey] = { at: new Date().toISOString(), ...meta };
@@ -197,13 +255,17 @@ async function notifyApprovalGate({ runId, weekOf, fbCount, gbpCount, taskCount 
   const totalPosts = (fbCount || 0) + (gbpCount || 0);
   if (totalPosts <= 0) {
     console.log('No pending weekly posts — skipping approval SMS');
-    return { sent: false, reason: 'no_posts' };
+    const result = { sent: false, reason: 'no_posts', runId, weekOf, autoApprove: false };
+    writeNotifyResult(result);
+    return result;
   }
   const dedupeKey = `${runId}:fb${fbCount}:gbp${gbpCount}`;
   const state = loadApprovalNotifyState();
   if (state[dedupeKey]) {
     console.log(`Approval SMS already sent for ${dedupeKey} at ${state[dedupeKey].at} — skip`);
-    return { sent: false, reason: 'already_notified', dedupeKey };
+    const result = { sent: true, reason: 'already_notified', dedupeKey, runId, weekOf, autoApprove: false };
+    writeNotifyResult(result);
+    return result;
   }
 
   const shortId = String(runId).slice(0, 8);
@@ -217,15 +279,16 @@ async function notifyApprovalGate({ runId, weekOf, fbCount, gbpCount, taskCount 
     'Open MCC → approve posts (nothing publishes until you approve).',
   ].filter(Boolean).join('\n');
 
-  try {
-    await sendHermesAlert(message);
+  const delivery = await sendDualAlert(message);
+  if (delivery.sent) {
     markApprovalNotified(dedupeKey, { runId, weekOf, fbCount, gbpCount, taskCount });
-    console.log('Approval SMS sent via Hermes (HERMES_ALERT_TO)');
-    return { sent: true, dedupeKey };
-  } catch (err) {
-    console.error(`Approval SMS failed (non-fatal): ${err.message || err}`);
-    return { sent: false, reason: 'send_failed', error: String(err.message || err) };
+    console.log(`Approval notice sent via ${delivery.channel}`);
+  } else {
+    console.error(`Approval notice failed on all channels: ${delivery.reason}`);
   }
+  const result = { ...delivery, dedupeKey, runId, weekOf, autoApprove: false, fbCount, gbpCount };
+  writeNotifyResult(result);
+  return result;
 }
 
 /**
@@ -310,19 +373,27 @@ async function notifyAutoApproved({ runId, weekOf, fbCount, gbpCount, taskCount 
     taskCount ? `Website tasks awaiting approval in MCC: ${taskCount}` : null,
     'Publishing via mav-bridge — no action needed.',
   ].filter(Boolean).join('\n');
-  try {
-    await sendHermesAlert(message);
-    console.log('Auto-approve notice sent via Hermes (HERMES_ALERT_TO)');
-  } catch (err) {
-    console.error(`Auto-approve notice failed (non-fatal): ${err.message || err}`);
+  const delivery = await sendDualAlert(message);
+  if (delivery.sent) {
+    console.log(`Auto-approve notice sent via ${delivery.channel}`);
+  } else {
+    console.error(`Auto-approve notice failed on all channels: ${delivery.reason}`);
   }
+  writeNotifyResult({ ...delivery, runId, weekOf, autoApprove: true, fbCount, gbpCount });
+  return delivery;
 }
 
 async function main() {
   // --tasks-only: re-sync website_tasks for an existing run without touching
   // weekly_posts or the run's approval status (safe after posts are approved).
   const tasksOnly = process.argv.includes('--tasks-only');
-  const weekOf = getWeekOf();
+  let weekOf;
+  try {
+    weekOf = getWeekOf();
+  } catch (err) {
+    console.error(String(err.message || err));
+    process.exit(1);
+  }
   console.log(`Syncing week of ${weekOf} to Supabase...${tasksOnly ? ' (website tasks only)' : ''}`);
 
   let runId;
@@ -413,9 +484,9 @@ async function main() {
       const why = outcome.reason === 'zero_posts'
         ? 'zero posts to approve (empty week?)'
         : 'post rollback failed after a partial transition (check MCC consistency)';
-      await sendHermesAlert(
+      await sendDualAlert(
         `SEO auto-approve SKIPPED for run ${String(runId).slice(0, 8)}: ${why}. Run left pending_approval — inspect the weekly sync output.`,
-      ).catch((e) => console.error(`Auto-approve skip alert failed (non-fatal): ${e?.message || e}`));
+      );
     }
     console.error('Auto-approve failed — leaving run at the MCC approval gate.');
   }

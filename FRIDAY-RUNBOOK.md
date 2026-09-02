@@ -59,7 +59,12 @@ Interpretation:
 | `LastRunTime` blank/old, no `weekly-runner-health.json` for today | Task never fired (reboot / logged-on-only) | re-run `setup-scheduled-tasks.ps1` |
 | `weekly-runner-health.json` shows `failed`, log says "seo-agents not found" | crew not installed where task's Python can see it | `.\.venv\Scripts\Activate.ps1; pip install -e .` |
 | `run_health.json` research = `failed` | crew ran and errored (API key, network) | read its `error`; check DEEPSEEK_API_KEY and ANTHROPIC_API_KEY in `.env` |
-| `pm2 ls` empty after reboot | PM2 didn't resurrect | `pm2 resurrect` (or `setup-pm2-boot.ps1` for next time) |
+| `weekly-runner-health.json` shows `started` still set at 10:00 | Crew hung or wrapper never finished | Watchdog now SMS `HUNG` (≥90 min). Check `outputs/weekly-crew-*.log` |
+| health `success` but no ping, MCC still pending | Hermes notify died (2026-08-28) | Watchdog SMS `NOTIFY MISS`. Look at `outputs/approval-notify.json` |
+| Auto-approve on but run still `pending_approval` | `SEO_AUTO_APPROVE` didn't take (zero posts / CAS) | Watchdog SMS `AUTO-APPROVE DID NOT TAKE` |
+
+`SEO_AUTO_APPROVE` lives in `.env` for `supabase-sync.mjs`, **not** in the watchdog. Default in `.env.example` is `0`. Saturday approve shifting GBP dates is fixed by `WeekSpec` (most recent Friday), not by the flag.
+
 
 ## What the monitor now catches
 
