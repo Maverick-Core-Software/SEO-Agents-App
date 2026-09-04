@@ -147,3 +147,40 @@ def test_is_provider_down_recognises_outages(message):
 )
 def test_is_provider_down_ignores_request_errors(message):
     assert not _is_provider_down(_ProviderError(message))
+
+
+# ---------------------------------------------------------------------------
+# Construction-time failure (2026-09-04): the primary could not even be built
+# because a venv re-sync dropped the provider SDK. The call() wrapper never
+# existed, so the configured fallback was useless and the Friday run died.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def primary_unbuildable(monkeypatch):
+    """Make LLM(model=PRIMARY) raise the way crewai does for a missing SDK."""
+    import seo_agents.crew as crew_mod
+
+    real_llm = crew_mod.LLM
+
+    def exploding_llm(*args, **kwargs):
+        if kwargs.get("model") == PRIMARY:
+            raise ImportError("Anthropic native provider not available")
+        return real_llm(*args, **kwargs)
+
+    monkeypatch.setattr(crew_mod, "LLM", exploding_llm)
+
+
+def test_unbuildable_primary_runs_tier_on_fallback(failover_env, primary_unbuildable):
+    llm = build_research_llm()
+    assert llm.model == FALLBACK
+    # Plain fallback, no wrapper: there is no primary left to fail over from.
+    assert "_seo_failover" not in llm.__dict__
+
+
+def test_unbuildable_primary_without_fallback_still_raises(
+    failover_env, primary_unbuildable, monkeypatch
+):
+    monkeypatch.delenv("CREWAI_RESEARCH_FALLBACK_MODEL")
+    with pytest.raises(ImportError):
+        build_research_llm()

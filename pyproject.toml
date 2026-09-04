@@ -7,7 +7,10 @@ dependencies = [
   # crewai 1.15.0+ requires opentelemetry-*~=1.42.0; earlier 1.14.x pinned
   # ~=1.34.0, whose 1.34.x series raises an _ON_EMIT_RECURSION_COUNT_KEY
   # ImportError. Staying on 1.15.x keeps the working opentelemetry resolver-native.
-  "crewai==1.15.1",
+  # [anthropic] pulls the Anthropic SDK the native provider needs for
+  # CREWAI_EXEC_MODEL=anthropic/...; without it a plain `uv sync` drops the SDK
+  # and the Friday run dies at LLM construction (2026-09-04).
+  "crewai[anthropic]==1.15.1",
   "crewai-tools==1.15.1",
   "python-dotenv==1.2.2",
   "pytrends>=4.9.2",

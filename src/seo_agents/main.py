@@ -473,14 +473,40 @@ def _fetch_completed_tasks() -> str:
             tasks = json.loads(resp.read())
         if not tasks:
             return ""
-        lines = ["COMPLETED TASKS FROM PREVIOUS RUNS (verify each is still live before recommending it again):"]
+        # A short brief, not a scrape list. Until 2026-09-04 every completed task
+        # was a mandatory live scrape for the website agent; at 24 tasks that
+        # blew CrewAI's 25-iteration cap and the forced final answer was
+        # narration with no report markers, failing the finalize gate.
+        by_week: dict[str, list[str]] = {}
         for t in tasks:
             completed = t.get("updated_at", "")[:10] if t.get("updated_at") else "unknown date"
-            task_id = (t.get("details") or {}).get("task_id", "?") if isinstance(t.get("details"), dict) else "?"
-            lines.append(f"  - [{task_id}] {t.get('title', '?')} — completed {completed}")
-        lines.append("\nFor each item above: scrape the relevant page and confirm the work is still in place.")
-        lines.append("Mark CONFIRMED LIVE or REGRESSION before writing any new recommendations.")
-        return "\n".join(lines)
+            desc = " ".join((t.get("description") or "").split())
+            if len(desc) > 140:
+                desc = desc[:137].rstrip() + "..."
+            entry = f"- {t.get('title', '?')}" + (f" — {desc}" if desc else "")
+            by_week.setdefault(completed, []).append(entry)
+        lines = [
+            "WORK ALREADY DONE ON THE WEBSITE (completed tasks from previous runs):",
+            "",
+            "Purpose: (1) do NOT recommend any of this again unless you observe it missing "
+            "or broken on a page you scrape for the current focus; (2) treat the dates as "
+            "the timeline for judging whether recent changes helped, hurt, or did nothing.",
+            "Do not scrape pages just to re-verify this list — spot-check at most 3 items "
+            "whose pages you are already visiting for the current focus.",
+            "",
+        ]
+        for week, entries in by_week.items():  # already newest-first from the query
+            lines.append(f"### Completed {week}")
+            lines.extend(entries)
+            lines.append("")
+        brief = "\n".join(lines).rstrip() + "\n"
+        try:
+            brief_path = OUTPUT_DIR / "completed-work-brief.md"
+            brief_path.parent.mkdir(parents=True, exist_ok=True)
+            brief_path.write_text(brief, encoding="utf-8")
+        except OSError as exc:
+            print(f"⚠ Could not write completed-work brief: {exc}")
+        return brief
     except Exception as exc:
         print(f"⚠ Could not fetch completed tasks from Supabase: {exc}")
         return ""
@@ -835,76 +861,79 @@ def main() -> None:
             print(f"❌ Could not acquire run lock: {exc}")
             sys.exit(1)
 
-        # Dry-run decision happens BEFORE any external/mutating step.
-        if args.dry_run:
-            # Compact baselines only if dry-run produces a manifest so Test-Path checks pass.
-            # But no LLM, no Supabase, no adapter calls.
-            manifest = RunManifest(
-                run_id=run_id,
-                topic=topic,
-                provider=provider,
-                model=research_model,
-                research_model=research_model,
-                exec_model=exec_model,
-                started_at=ctx.started_at,
-                site_url=run_args.get("site_url", ""),
-                region=run_args.get("region", ""),
-                audience=run_args.get("audience", ""),
-                keywords=run_args.get("keywords", ""),
-                dry_run=True,
-            )
-            # Build the crew config only (no LLM call).
+        # Everything from here to the kickoff runs under the lock. A crash
+        # before kickoff (missing provider SDK, Supabase down) used to skip the
+        # finally below and strand lock.lock.json, blocking every later run
+        # until someone deleted it by hand (2026-09-04).
+        t0 = time.monotonic()
+        try:
+            # Dry-run decision happens BEFORE any external/mutating step.
+            if args.dry_run:
+                # Compact baselines only if dry-run produces a manifest so Test-Path checks pass.
+                # But no LLM, no Supabase, no adapter calls.
+                manifest = RunManifest(
+                    run_id=run_id,
+                    topic=topic,
+                    provider=provider,
+                    model=research_model,
+                    research_model=research_model,
+                    exec_model=exec_model,
+                    started_at=ctx.started_at,
+                    site_url=run_args.get("site_url", ""),
+                    region=run_args.get("region", ""),
+                    audience=run_args.get("audience", ""),
+                    keywords=run_args.get("keywords", ""),
+                    dry_run=True,
+                )
+                # Build the crew config only (no LLM call).
+                crew = build_seo_crew(
+                    topic=topic,
+                    site_url=run_args["site_url"],
+                    audience=run_args["audience"],
+                    region=run_args["region"],
+                    keywords=run_args["keywords"],
+                    previous_context="",
+                    completed_tasks="",
+                    run_id=run_id,
+                )
+                print(f"Ready: {crew.name}")
+                print(f"Agents ({len(crew.agents)}):")
+                for agent in crew.agents:
+                    print(f"  - {agent.role}")
+                print(f"Tasks: {len(crew.tasks)}")
+                print(f"Run ID: {run_id}")
+                write_run_manifest(manifest)
+                write_evidence_package([], run_id=run_id)
+                write_claim_graph([], run_id=run_id)
+                write_task_graph([], run_id)
+                print(f"✅ Dry-run manifest written to {RUN_MANIFEST_PATH}")
+                print(f"✅ Dry-run evidence_package written to {EVIDENCE_PACKAGE_PATH}")
+                print(f"✅ Dry-run claim_graph written to {CLAIM_GRAPH_PATH}")
+                print(f"✅ Dry-run task_graph written to {OUTPUT_DIR}/task_graph.json")
+                return
+
+            # Live mode — fetch prior context, then research. Do not compact
+            # baselines here: weekly compact archived real knowledge into an
+            # 800-word stub that still claimed WordPress/CF7. Use
+            # `seo-agents compact-baselines` monthly instead.
+            previous_context = load_previous_run_context()
+            print("📋 Fetching completed tasks from Supabase...")
+            completed_tasks = _fetch_completed_tasks()
+            if completed_tasks:
+                print(f"   ✅ {completed_tasks.count(chr(10) + '  -')} completed task(s) loaded for verification")
+            else:
+                print("   ℹ  No completed tasks found — skipping verification step")
+
             crew = build_seo_crew(
                 topic=topic,
                 site_url=run_args["site_url"],
                 audience=run_args["audience"],
                 region=run_args["region"],
                 keywords=run_args["keywords"],
-                previous_context="",
-                completed_tasks="",
+                previous_context=previous_context,
+                completed_tasks=completed_tasks,
                 run_id=run_id,
             )
-            print(f"Ready: {crew.name}")
-            print(f"Agents ({len(crew.agents)}):")
-            for agent in crew.agents:
-                print(f"  - {agent.role}")
-            print(f"Tasks: {len(crew.tasks)}")
-            print(f"Run ID: {run_id}")
-            write_run_manifest(manifest)
-            write_evidence_package([], run_id=run_id)
-            write_claim_graph([], run_id=run_id)
-            write_task_graph([], run_id)
-            print(f"✅ Dry-run manifest written to {RUN_MANIFEST_PATH}")
-            print(f"✅ Dry-run evidence_package written to {EVIDENCE_PACKAGE_PATH}")
-            print(f"✅ Dry-run claim_graph written to {CLAIM_GRAPH_PATH}")
-            print(f"✅ Dry-run task_graph written to {OUTPUT_DIR}/task_graph.json")
-            release_run_context(ctx)
-            return
-
-        # Live mode — fetch prior context, then research. Do not compact
-        # baselines here: weekly compact archived real knowledge into an
-        # 800-word stub that still claimed WordPress/CF7. Use
-        # `seo-agents compact-baselines` monthly instead.
-        previous_context = load_previous_run_context()
-        print("📋 Fetching completed tasks from Supabase...")
-        completed_tasks = _fetch_completed_tasks()
-        if completed_tasks:
-            print(f"   ✅ {completed_tasks.count(chr(10) + '  -')} completed task(s) loaded for verification")
-        else:
-            print("   ℹ  No completed tasks found — skipping verification step")
-
-        crew = build_seo_crew(
-            topic=topic,
-            site_url=run_args["site_url"],
-            audience=run_args["audience"],
-            region=run_args["region"],
-            keywords=run_args["keywords"],
-            previous_context=previous_context,
-            completed_tasks=completed_tasks,
-            run_id=run_id,
-        )
-        t0 = time.monotonic()
-        try:
             result = crew.kickoff()
             emit_research_complete(run_id, RESEARCH_OUTPUTS, time.monotonic() - t0)
             print(result)

@@ -90,7 +90,7 @@ class TestDryRunOffline:
     def test_dry_run_does_not_call_compact_baselines(self):
         """The dry-run block in main.py does not call compact_baselines."""
         import seo_agents.main as main_mod
-        source = Path(main_mod.__file__).read_text()
+        source = Path(main_mod.__file__).read_text(encoding="utf-8")
 
         dry_block = ""
         if "if args.dry_run:" in source:
@@ -101,7 +101,7 @@ class TestDryRunOffline:
     def test_dry_run_does_not_fetch_completed_tasks(self):
         """The dry-run block does not call _fetch_completed_tasks."""
         import seo_agents.main as main_mod
-        source = Path(main_mod.__file__).read_text()
+        source = Path(main_mod.__file__).read_text(encoding="utf-8")
 
         dry_block = ""
         if "if args.dry_run:" in source:
@@ -112,7 +112,7 @@ class TestDryRunOffline:
     def test_dry_run_does_not_kickoff_crew(self):
         """The dry-run block does not call crew.kickoff()."""
         import seo_agents.main as main_mod
-        source = Path(main_mod.__file__).read_text()
+        source = Path(main_mod.__file__).read_text(encoding="utf-8")
 
         dry_block = ""
         if "if args.dry_run:" in source:
@@ -123,7 +123,7 @@ class TestDryRunOffline:
     def test_dry_run_does_not_start_execute_pipeline(self):
         """The dry-run block does not reference _run_execute_pipeline."""
         import seo_agents.main as main_mod
-        source = Path(main_mod.__file__).read_text()
+        source = Path(main_mod.__file__).read_text(encoding="utf-8")
 
         dry_block = ""
         if "if args.dry_run:" in source:
@@ -184,13 +184,13 @@ class TestSkipExecute:
     def test_skip_execute_flag_parsing(self):
         """The research subparser accepts --skip-execute."""
         import seo_agents.main as main_mod
-        source = Path(main_mod.__file__).read_text()
+        source = Path(main_mod.__file__).read_text(encoding="utf-8")
         assert "--skip-execute" in source
 
     def test_skip_execute_sets_skip_variable(self):
         """The main code checks skip_execute before executing."""
         import seo_agents.main as main_mod
-        source = Path(main_mod.__file__).read_text()
+        source = Path(main_mod.__file__).read_text(encoding="utf-8")
 
         assert "skip_execute" in source
         research_block = source.split('elif command == "execute"')[0]
@@ -199,7 +199,7 @@ class TestSkipExecute:
     def test_skip_execute_message(self):
         """When --skip-execute is set, a skip message is printed."""
         import seo_agents.main as main_mod
-        source = Path(main_mod.__file__).read_text()
+        source = Path(main_mod.__file__).read_text(encoding="utf-8")
         assert "skip" in source.lower() or "--skip-execute" in source.lower()
 
 
@@ -426,7 +426,7 @@ class TestDryRunIntegration:
     def test_dry_run_has_lock_acquisition(self):
         """The dry-run code path acquires the run context (and thus the lock)."""
         import seo_agents.main as main_mod
-        source = Path(main_mod.__file__).read_text()
+        source = Path(main_mod.__file__).read_text(encoding="utf-8")
 
         research_block = source.split('elif command == "execute"')[0]
         assert "build_run_context" in research_block
@@ -435,6 +435,6 @@ class TestDryRunIntegration:
     def test_dry_run_returns_before_execute(self):
         """The dry-run path returns before _run_execute_pipeline is called."""
         import seo_agents.main as main_mod
-        source = Path(main_mod.__file__).read_text()
+        source = Path(main_mod.__file__).read_text(encoding="utf-8")
 
         assert "release_run_context(ctx)" in source

@@ -175,6 +175,25 @@ wheels = [
 ]
 
 [[package]]
+name = "anthropic"
+version = "0.73.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "anyio" },
+    { name = "distro" },
+    { name = "docstring-parser" },
+    { name = "httpx" },
+    { name = "jiter" },
+    { name = "pydantic" },
+    { name = "sniffio" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/f0/07/f550112c3f5299d02f06580577f602e8a112b1988ad7c98ac1a8f7292d7e/anthropic-0.73.0.tar.gz", hash = "sha256:30f0d7d86390165f86af6ca7c3041f8720bb2e1b0e12a44525c8edfdbd2c5239", size = 425168, upload-time = "2025-11-14T18:47:52.635Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/15/b1/5d4d3f649e151e58dc938cf19c4d0cd19fca9a986879f30fea08a7b17138/anthropic-0.73.0-py3-none-any.whl", hash = "sha256:0d56cd8b3ca3fea9c9b5162868bdfd053fbc189b8b56d4290bd2d427b56db769", size = 367839, upload-time = "2025-11-14T18:47:51.195Z" },
+]
+
+[[package]]
 name = "anyio"
 version = "4.13.0"
 source = { registry = "https://pypi.org/simple" }
@@ -565,6 +584,11 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/5e/7d/e14be4591b4893a4ad68fb6943a5f4e0dff5544aff6c884178e1060ce9ab/crewai-1.15.1.tar.gz", hash = "sha256:bdf9a450fd5c97dab4fcadb063717cae5df7449a27ba3f1cc501e6996350dbeb", size = 7739886, upload-time = "2026-06-27T06:51:23.711Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/9b/59/89fd99b8dc1bd171b93bbe1ba1664a76c850eceedfb5a5c18a40b6095b25/crewai-1.15.1-py3-none-any.whl", hash = "sha256:a6f600fa63cf34e133714c1dbb8f31e9f91740a54830ae7ad4d97dff95c3cf05", size = 1046642, upload-time = "2026-06-27T06:51:21.472Z" },
+]
+
+[package.optional-dependencies]
+anthropic = [
+    { name = "anthropic" },
 ]
 
 [[package]]
@@ -3133,7 +3157,7 @@ name = "seo-agents"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "crewai" },
+    { name = "crewai", extra = ["anthropic"] },
     { name = "crewai-tools" },
     { name = "python-dotenv" },
     { name = "pytrends" },
@@ -3142,7 +3166,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "crewai", specifier = "==1.15.1" },
+    { name = "crewai", extras = ["anthropic"], specifier = "==1.15.1" },
     { name = "crewai-tools", specifier = "==1.15.1" },
     { name = "python-dotenv", specifier = "==1.2.2" },
     { name = "pytrends", specifier = ">=4.9.2" },
