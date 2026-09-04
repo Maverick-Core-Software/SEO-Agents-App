@@ -22,7 +22,7 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createClient } from '@supabase/supabase-js';
 import { makeRunPhase } from './lib/run-phase.mjs';
-import { centralDateHour, runGbpForApprovedRun, runDailyGbp, markGbpPostedAndArchive, gbpVerifyDisposition } from './lib/gbp-runner.mjs';
+import { centralDateHour, runGbpForApprovedRun, runDailyGbp, markGbpPostedAndArchive, applyDriverResult } from './lib/gbp-runner.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '..');
@@ -60,7 +60,6 @@ const GBP_POSTER_PATH = GBP_MODE === 'playwright'
   ? path.join(PROJECT_ROOT, 'scripts', 'gbp-poster', 'driver.mjs')
   : path.join(PROJECT_ROOT, 'scripts', 'gbp-api-poster.mjs');
 const PHOTO_PICK_PATH = path.join(PROJECT_ROOT, 'scripts', 'gbp-photo-pick.mjs');
-const GBP_VERIFY_PATH = path.join(PROJECT_ROOT, 'scripts', 'verify-gbp-posts.mjs');
 
 if (invokedDirectly && (!SUPABASE_URL || !SUPABASE_SERVICE_KEY)) {
   console.error('[gbp-worker] SUPABASE_URL or SUPABASE_SERVICE_KEY not set — exiting');
@@ -121,21 +120,109 @@ const paths = { photoPick: PHOTO_PICK_PATH, gbpPoster: GBP_POSTER_PATH, seoAgent
 let busy = false;
 let lastDailyGbpDate = '';
 
-// Post-posting verification state. After a GBP post runs (or an unverified row is
-// detected), schedule verification checks: wait 10min, then check every 15min
-// up to 4 attempts. If none succeed, mark the post needs_verification and stop.
-let verifyQueue = [];  // { postId, date, runId, attempt, nextAt }
-let lastVerifyCheckAt = 0;
-const VERIFY_INITIAL_DELAY_MS = 10 * 60 * 1000;   // 10 min after post
-const VERIFY_RETRY_INTERVAL_MS = 15 * 60 * 1000;  // 15 min between retries
-const VERIFY_MAX_ATTEMPTS = 4;
+// ─────────────────────────────────────────────
+// Grok verification reconciliation
+// ─────────────────────────────────────────────
+// The Grok bot independently checks the GBP listing (no Google sign-in) and writes
+// one verdict file per post-date under state/gbp-grok/. The worker applies each
+// verdict to weekly_posts: live → posted + platform_post_id; not_found → retry the
+// post once, then needs_verification (never an infinite retry loop).
+const GROK_VERDICT_DIR = path.join(PROJECT_ROOT, 'state', 'gbp-grok');
+const GROK_APPLIED_DIR = path.join(GROK_VERDICT_DIR, 'applied');
+const GROK_RETRIED_PATH = path.join(PROJECT_ROOT, 'state', 'gbp-grok-retried.json');
 
-// A verification miss is a terminal, human-check outcome. Re-seeding it would
-// create the false permanent failure loop that originally polluted the dashboard.
-export function shouldQueueGbpVerification(row) {
-  return Boolean(row)
-    && String(row.status || '') === 'posted'
-    && !row.platform_post_id;
+// Pure verdict decision, unit-tested in gbp-worker.test.mjs.
+export function grokVerdictDecision({ verdict, alreadyRetried }) {
+  const v = String(verdict || '').toLowerCase();
+  if (v === 'live') return 'confirm';
+  if (v === 'not_found') return alreadyRetried ? 'give_up' : 'retry';
+  return 'ignore';
+}
+
+function loadGrokRetried() {
+  try { return JSON.parse(fs.readFileSync(GROK_RETRIED_PATH, 'utf8')); }
+  catch { return {}; }
+}
+
+function saveGrokRetried(ledger) {
+  fs.writeFileSync(GROK_RETRIED_PATH, JSON.stringify(ledger, null, 2));
+}
+
+function archiveGrokVerdict(filePath) {
+  try {
+    fs.mkdirSync(GROK_APPLIED_DIR, { recursive: true });
+    fs.renameSync(filePath, path.join(GROK_APPLIED_DIR, path.basename(filePath)));
+  } catch (e) {
+    // File may still be locked/mid-write — leave it; the next poll re-applies
+    // (apply is idempotent, retry is gated by the retried ledger).
+    console.error(`[gbp-worker][grok] could not archive verdict ${filePath}: ${briefErr(e)}`);
+  }
+}
+
+async function reconcileGrokVerdicts() {
+  if (!fs.existsSync(GROK_VERDICT_DIR)) return;
+  const entries = fs.readdirSync(GROK_VERDICT_DIR, { withFileTypes: true });
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
+    const filePath = path.join(GROK_VERDICT_DIR, entry.name);
+    let verdict;
+    try {
+      verdict = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    } catch {
+      continue; // bot may still be writing the file
+    }
+    const date = String(verdict.post_date || entry.name.replace(/\.json$/, '')).slice(0, 10);
+
+    const { data: row } = await supabase
+      .from('weekly_posts')
+      .select('id, run_id, post_date, status, platform_post_id, posted_at')
+      .eq('platform', 'gbp')
+      .eq('post_date', date)
+      .maybeSingle();
+
+    if (!row) {
+      await log(null, 'gbp', 'warn', `Grok verdict ${entry.name}: no gbp row for ${date} — archiving without apply`);
+      archiveGrokVerdict(filePath);
+      continue;
+    }
+
+    const decision = grokVerdictDecision({ verdict: verdict.verdict, alreadyRetried: Boolean(loadGrokRetried()[date]) });
+
+    if (decision === 'confirm') {
+      const update = { status: 'posted', error: null, platform_post_id: verdict.post_url || 'verified-no-url' };
+      if (!row.posted_at) update.posted_at = new Date().toISOString();
+      await supabase.from('weekly_posts').update(update).eq('id', row.id);
+      await log(row.run_id, 'gbp', 'info', `Grok verified ${date} LIVE → posted (${update.platform_post_id})`);
+      await markGbpPostedAndArchive({ postDate: date, exitCode: 0, runId: row.run_id, env: process.env, log });
+      archiveGrokVerdict(filePath);
+      continue;
+    }
+
+    if (decision === 'give_up') {
+      await supabase.from('weekly_posts')
+        .update({ status: 'needs_verification', error: 'Grok verified: not on listing after retry. Check listing, do not re-post.' })
+        .eq('id', row.id);
+      await log(row.run_id, 'gbp', 'warn', `Grok verified ${date} not_found after retry → needs_verification`);
+      archiveGrokVerdict(filePath);
+      continue;
+    }
+
+    if (decision === 'retry') {
+      const retried = loadGrokRetried();
+      retried[date] = true;
+      saveGrokRetried(retried);
+      await log(row.run_id, 'gbp', 'warn', `Grok verified ${date} not_found — retrying post once`);
+      const r = await runPhase(row.run_id, 'gbp', 'node', [GBP_POSTER_PATH, '--date', date], PROJECT_ROOT);
+      await applyDriverResult({ supabase, post: row, result: r, env: process.env, log });
+      await log(row.run_id, 'gbp', r.ok ? 'info' : 'warn', `Grok-triggered retry for ${date} → exit ${r.exitCode}`);
+      archiveGrokVerdict(filePath);
+      continue;
+    }
+
+    // decision === 'ignore' — unrecognized verdict; archive so we don't loop.
+    await log(row.run_id, 'gbp', 'warn', `Grok verdict ${entry.name}: unrecognized "${verdict.verdict}" — ignored`);
+    archiveGrokVerdict(filePath);
+  }
 }
 
 async function poll() {
@@ -189,111 +276,10 @@ async function poll() {
       lastDailyGbpDate = todayDate;
     }
 
-    // 3. Post-posting verification: after a GBP post runs, we want to confirm it
-    //    actually landed. The driver.mjs does its own inline verification, but if
-    //    the process gets interrupted (exit code mismatch, timeout, bash kill),
-    //    the row may sit at 'posted' with no platform_post_id.
-    //
-    //    Flow: wait 10min → check every 15min up to 4 attempts → needs_verification
-    //    if still unverified (never error just because posted_at was stamped).
-    const now = Date.now();
-
-    // Seed the queue: find posted rows from the last 24h with no platform_post_id
-    // that aren't already in the queue.
-    if (now - lastVerifyCheckAt > 60_000) {  // scan Supabase at most once per minute
-      lastVerifyCheckAt = now;
-      const cutoff = new Date(now - 24 * 3600000).toISOString();
-      const { data: unverified } = await supabase
-        .from('weekly_posts')
-        .select('id, run_id, post_date')
-        .eq('platform', 'gbp')
-        .eq('status', 'posted')
-        .is('platform_post_id', null)
-        .gte('updated_at', cutoff);
-      for (const row of unverified || []) {
-        if (shouldQueueGbpVerification(row) && !verifyQueue.some(q => q.postId === row.id)) {
-          verifyQueue.push({
-            postId: row.id,
-            date: row.post_date,
-            runId: row.run_id,
-            attempt: 0,
-            nextAt: now + VERIFY_INITIAL_DELAY_MS,
-          });
-          await log(row.run_id, 'gbp', 'info',
-            `Queued verification for ${row.post_date} (check in ${VERIFY_INITIAL_DELAY_MS / 60000}min)`);
-        }
-      }
-    }
-
-    // Process the queue: run checks that are due.
-    const due = verifyQueue.filter(q => q.attempt < VERIFY_MAX_ATTEMPTS && now >= q.nextAt);
-    for (const item of due) {
-      item.attempt++;
-      const isLast = item.attempt >= VERIFY_MAX_ATTEMPTS;
-
-      if (fs.existsSync(GBP_VERIFY_PATH)) {
-        await log(item.runId, 'gbp', 'info',
-          `Verify attempt ${item.attempt}/${VERIFY_MAX_ATTEMPTS} for ${item.date}`);
-        const r = await runPhase(item.runId, 'gbp', 'node',
-          [GBP_VERIFY_PATH, '--date', String(item.date).slice(0, 10), '--headless', '--once'],
-          PROJECT_ROOT);
-
-        const { data: rowNow } = await supabase
-          .from('weekly_posts')
-          .select('status, platform_post_id')
-          .eq('id', item.postId)
-          .maybeSingle();
-        const disposition = gbpVerifyDisposition({
-          ok: r.ok,
-          exitCode: r.exitCode,
-          stdout: r.stdout,
-          currentStatus: rowNow?.status,
-          platformPostId: rowNow?.platform_post_id,
-          lastAttempt: isLast,
-        });
-
-        if (disposition.action === 'confirmed') {
-          verifyQueue = verifyQueue.filter(q => q.postId !== item.postId);
-          await log(item.runId, 'gbp', 'info', `Verification confirmed for ${item.date}`);
-          await supabase.from('weekly_posts')
-            .update({ status: 'posted', error: null })
-            .eq('id', item.postId);
-          await markGbpPostedAndArchive({ postDate: String(item.date).slice(0, 10), exitCode: 0, runId: item.runId, env: process.env, log });
-          continue;
-        }
-
-        if (disposition.action === 'crash') {
-          await log(item.runId, 'gbp', 'warn',
-            `Verify crashed for ${item.date} (attempt ${item.attempt}): ${disposition.error}`);
-          if (isLast) {
-            await supabase.from('weekly_posts')
-              .update({ status: disposition.status, error: disposition.error })
-              .eq('id', item.postId);
-            verifyQueue = verifyQueue.filter(q => q.postId !== item.postId);
-            await log(item.runId, 'gbp', 'warn',
-              `Verify still crashing after ${VERIFY_MAX_ATTEMPTS} attempts for ${item.date} — left ${disposition.status}, not error`);
-          } else {
-            item.nextAt = now + VERIFY_RETRY_INTERVAL_MS;
-          }
-          continue;
-        }
-
-        if (disposition.action === 'unverified' || isLast) {
-          const error = disposition.error
-            || 'GBP post not found on listing after 4 checks. Check listing, do not re-post.';
-          await log(item.runId, 'gbp', 'warn',
-            `Verification did not find ${item.date} after ${VERIFY_MAX_ATTEMPTS} attempts — needs_verification (do not re-post)`);
-          await supabase.from('weekly_posts')
-            .update({ status: 'needs_verification', error })
-            .eq('id', item.postId);
-          verifyQueue = verifyQueue.filter(q => q.postId !== item.postId);
-        } else {
-          item.nextAt = now + VERIFY_RETRY_INTERVAL_MS;
-          await log(item.runId, 'gbp', 'info',
-            `Not found yet, retry in ${VERIFY_RETRY_INTERVAL_MS / 60000}min`);
-        }
-      }
-    }
+    // 3. Grok verification reconciliation: the Grok bot independently checks the
+    //    GBP listing (no Google sign-in) and writes one verdict file per post-date.
+    //    live → posted + platform_post_id; not_found → retry once, then give up.
+    await reconcileGrokVerdicts();
   } catch (e) {
     console.error(`[gbp-worker][gbp-worker→poll][error] poll exception: ${briefErr(e)}`);
   } finally {

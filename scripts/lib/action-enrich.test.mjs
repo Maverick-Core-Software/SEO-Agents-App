@@ -15,7 +15,7 @@ assert.equal(bucketStatus('research_running'), 'in_process');
 assert.equal(bucketStatus('done'), 'completed');
 assert.equal(bucketStatus('posted'), 'completed');
 assert.equal(bucketStatus('error'), 'failed');
-assert.equal(bucketStatus('needs_verification'), 'failed');
+assert.equal(bucketStatus('needs_verification'), 'needs_check');
 assert.equal(bucketStatus('weird_unknown'), 'pending'); // safe default
 
 // isStuck — only meaningful for in_process rows

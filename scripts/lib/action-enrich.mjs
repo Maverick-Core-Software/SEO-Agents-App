@@ -5,7 +5,7 @@ const BUCKET = {
   pending_approval: 'pending', approved: 'pending', awaiting_prompt: 'pending', scheduled: 'pending',
   executing: 'in_process', posting: 'in_process', research_running: 'in_process', execute_running: 'in_process',
   done: 'completed', posted: 'completed',
-  error: 'failed', needs_verification: 'failed',
+  error: 'failed', needs_verification: 'needs_check',
 };
 
 export function bucketStatus(dbStatus) {

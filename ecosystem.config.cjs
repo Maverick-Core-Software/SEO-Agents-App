@@ -17,5 +17,21 @@ module.exports = {
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
       windowsHide: true,
     },
+    {
+      name: 'thumbtack-worker',
+      script: 'C:\\Workspace\\Active\\SEO-Agents-App\\scripts\\thumbtack-worker.mjs',
+      cwd: 'C:\\Workspace\\Active\\SEO-Agents-App',
+      interpreter: 'node',
+      watch: false,
+      autorestart: true,
+      max_restarts: 10,
+      restart_delay: 5000,
+      env: {
+        PORT: '8796',
+        THUMBTACK_BIND: '127.0.0.1',
+      },
+      log_date_format: 'YYYY-MM-DD HH:mm:ss',
+      windowsHide: true,
+    },
   ],
 };

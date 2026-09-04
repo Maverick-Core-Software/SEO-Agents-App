@@ -31,7 +31,7 @@ assert.ok(m.includes('C:/x.json'));
 
 // gbpDailyStatusForExit: exit code => weekly_posts update intent
 assert.deepEqual(gbpDailyStatusForExit(0, { postUrl: 'u' }),
-  { status: 'posted', error: null, archive: true, platform_post_id: 'u' });
+  { status: 'posted', error: null, archive: false, platform_post_id: 'u' });
 assert.equal(gbpDailyStatusForExit(3, { verificationAttempts: 5 }).status, 'needs_verification');
 assert.equal(gbpDailyStatusForExit(3, {}).archive, false);
 assert.deepEqual(gbpDailyStatusForExit(4, {}), { status: 'pending_approval', error: null, archive: false, platform_post_id: null });

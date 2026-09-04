@@ -50,6 +50,7 @@ const MODEL = argValue('--model') || 'qwen3.8-27b';
 const N = parseInt(argValue('--n', '100'), 10);
 const SEED = parseInt(argValue('--seed', '42'), 10);
 const KEY = argValue('--key') || '';
+const MAX_TOKENS = parseInt(argValue('--max-tokens', '200'), 10);
 const noThink = process.argv.includes('--no-think');
 
 // Models that actually answered, as reported by the endpoint itself.
@@ -62,6 +63,11 @@ const MIN_SCORE = parseInt(process.env.ELECTRICAL_BACKFILL_MIN_SCORE || '40', 10
 // benchmarking two backends against different prompts measures nothing.
 const PROMPT = [
   'Score this photo 0-100 for use as a Google Business Profile post for an electrical contractor.',
+  '',
+  'HARD RULES (apply first):',
+  '- If the photo shows any person or face, or is NOT electrical work (family, selfie, food, landscape, screenshot, receipt, document), score it 0-20 and set service_type to "other".',
+  '- Only score 40+ when electrical work is clearly the main subject: panels, wiring, conduit, breakers, EV chargers, fixtures, completed installs.',
+  '- A person in the frame, even with wiring visible behind them, is NOT an electrical-work photo — reject it.',
   '',
   'High (70-100): professional electrical work — panels, wiring, conduit, EV chargers, fixtures, completed installs. Clean, well-lit, no faces.',
   'Medium (40-69): electrical work but partially obscured, cluttered, or poorly lit.',
@@ -116,7 +122,7 @@ async function classify(imagePath) {
   }
   const body = {
     model: MODEL,
-    max_tokens: 200,
+    max_tokens: MAX_TOKENS,
     temperature: 0,
     messages: [{
       role: 'user',

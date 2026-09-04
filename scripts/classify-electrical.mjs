@@ -19,6 +19,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { defaultGbpPhotoDirs } from './lib/gbp-paths.mjs';
+import { serviceSlug } from './lib/photo-selection.mjs';
 
 const require = createRequire(import.meta.url);
 let heicConvert = null;
@@ -50,10 +51,14 @@ const sourceOverride = argValue('--source');
 const destOverride = argValue('--dest');
 const sinceArg = argValue('--since');
 const sinceMs = sinceArg ? new Date(sinceArg + 'T00:00:00Z').getTime() : 0;
+const CONCURRENCY = parseInt(argValue('--concurrency', '1'), 10);
+const MAX_DIM = parseInt(process.env.ELECTRICAL_MAX_DIM || '768', 10);
+const urlOverride = argValue('--url');
+const modelOverride = argValue('--model');
 
 // ── config ────────────────────────────────────────────────────────────────
-const VISION_URL = (process.env.ELECTRICAL_VISION_URL || 'http://127.0.0.1:8082/v1').replace(/\/$/, '');
-const VISION_MODEL = process.env.ELECTRICAL_VISION_MODEL || 'gemma-3-12b-it';
+const VISION_URL = (urlOverride || process.env.ELECTRICAL_VISION_URL || 'http://127.0.0.1:8082/v1').replace(/\/$/, '');
+const VISION_MODEL = modelOverride || process.env.ELECTRICAL_VISION_MODEL || 'gemma-3-12b-it';
 // Set ELECTRICAL_VISION_API_KEY to talk to a hosted OpenAI-compatible endpoint
 // (e.g. ELECTRICAL_VISION_URL=https://api.openai.com/v1, MODEL=gpt-4o). Unset for
 // a local server, which needs no auth.
@@ -124,7 +129,9 @@ function discoverPhotos(folder) {
 function photoTakenMs(filePath) {
   const candidates = [
     filePath + '.json',
+    filePath + '.supplemental-metadata.json',
     path.join(path.dirname(filePath), path.basename(filePath, path.extname(filePath)) + '.json'),
+    path.join(path.dirname(filePath), path.basename(filePath, path.extname(filePath)) + '.supplemental-metadata.json'),
   ];
   for (const c of candidates) {
     try {
@@ -141,6 +148,11 @@ function photoTakenMs(filePath) {
 
 const PROMPT = [
   'Score this photo 0-100 for use as a Google Business Profile post for an electrical contractor.',
+  '',
+  'HARD RULES (apply first):',
+  '- If the photo shows any person or face, or is NOT electrical work (family, selfie, food, landscape, screenshot, receipt, document), score it 0-20 and set service_type to "other".',
+  '- Only score 40+ when electrical work is clearly the main subject: panels, wiring, conduit, breakers, EV chargers, fixtures, completed installs.',
+  '- A person in the frame, even with wiring visible behind them, is NOT an electrical-work photo — reject it.',
   '',
   'High (70-100): professional electrical work — panels, wiring, conduit, EV chargers, fixtures, completed installs. Clean, well-lit, no faces.',
   'Medium (40-69): electrical work but partially obscured, cluttered, or poorly lit.',
@@ -160,6 +172,18 @@ const PROMPT = [
   'Reply ONLY with JSON: {"score":<0-100>,"service_type":"<type>","tags":["tag1"],"reject_reason":"<blank if score>=60>"}'
 ].join('\n');
 
+async function resizeJpeg(buf) {
+  // Downscale to speed the vision tower (no recall loss at 768px).
+  // Gracefully returns the original buffer if sharp is unavailable.
+  try {
+    const sharp = (await import('sharp')).default;
+    return await sharp(buf)
+      .resize(MAX_DIM, MAX_DIM, { fit: 'inside', withoutEnlargement: true })
+      .jpeg({ quality: 85 })
+      .toBuffer();
+  } catch { return buf; }
+}
+
 async function classifyPhoto(imagePath) {
   const ext = path.extname(imagePath).toLowerCase();
   let buf = fs.readFileSync(imagePath);
@@ -170,6 +194,9 @@ async function classifyPhoto(imagePath) {
     buf = Buffer.from(await heicConvert({ buffer: buf, format: 'JPEG', quality: 0.85 }));
     mime = 'image/jpeg';
   }
+
+  const resized = await resizeJpeg(buf);
+  if (resized !== buf) { buf = resized; mime = 'image/jpeg'; }
 
   const dataUrl = 'data:' + mime + ';base64,' + buf.toString('base64');
 
@@ -182,6 +209,7 @@ async function classifyPhoto(imagePath) {
       model: VISION_MODEL,
       max_tokens: 200,
       temperature: 0,
+      chat_template_kwargs: { enable_thinking: false },
       messages: [{
         role: 'user',
         content: [
@@ -223,31 +251,45 @@ function uniqueDest(relPath, destDir) {
 }
 
 async function curateStaging() {
-  // Filter the backfill staging folder using STORED scores (no model call).
-  // Reads the backfill manifest (score + copiedTo per approved photo), keeps the
-  // ones at/above the normal weekly threshold into the GBP cache, removes the rest.
+  // Curation pass: filter the backfill results into Curated (score >= threshold) or
+  // Unused Review (borderline / false positives), renamed YYYY-MM-DD-service.ext using
+  // the real capture date. Reads straight from the original Takeout paths (src).
   const bfFile = process.env.ELECTRICAL_MANIFEST || path.join(PROJECT_ROOT, 'state', 'electrical-backfill.json');
   let bf;
   try { bf = JSON.parse(fs.readFileSync(bfFile, 'utf8')); } catch { bf = {}; }
   const threshold = parseInt(process.env.ELECTRICAL_MIN_SCORE || '60', 10);
-  let kept = 0, removed = 0, skipped = 0;
-  console.log('=== Curation (backfill staging -> GBP cache, threshold ' + threshold + ') ===');
+  const { localCache } = defaultGbpPhotoDirs(process.env);
+  const CURATED = path.join(localCache, 'Curated');
+  const UNUSED = path.join(localCache, 'Unused Review');
+  let kept = 0, unused = 0, skipped = 0;
+  console.log('=== Curation (-> Curated / Unused Review, threshold ' + threshold + ') ===');
   for (const [src, entry] of Object.entries(bf)) {
-    if (!entry || !entry.copiedTo) { skipped++; continue; }
-    const stagingPath = entry.copiedTo;
+    if (!entry || entry.status !== 'done' || !entry.approved) { skipped++; continue; }
+    if (!fs.existsSync(src)) { skipped++; continue; }
     const good = (entry.score >= threshold) && (entry.service_type && entry.service_type !== 'other');
-    if (good && !dryRun) {
+    const takenMs = photoTakenMs(src) ?? entry.mtime ?? fs.statSync(src).mtimeMs;
+    const dateStr = new Date(takenMs).toISOString().slice(0, 10);
+    const slug = serviceSlug(entry.service_type || 'other');
+    const srcExt = path.extname(src).toLowerCase();
+    const targetDir = good ? CURATED : UNUSED;
+    if (!dryRun) {
       try {
-        fs.mkdirSync(GBP_CACHE, { recursive: true });
-        const dest = uniqueDest(stagingPath, GBP_CACHE);
-        if (fs.existsSync(stagingPath)) { fs.copyFileSync(stagingPath, dest); kept++; }
-      } catch (e) { console.log('  keep error: ' + e.message); }
-    }
-    if (!dryRun && fs.existsSync(stagingPath)) {
-      try { fs.unlinkSync(stagingPath); removed++; } catch (e) { console.log('  remove error: ' + e.message); }
+        fs.mkdirSync(targetDir, { recursive: true });
+        const srcBuf = fs.readFileSync(src);
+        if (needsHeicDecode(srcBuf, srcExt)) {
+          if (!heicConvert) throw new Error('heic-convert unavailable');
+          const jpeg = Buffer.from(await heicConvert({ buffer: srcBuf, format: 'JPEG', quality: 0.9 }));
+          const dest = uniqueDest(dateStr + '-' + slug + '.jpg', targetDir);
+          fs.writeFileSync(dest, jpeg);
+        } else {
+          const dest = uniqueDest(dateStr + '-' + slug + srcExt, targetDir);
+          fs.copyFileSync(src, dest);
+        }
+        if (good) kept++; else unused++;
+      } catch (e) { console.log('  ' + path.basename(src) + ' ERROR: ' + e.message); }
     }
   }
-  console.log('Curation done. Kept -> GBP cache: ' + kept + ' | removed from staging: ' + removed + ' | skipped (no copy): ' + skipped);
+  console.log('Curation done. Curated: ' + kept + ' | Unused Review: ' + unused + ' | skipped: ' + skipped);
 }
 
 async function main() {
@@ -284,15 +326,17 @@ async function main() {
   console.log('To classify: ' + toProcess.length);
 
   let kept = 0, deleted = 0, errors = 0;
-  for (const { f, mtime } of toProcess) {
+  const concurrency = Math.max(1, CONCURRENCY);
+  let cursor = 0;
+
+  async function processOne(f, mtime) {
     const name = path.basename(f);
-    process.stdout.write('  ' + name + '... ');
     try {
       const r = await classifyPhoto(f);
       const approved = (r.score >= MIN_SCORE) && (r.service_type && r.service_type !== 'other');
-      console.log(approved
+      console.log('  ' + name + ': ' + (approved
         ? 'OK ' + r.score + ' [' + r.service_type + ']'
-        : 'skip ' + r.score + ' (' + (r.reject_reason || 'not electrical') + ')');
+        : 'skip ' + r.score + ' (' + (r.reject_reason || 'not electrical') + ')'));
 
       m[f] = {
         mtime,
@@ -328,12 +372,25 @@ async function main() {
         deleted++;
       }
     } catch (e) {
-      console.log('ERROR: ' + e.message);
+      console.log('  ' + name + ' ERROR: ' + e.message);
       m[f] = { mtime, status: 'error', error: e.message };
       errors++;
     }
-    saveManifest(m);
   }
+
+  async function worker() {
+    while (true) {
+      const idx = cursor++;
+      if (idx >= toProcess.length) break;
+      const item = toProcess[idx];
+      await processOne(item.f, item.mtime);
+      if ((idx + 1) % 25 === 0) saveManifest(m);
+    }
+  }
+
+  console.log('Concurrency: ' + concurrency);
+  await Promise.all(Array.from({ length: concurrency }, () => worker()));
+  saveManifest(m);
 
   console.log('\nDone. Approved: ' + kept + ' | deleted from source: ' + deleted + ' | errors: ' + errors);
   if (!dryRun) {

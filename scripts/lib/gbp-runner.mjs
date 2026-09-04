@@ -68,7 +68,10 @@ export function gbpDailyStatusForExit(exitCode, parsed = {}) {
     return { status: 'posted', error: null, archive: false, platform_post_id: parsed.postUrl || null };
   }
   if (exitCode === 0 && result !== 'failed' && result !== 'needs_approval' && result !== 'policy_violation' && result !== 'scheduled_native') {
-    return { status: 'posted', error: null, archive: true, platform_post_id: parsed.postUrl || null };
+    // Submitted, not yet confirmed live. archive=false keeps the workbook Posted
+    // gate open so a Grok "not_found" can trigger one retry; the flag flips only
+    // after Grok (or the already_live guard) confirms the post is on the listing.
+    return { status: 'posted', error: null, archive: false, platform_post_id: parsed.postUrl || null };
   }
   if (result === 'posted' || result === 'schedule_unconfirmed') {
     return { status: 'needs_verification', error: gbpNeedsVerificationMessage(parsed), archive: false, platform_post_id: parsed.postUrl || null };
@@ -228,7 +231,7 @@ export async function markGbpPostedAndArchive({ postDate, exitCode, runId, env, 
 }
 
 // Apply a driver result to one weekly_posts row (shared by run + daily paths).
-async function applyDriverResult({ supabase, post, result, env, log }) {
+export async function applyDriverResult({ supabase, post, result, env, log }) {
   const parsed = parseDriverJson(result.stdout);
   const map = gbpDailyStatusForExit(result.exitCode, parsed);
   const update = { status: map.status, error: map.error };

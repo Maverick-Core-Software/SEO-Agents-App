@@ -15,8 +15,6 @@ const DEFAULT_CONFIG = 'C:\\Workspace\\Active\\SEO-Agents-App\\config\\gbp-poste
 const USER_DATA_DIR = path.join(os.homedir(), '.claude', 'gbp-session');
 const VIEWPORT = { width: 1365, height: 900 };
 const DEBUG_DIR = 'C:\\Workspace\\Active\\SEO-Agents-App\\outputs\\gbp-debug';
-const VERIFY_DELAY_MS = 60_000;
-const VERIFY_ATTEMPTS = 5;
 // Pre-submit compose steps may be retried (nothing has been posted yet). Once the
 // Post button is clicked we NEVER retry — a re-send would create a duplicate post.
 const POST_ATTEMPTS = 2;
@@ -351,59 +349,6 @@ function resolveCtaUrl(payload, config) {
     return config?.default_cta_url || null;
 }
 
-async function saveVerificationSnapshot(page, caption, visible, attempt) {
-    fs.mkdirSync(DEBUG_DIR, { recursive: true });
-    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const screenshot = path.join(DEBUG_DIR, `verify-attempt-${attempt}-${stamp}.png`);
-    const textFile = path.join(DEBUG_DIR, `verify-attempt-${attempt}-${stamp}.json`);
-    await page.screenshot({ path: screenshot, fullPage: true }).catch(() => {});
-    const texts = await page.locator('a,button,div[role="button"],span,h1,h2,h3,textarea,[contenteditable="true"],input')
-        .evaluateAll(nodes => [...new Set(nodes.map(n => (
-            n.innerText || n.textContent || n.getAttribute('aria-label') || n.getAttribute('placeholder') || ''
-        ).trim()).filter(Boolean).slice(0, 300))])
-        .catch(() => []);
-    fs.writeFileSync(textFile, JSON.stringify({
-        url: page.url(),
-        caption_snippet: captionSnippet(caption),
-        verified_visible: visible,
-        verification_attempt: attempt,
-        verification_attempts: VERIFY_ATTEMPTS,
-        texts,
-    }, null, 2));
-    return { screenshot, textFile };
-}
-
-async function checkPostVisible(page, snippet) {
-    await page.goto('https://business.google.com/', { waitUntil: 'domcontentloaded' });
-    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
-    await detectBlockingInterstitial(page);
-    await assertLoggedIn(page);
-    const found = await findSnippetInAllPosts(page, snippet);
-    return found.match === 'live';
-}
-
-async function verifyPosted(page, caption) {
-    const snippet = captionSnippet(caption);
-    let verificationSnapshot = null;
-
-    for (let attempt = 1; attempt <= VERIFY_ATTEMPTS; attempt += 1) {
-        // Give GBP another minute to index/moderate the submitted post before reloading.
-        await page.waitForTimeout(VERIFY_DELAY_MS);
-        const visible = await checkPostVisible(page, snippet);
-        verificationSnapshot = await saveVerificationSnapshot(page, caption, visible, attempt);
-
-        if (visible) {
-            const postUrl = await page.evaluate(() => {
-                const anchor = [...document.querySelectorAll('a[href*="localPost"], a[href*="/posts/"]')][0];
-                return anchor ? anchor.href : null;
-            }).catch(() => null);
-            return { verified: true, postUrl, verificationSnapshot, verificationAttempts: attempt };
-        }
-    }
-
-    return { verified: false, postUrl: null, verificationSnapshot, verificationAttempts: VERIFY_ATTEMPTS };
-}
-
 async function saveFailureArtifacts(page) {
     fs.mkdirSync(DEBUG_DIR, { recursive: true });
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -615,26 +560,11 @@ async function main() {
             return;
         }
         // composeAndSubmit returning means the post WAS submitted (the composer
-        // closed, which GBP treats as acceptance). A verification failure here
-        // must NOT be reported as 'failed' (exit 1) — that masks the successful
-        // submission and causes a later re-run to double-post, because the caller
-        // sees a hard error and retries a post that is already live. Wrap
-        // verification so any throw becomes a 'posted + unverified' (exit 3),
-        // which the caller treats as "check manually, do not auto-retry".
-        let verified = false, postUrl = null, verificationSnapshot = null, verificationAttempts = 0;
-        try {
-            ({ verified, postUrl, verificationSnapshot, verificationAttempts } = await verifyPosted(page, payload.caption));
-        } catch (verifyErr) {
-            console.error(`Post was submitted but verification crashed (${verifyErr.message}). Treat as posted-but-unverified — do NOT retry without checking GBP first.`);
-            verificationSnapshot = await saveFailureArtifacts(page).catch(() => null);
-        }
-        emitResult({ result: 'posted', date: payload.date, verified, postUrl, verificationSnapshot, verificationAttempts });
-        if (verified) {
-            console.log('Post submitted and verified on GBP.');
-        } else {
-            console.error(`Post was submitted (composer closed cleanly) but could not be verified in the Posts list after ${VERIFY_ATTEMPTS} checks. Check GBP manually before retrying — retrying may create a duplicate.`);
-            process.exitCode = 3;
-        }
+        // closed, which GBP treats as acceptance). Verification is external: the
+        // Grok bot checks the public listing and writes state/gbp-grok/<date>.json;
+        // the worker reconciles that verdict against weekly_posts.
+        emitResult({ result: 'posted', date: payload.date, verified: false, postUrl: null });
+        console.log('Post submitted on GBP — awaiting external (Grok) verification.');
     } catch (e) {
         if (e.submitted) {
             // Duplicate guard: the Post click already happened. Never retry.
