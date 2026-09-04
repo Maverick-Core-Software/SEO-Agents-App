@@ -1,5 +1,17 @@
 # SEO Agents App — Handoff State
 
+**Last updated:** 2026-09-04 close
+**Branch:** `main` @ `c87205c` + docs commit (pushed)
+**This close:** Friday run recovered after four failure modes (missing anthropic SDK after `uv sync`, stranded run lock, fallback not covering construction, website agent exhausting its iteration cap on 24 completed-task scrapes). Run succeeded 15:33Z; 7 GBP + 4 FB posts auto-approved for week of 2026-09-07. Pickup `docs/NEXT-SESSION.md` and `brain/inbox/2026-09-04-friday-seo-recovery.md`.
+
+**Next session, in order:** GBP poster reliability (no photos on live posts, session expiry, worker task 0x800710E0) → homepage stat counters (needs Carter's three numbers) → `/contact/` 404 → blog pricing presented to Carter for approval → then scope a full website audit.
+
+**Config changes at close:** `.env` gained `CREWAI_RESEARCH_MAX_TOKENS=8192` (backup `.env.bak-research-maxtokens-*`). Completed tasks now reach the website agent as `outputs/completed-work-brief.md`, not a scrape list. All previously "unrelated dirty files" are now committed (c87205c) per Carter.
+
+---
+
+# SEO Agents App — Handoff State (2026-09-01 archive)
+
 **Last updated:** 2026-09-01 close
 **Branch:** `main` @ `75a227c` (pushed)
 **This close:** 1-day FB boost duration pad + Day 1 $25 boost applied. Pickup `brain/inbox/2026-09-01-fb-boost-1day-duration.md`.

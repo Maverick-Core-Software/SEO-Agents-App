@@ -169,3 +169,12 @@ Pickup: `brain/inbox/2026-09-01-fb-boost-1day-duration.md`
 - Pi crashed twice during long corrective dispatches — context limit. Strategy: shorter inline prompts for remaining test work.
 - `compact_baselines()` live LLM call on dry-run path — pre-existing, not fixed.
 - Pi auto-continued past Session 4 into Session 5 without explicit dispatch (acceptable — both verified).
+
+### 2026-09-04 — Friday run recovery (Claude session)
+- 08:30 run died: `ImportError: Anthropic native provider not available`. Cause: `uv sync` on 09-01 rebuilt `.venv` and dropped `anthropic` (never pinned). Fix: `crewai[anthropic]==1.15.1` in pyproject/requirements/uv.lock.
+- Relaunch refused: stale `outputs/lock.lock.json` from the crash. Fix: research command holds the post-lock section under try/finally (main.py).
+- Configured `openai/gpt-4o` fallback never fired because failover only wrapped call(). Fix: `_build_tier_llm` runs the tier on the fallback when the primary cannot be built; tests added.
+- Attempts 2–4 failed the finalize hard gate: content report truncated at DeepSeek's output cap (fix: `CREWAI_RESEARCH_MAX_TOKENS=8192`), then website report with no `[START:WEBSITE]` markers three times — the agent spent its 25 iterations scraping 24 completed tasks and the forced answer was narration. Fix per Carter: completed tasks become a short brief (`outputs/completed-work-brief.md`); website task reads it, spot-checks ≤3.
+- Attempt 5 (14:53Z) passed: 0 gate failures, 0 warnings; execute/post_schedule/facebook_schedule success; 7 GBP + 4 FB synced, AUTO-APPROVED, Hermes notified 15:32Z.
+- Tests: 73 Python (incl. 2 new failover cases; run_isolation reads now utf-8), 7 Node pass.
+- Committed d969d5e (recovery) and c87205c (in-flight Thumbtack/GBP work, per Carter).
