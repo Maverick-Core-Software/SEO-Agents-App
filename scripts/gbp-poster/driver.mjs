@@ -19,6 +19,16 @@ const DEBUG_DIR = 'C:\\Workspace\\Active\\SEO-Agents-App\\outputs\\gbp-debug';
 // Post button is clicked we NEVER retry — a re-send would create a duplicate post.
 const POST_ATTEMPTS = 2;
 
+// A local file selection is not enough proof that GBP accepted an attachment.
+// Keep this scoped to the composer, then require a visible media preview before
+// permitting the irreversible Post click.
+const UPLOAD_PREVIEW_SELECTOR = [
+    'img[src^="blob:"]',
+    'img[src^="data:"]',
+    'img[src*="googleusercontent.com"]',
+    '[aria-label*="image preview" i] img',
+].join(', ');
+
 // ponytail: schedule time is fixed at 9:00 AM business-local; make it a config
 // field if a second time is ever needed.
 const SCHEDULE_TIME_LABEL = /^9:00[\s\u202F]*AM$/;
@@ -30,7 +40,7 @@ function classifyFailure(message) {
     const m = String(message || '').toLowerCase();
     if (/sign in|signed out|logged out|session expired|accounts\.google\.com/.test(m)) return 'session_expired';
     if (/captcha|unusual traffic|not a robot|verify it'?s you|\/sorry\//.test(m)) return 'captcha';
-    if (/image not found|no post found|no caption|workbook not found|not approved/.test(m)) return 'data';
+    if (/image not found|image is required|no post found|no caption|workbook not found|not approved/.test(m)) return 'data';
     if (/could not find|waiting for|timeout|timed out|exceeded|did not register/.test(m)) return 'ui_changed_or_timeout';
     return 'unknown';
 }
@@ -243,10 +253,16 @@ async function attachImage(ctx, imagePath, page) {
         const chooser = await chooserPromise;
         await chooser.setFiles(imagePath);
     }
-    // Wait for upload thumbnail
-    await ctx.locator('img[src^="blob:"], img[src^="data:"]').first()
-        .waitFor({ timeout: 30000 })
-        .catch(() => {});
+    // A missing preview used to be ignored, allowing a text-only GBP post to
+    // submit successfully. The preview is the last reversible proof that the
+    // attachment reached the composer, so fail before the Post click instead.
+    try {
+        await ctx.locator(UPLOAD_PREVIEW_SELECTOR).first()
+            .waitFor({ state: 'visible', timeout: 30000 });
+    } catch (error) {
+        throw new Error(`Image upload preview did not appear before timeout; refusing to post without photo. ${error.message || error}`);
+    }
+    logStep('image upload verified', { image: path.basename(imagePath) });
     await page.waitForTimeout(1500);
 }
 
@@ -463,7 +479,10 @@ async function main() {
         payload.imagePath = resolved;
     }
 
-    if (payload.imagePath && !fs.existsSync(payload.imagePath)) {
+    if (!payload.imagePath) {
+        throw new Error(`Post image is required for ${args.date}; refusing to publish a text-only GBP post.`);
+    }
+    if (!fs.existsSync(payload.imagePath)) {
         throw new Error(`Post image not found: ${payload.imagePath}`);
     }
 
@@ -606,4 +625,4 @@ if (invokedDirectly) {
     });
 }
 
-export { classifyFailure };
+export { classifyFailure, UPLOAD_PREVIEW_SELECTOR };

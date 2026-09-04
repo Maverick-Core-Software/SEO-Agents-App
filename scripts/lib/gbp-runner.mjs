@@ -95,6 +95,26 @@ export function gbpDailyStatusForExit(exitCode, parsed = {}) {
 // we may have already clicked Post.
 export function gbpScheduleStatusForExit(exitCode, parsed = {}) {
   const result = String(parsed.result || '').toLowerCase();
+  const failureReason = String(parsed.failure_reason || '').toLowerCase();
+  const failureDetail = String(parsed.error || '').trim();
+  // A known failure before the Post click is not a candidate for the legacy
+  // daily fallback. Mark it visibly so the existing worker fault alert has a
+  // precise, human-actionable recovery rather than a false scheduled state.
+  if (failureReason === 'session_expired' || isGbpSessionExpiredText(failureDetail)) {
+    return {
+      status: 'error',
+      error: 'GBP session expired — Carter must re-authenticate interactively in the user session with node scripts/gbp-poster/driver.mjs --auth. Do not re-post.',
+    };
+  }
+  if (failureReason === 'captcha') {
+    return {
+      status: 'error',
+      error: 'GBP blocked by CAPTCHA/unusual traffic — a human must resolve it in the user session. Do not re-post automatically.',
+    };
+  }
+  if (failureReason === 'data') {
+    return { status: 'error', error: failureDetail || 'GBP poster rejected the post data before submission.' };
+  }
   if (exitCode === 0 || result === 'scheduled_native') {
     return { status: 'scheduled_native', error: null };
   }

@@ -7,7 +7,7 @@
  * words once Playwright wraps them.
  */
 import assert from 'node:assert/strict';
-import { classifyFailure } from './driver.mjs';
+import { classifyFailure, UPLOAD_PREVIEW_SELECTOR } from './driver.mjs';
 
 assert.equal(classifyFailure('GBP session expired (redirected to Google sign-in)'), 'session_expired', 'session redirect');
 assert.equal(classifyFailure('Sign in button visible'), 'session_expired', 'logged out');
@@ -16,6 +16,10 @@ assert.equal(classifyFailure('CAPTCHA challenge detected on the page'), 'captcha
 assert.equal(classifyFailure('Google anti-bot challenge detected ("unusual traffic")'), 'captcha', 'unusual traffic');
 assert.equal(classifyFailure('interstitial from Google (url: https://www.google.com/sorry/index)'), 'captcha', 'sorry page');
 assert.equal(classifyFailure('Post image not found: E:\\x.jpg'), 'data', 'missing image');
+assert.equal(classifyFailure('Post image is required for 2026-09-05; refusing to publish a text-only GBP post.'), 'data', 'image required');
+assert.equal(classifyFailure('Image upload preview did not appear before timeout; refusing to post without photo.'), 'ui_changed_or_timeout', 'upload preview timeout');
+assert.ok(UPLOAD_PREVIEW_SELECTOR.includes('blob:'), 'upload preview selector includes local upload state');
+assert.ok(UPLOAD_PREVIEW_SELECTOR.includes('googleusercontent.com'), 'upload preview selector includes persisted Google media');
 assert.equal(classifyFailure('Post 2026-06-23 is not Approved. Current status: Draft'), 'data', 'not approved');
 assert.equal(classifyFailure('Could not find posts button. Tried: ...'), 'ui_changed_or_timeout', 'selector miss');
 assert.equal(classifyFailure('locator.waitFor: Timeout 20000ms exceeded'), 'ui_changed_or_timeout', 'timeout');

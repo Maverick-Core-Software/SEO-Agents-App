@@ -92,6 +92,30 @@ console.log('ok gbp-runner pure helpers');
 // gbpScheduleStatusForExit: exit code => scheduled-post update intent
 assert.deepEqual(gbpScheduleStatusForExit(0, {}),
   { status: 'scheduled_native', error: null });
+assert.deepEqual(
+  gbpScheduleStatusForExit(1, {
+    result: 'failed',
+    failure_reason: 'session_expired',
+    error: 'GBP session expired (logged-out Business Profile marketing page shown).',
+  }),
+  {
+    status: 'error',
+    error: 'GBP session expired — Carter must re-authenticate interactively in the user session with node scripts/gbp-poster/driver.mjs --auth. Do not re-post.',
+  },
+  'session expiry must alert instead of falling back to scheduled',
+);
+assert.deepEqual(
+  gbpScheduleStatusForExit(1, {
+    result: 'failed',
+    failure_reason: 'captcha',
+    error: 'CAPTCHA / unusual traffic interstitial from Google',
+  }),
+  {
+    status: 'error',
+    error: 'GBP blocked by CAPTCHA/unusual traffic — a human must resolve it in the user session. Do not re-post automatically.',
+  },
+  'captcha must alert instead of falling back to scheduled',
+);
 assert.equal(gbpScheduleStatusForExit(3, {}).status, 'scheduled_native');
 assert.ok(gbpScheduleStatusForExit(3, {}).error.includes('unconfirmed'));
 assert.deepEqual(gbpScheduleStatusForExit(4, {}),
