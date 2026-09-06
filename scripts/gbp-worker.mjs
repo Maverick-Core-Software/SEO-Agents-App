@@ -60,6 +60,49 @@ const GBP_POSTER_PATH = GBP_MODE === 'playwright'
   ? path.join(PROJECT_ROOT, 'scripts', 'gbp-poster', 'driver.mjs')
   : path.join(PROJECT_ROOT, 'scripts', 'gbp-api-poster.mjs');
 const PHOTO_PICK_PATH = path.join(PROJECT_ROOT, 'scripts', 'gbp-photo-pick.mjs');
+const WORKER_LOCK_PATH = path.join(PROJECT_ROOT, 'state', 'gbp-worker.pid');
+const STUCK_POLL_MS = parseInt(process.env.GBP_WORKER_STUCK_MS || String(20 * 60 * 1000), 10);
+
+export function gbpWorkerProcessExists(pid) {
+  const n = Number(pid);
+  if (!Number.isInteger(n) || n <= 0) return false;
+  try {
+    process.kill(n, 0);
+    return true;
+  } catch (e) {
+    return e && e.code === 'EPERM';
+  }
+}
+
+// Single-instance lock. A live owner keeps the pidfile; a stale pid (dead
+// process after a crash or schtasks /end orphan) is taken over so the daily
+// 8am trigger can start a replacement instead of dying with 0x800710E0 while
+// a zombie from days ago still holds IgnoreNew.
+export function acquireGbpWorkerLock({
+  pidPath = WORKER_LOCK_PATH,
+  pid = process.pid,
+  isAlive = gbpWorkerProcessExists,
+  readFile = (p) => fs.readFileSync(p, 'utf8'),
+  writeFile = (p, c) => {
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, c);
+  },
+} = {}) {
+  let existingPid = 0;
+  try { existingPid = parseInt(String(readFile(pidPath) || '').trim(), 10) || 0; } catch { existingPid = 0; }
+  if (existingPid && existingPid !== pid && isAlive(existingPid)) {
+    return { ok: false, existingPid, pidPath };
+  }
+  writeFile(pidPath, String(pid));
+  return { ok: true, existingPid: existingPid || null, pidPath };
+}
+
+export function releaseGbpWorkerLock(pidPath = WORKER_LOCK_PATH, pid = process.pid) {
+  try {
+    const existing = parseInt(String(fs.readFileSync(pidPath, 'utf8') || '').trim(), 10) || 0;
+    if (!existing || existing === pid) fs.unlinkSync(pidPath);
+  } catch { /* no lock to release */ }
+}
 
 if (invokedDirectly && (!SUPABASE_URL || !SUPABASE_SERVICE_KEY)) {
   console.error('[gbp-worker] SUPABASE_URL or SUPABASE_SERVICE_KEY not set — exiting');
@@ -118,6 +161,7 @@ const paths = { photoPick: PHOTO_PICK_PATH, gbpPoster: GBP_POSTER_PATH, seoAgent
 // ─────────────────────────────────────────────
 
 let busy = false;
+let busySince = 0;
 let lastDailyGbpDate = '';
 
 // ─────────────────────────────────────────────
@@ -226,8 +270,17 @@ async function reconcileGrokVerdicts() {
 }
 
 async function poll() {
-  if (busy) return;
+  if (busy) {
+    if (busySince && (Date.now() - busySince) > STUCK_POLL_MS) {
+      console.error(`[gbp-worker] poll stuck >${Math.round(STUCK_POLL_MS / 60000)}min — releasing busy flag so 9am posts can resume`);
+      busy = false;
+      busySince = 0;
+    } else {
+      return;
+    }
+  }
   busy = true;
+  busySince = Date.now();
   try {
     // 1. Approved-run GBP: claim this run's gbp rows (approved -> posting) so a second
     //    poll can't double-process, then run curation + sync + Day-1 + mark Days 2-7.
@@ -293,6 +346,15 @@ async function poll() {
 
 if (invokedDirectly) {
   const once = process.argv.includes('--once');
+  const lock = acquireGbpWorkerLock();
+  if (!lock.ok) {
+    console.error(`[gbp-worker] already running (pid ${lock.existingPid}) — exiting`);
+    process.exit(0);
+  }
+  const release = () => releaseGbpWorkerLock(lock.pidPath, process.pid);
+  process.on('exit', release);
+  process.on('SIGINT', () => { release(); process.exit(0); });
+  process.on('SIGTERM', () => { release(); process.exit(0); });
   console.log(`[gbp-worker] Starting — project root: ${PROJECT_ROOT}`);
   console.log(`[gbp-worker] GBP_POSTER=${GBP_MODE} → ${path.basename(GBP_POSTER_PATH)}`);
   if (once) {

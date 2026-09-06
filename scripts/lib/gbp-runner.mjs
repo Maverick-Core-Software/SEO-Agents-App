@@ -58,6 +58,8 @@ export function gbpCrashUnverifiedMessage(exitCode) {
 // because context.close() aborted after a successful submit/verify emit.
 export function gbpDailyStatusForExit(exitCode, parsed = {}) {
   const result = String(parsed.result || '').toLowerCase();
+  const failureReason = String(parsed.failure_reason || '').toLowerCase();
+  const failureDetail = String(parsed.error || '').trim();
   // Listing already has a live match — treat as posted even if we did not compose.
   if (result === 'already_live' || parsed.verified === true) {
     return { status: 'posted', error: null, archive: true, platform_post_id: parsed.postUrl || null };
@@ -66,6 +68,32 @@ export function gbpDailyStatusForExit(exitCode, parsed = {}) {
   // Stamp posted + posted_at without an id so the verify sweep confirms after Google publishes.
   if (result === 'already_queued' || result === 'google_scheduled') {
     return { status: 'posted', error: null, archive: false, platform_post_id: parsed.postUrl || null };
+  }
+  // Pre-submit failures must never look like a successful post. Missing photo
+  // is a data error; session/captcha need a human — none of these are "posted".
+  if (failureReason === 'session_expired' || isGbpSessionExpiredText(failureDetail)) {
+    return {
+      status: 'error',
+      error: 'GBP session expired — Carter must re-authenticate interactively in the user session with node scripts/gbp-poster/driver.mjs --auth. Do not re-post.',
+      archive: false,
+      platform_post_id: null,
+    };
+  }
+  if (failureReason === 'captcha') {
+    return {
+      status: 'error',
+      error: 'GBP blocked by CAPTCHA/unusual traffic — a human must resolve it in the user session. Do not re-post automatically.',
+      archive: false,
+      platform_post_id: null,
+    };
+  }
+  if (failureReason === 'data') {
+    return {
+      status: 'error',
+      error: failureDetail || 'GBP poster rejected the post data before submission.',
+      archive: false,
+      platform_post_id: null,
+    };
   }
   if (exitCode === 0 && result !== 'failed' && result !== 'needs_approval' && result !== 'policy_violation' && result !== 'scheduled_native') {
     // Submitted, not yet confirmed live. archive=false keeps the workbook Posted
@@ -260,7 +288,7 @@ export async function applyDriverResult({ supabase, post, result, env, log }) {
     update.platform_post_id = map.platform_post_id;
   }
   if (map.status === 'error') {
-    update.error = (result.stderr || result.error || 'GBP poster failed').slice(0, 300);
+    update.error = (map.error || result.stderr || result.error || 'GBP poster failed').slice(0, 300);
   }
   await supabase.from('weekly_posts').update(update).eq('id', post.id);
   if (map.archive) {

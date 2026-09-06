@@ -6,12 +6,13 @@ import os from 'os';
 import { fileURLToPath, pathToFileURL } from 'url';
 import assert from 'node:assert/strict';
 import { checkPostPolicy, formatViolations } from './policy-check.mjs';
-import { defaultGbpPhotoDirs, resolveGbpImagePath } from '../lib/gbp-paths.mjs';
+import { defaultGbpPhotoDirs, resolveConfiguredCuratedFolder, resolveGbpImagePath } from '../lib/gbp-paths.mjs';
 import { captionSnippet, findSnippetInAllPosts, gbpShouldSubmitLivePost } from '../lib/gbp-listing.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 
 const DEFAULT_CONFIG = 'C:\\Workspace\\Active\\SEO-Agents-App\\config\\gbp-poster.config.json';
+const DEFAULT_WORKBOOK_FALLBACK = 'C:\\Workspace\\Active\\SEO-Agents-App\\outputs\\gbp_posting_schedule.xlsx';
 const USER_DATA_DIR = path.join(os.homedir(), '.claude', 'gbp-session');
 const VIEWPORT = { width: 1365, height: 900 };
 const DEBUG_DIR = 'C:\\Workspace\\Active\\SEO-Agents-App\\outputs\\gbp-debug';
@@ -90,6 +91,27 @@ function parseArgs(argv) {
 
 function readJson(filePath) {
     return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+}
+
+export function resolveWorkbookPath(config, { existsSync = fs.existsSync } = {}) {
+    const joined = config?.config_dir && config?.workbook_path
+        ? path.join(config.config_dir, config.workbook_path)
+        : '';
+    const candidates = [joined, config?.workbook_path, DEFAULT_WORKBOOK_FALLBACK].filter(Boolean);
+    for (const candidate of candidates) {
+        if (existsSync(candidate)) return candidate;
+    }
+    throw new Error(`Workbook not found: ${joined || config?.workbook_path || '(missing workbook_path)'}`);
+}
+
+export function requireExistingImage(imagePath, date) {
+    if (!imagePath) {
+        throw new Error(`Post image is required for ${date}; refusing to publish a text-only GBP post.`);
+    }
+    if (!fs.existsSync(imagePath)) {
+        throw new Error(`Post image not found: ${imagePath}`);
+    }
+    return imagePath;
 }
 
 function excelDateToIso(value) {
@@ -396,9 +418,10 @@ async function composeAndSubmit(page, payload, schedule = false) {
             await openUpdateComposer(page);
             const ctx = await getComposerCtx(page);
             await fillComposerDescription(ctx, payload.caption, page);
-            if (payload.imagePath) {
-                await attachImage(ctx, payload.imagePath, page);
+            if (!payload.imagePath) {
+                throw new Error(`Post image is required for ${payload.date}; refusing to publish a text-only GBP post.`);
             }
+            await attachImage(ctx, payload.imagePath, page);
             if (payload.ctaUrl) {
                 try {
                     await setComposerCta(ctx, page, payload.ctaUrl);
@@ -449,28 +472,25 @@ async function main() {
         return;
     }
 
-    const workbookPath = path.join(config.config_dir, config.workbook_path);
-    if (!workbookPath || !fs.existsSync(workbookPath)) {
-    // Fallback to default config if workbook_path is not set
-    if (!config.workbook_path) {
-        console.warn('Workbook path not set in config, using default: C:\\Workspace\\Active\\SEO-Agents-App\\outputs\\gbp_posting_schedule.xlsx');
-        workbookPath = 'C:\\Workspace\\Active\\SEO-Agents-App\\outputs\\gbp_posting_schedule.xlsx';
-    }
-        throw new Error(`Workbook not found: ${workbookPath || '(missing workbook_path)'}`);
-    }
+    const workbookPath = resolveWorkbookPath(config);
 
     const postData = parseSchedule(workbookPath, args.date);
     const payload = buildPayload(postData);
     payload.ctaUrl = resolveCtaUrl(payload, config);
     if (!payload.caption) throw new Error(`Post ${args.date} has no caption/body text.`);
 
-    // Workbook paths often point at E:\Media\Grizzly\Curated which may not be
-    // mounted. Resolve against the local photo cache before failing.
+    // Workbook paths often point at renamed cache files or the dead E: folder.
+    // Resolve against the local curated pool (service match, then any still)
+    // before refusing to publish.
     {
         const dirs = defaultGbpPhotoDirs(process.env);
+        const curatedPreferred = resolveConfiguredCuratedFolder(config.curated_photo_folder, process.env);
         const resolved = resolveGbpImagePath(payload.imagePath, {
             date: payload.date,
-            curatedPreferred: config.curated_photo_folder || dirs.curatedPreferred,
+            topic: payload.topic,
+            caption: payload.caption,
+            service: payload.topic,
+            curatedPreferred: curatedPreferred || dirs.curatedPreferred,
             localCache: dirs.localCache,
         });
         if (resolved && resolved !== payload.imagePath) {
@@ -479,12 +499,7 @@ async function main() {
         payload.imagePath = resolved;
     }
 
-    if (!payload.imagePath) {
-        throw new Error(`Post image is required for ${args.date}; refusing to publish a text-only GBP post.`);
-    }
-    if (!fs.existsSync(payload.imagePath)) {
-        throw new Error(`Post image not found: ${payload.imagePath}`);
-    }
+    requireExistingImage(payload.imagePath, args.date);
 
     // Content-policy gate — runs in dry-run too so rows can be linted without a
     // browser. 2026-07-31: Google rejected three scheduled posts within minutes

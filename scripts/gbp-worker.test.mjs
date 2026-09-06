@@ -8,7 +8,7 @@
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { grokVerdictDecision } from './gbp-worker.mjs';
+import { grokVerdictDecision, acquireGbpWorkerLock, gbpWorkerProcessExists } from './gbp-worker.mjs';
 
 describe('grokVerdictDecision (Grok-verdict reconciliation policy)', () => {
   it('confirms a live verdict', () => {
@@ -28,5 +28,55 @@ describe('grokVerdictDecision (Grok-verdict reconciliation policy)', () => {
   it('ignores unrecognized verdicts', () => {
     assert.equal(grokVerdictDecision({ verdict: 'scheduled', alreadyRetried: false }), 'ignore');
     assert.equal(grokVerdictDecision({ verdict: '', alreadyRetried: false }), 'ignore');
+  });
+});
+
+describe('acquireGbpWorkerLock (single-instance)', () => {
+  it('takes over a stale pidfile when the previous process is dead', () => {
+    const files = { '/tmp/gbp-worker.pid': '4321' };
+    const lock = acquireGbpWorkerLock({
+      pidPath: '/tmp/gbp-worker.pid',
+      pid: 99,
+      isAlive: () => false,
+      readFile: (p) => files[p],
+      writeFile: (p, c) => { files[p] = c; },
+    });
+    assert.equal(lock.ok, true);
+    assert.equal(files['/tmp/gbp-worker.pid'], '99');
+  });
+
+  it('refuses to start when another gbp-worker pid is still alive', () => {
+    const lock = acquireGbpWorkerLock({
+      pidPath: '/tmp/gbp-worker.pid',
+      pid: 99,
+      isAlive: (pid) => pid === 4321,
+      readFile: () => '4321',
+      writeFile: () => { throw new Error('must not overwrite a live lock'); },
+    });
+    assert.equal(lock.ok, false);
+    assert.equal(lock.existingPid, 4321);
+  });
+
+  it('treats the current pid as the owner', () => {
+    const files = {};
+    const lock = acquireGbpWorkerLock({
+      pidPath: '/tmp/gbp-worker.pid',
+      pid: 7,
+      isAlive: () => true,
+      readFile: () => '7',
+      writeFile: (p, c) => { files[p] = c; },
+    });
+    assert.equal(lock.ok, true);
+    assert.equal(files['/tmp/gbp-worker.pid'], '7');
+  });
+});
+
+describe('gbpWorkerProcessExists', () => {
+  it('returns true for this process', () => {
+    assert.equal(gbpWorkerProcessExists(process.pid), true);
+  });
+  it('returns false for pid 0 / garbage', () => {
+    assert.equal(gbpWorkerProcessExists(0), false);
+    assert.equal(gbpWorkerProcessExists('nope'), false);
   });
 });
