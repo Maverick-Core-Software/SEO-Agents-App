@@ -410,7 +410,11 @@ describe('collectSerp (live path with injected fetchImpl)', () => {
     assert.equal(new URL(fetchImpl.calls[0].url).searchParams.get('location'), policy.serp.location);
     assert.deepEqual(observations.map((o) => o.scope), expected.map((q) => q.query));
     assert.deepEqual(observations.map((o) => o.geography), expected.map((q) => q.city));
-    assert.ok(observations.every((o) => o.status === 'ok'));
+    // The policy deliberately lists more queries than live calls (run.mjs rotates
+    // the slice weekly); the first max_calls are live, the rest are capped.
+    const live = Math.min(expected.length, policy.serp.max_calls);
+    assert.ok(observations.slice(0, live).every((o) => o.status === 'ok'));
+    assert.ok(observations.slice(live).every((o) => o.status === 'unavailable' && /cap reached/.test(o.note || '')));
     assert.ok(meter.entries().every((e) => e.usd === policy.pricing.serpapi_per_call && e.kind === 'serpapi'));
   });
 

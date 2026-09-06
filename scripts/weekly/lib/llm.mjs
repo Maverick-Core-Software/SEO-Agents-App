@@ -50,9 +50,17 @@ export function createLlmClient({ apiKey, model, baseUrl = DEFAULT_BASE_URL, fet
   const endpoint = `${baseUrl.replace(/\/$/, '')}/chat/completions`;
 
   async function chatJSON({ system = '', user = '', schema = null, maxTokens = 8000, temperature = 0.4, label = 'chat' } = {}) {
-    if (meter) meter.assertUnder(0);
     // json_object mode requires the word "json" somewhere in the prompt.
     const userText = typeof user === 'string' ? user : JSON.stringify(user);
+    if (meter) {
+      // Project this call's worst case (prompt at ~4 chars/token plus the full
+      // output allowance) so the ceiling cannot be overshot by one call.
+      const projectedInput = Math.ceil((system.length + userText.length) / 4);
+      const next = typeof meter.estimate === 'function'
+        ? meter.estimate({ kind: 'llm', model, inputTokens: projectedInput, outputTokens: maxTokens })
+        : 0;
+      meter.assertUnder(next);
+    }
     const systemText = /json/i.test(system) || /json/i.test(userText)
       ? system
       : `${system}\n\nRespond with a single JSON object.`;

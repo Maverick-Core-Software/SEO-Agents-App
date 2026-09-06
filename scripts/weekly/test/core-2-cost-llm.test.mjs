@@ -126,6 +126,18 @@ describe('llm client', () => {
     await assert.rejects(() => llm.chatJSON({ system: 'json', user: 'x' }), /timeout after 20 ms/);
   });
 
+  it('refuses a call whose projected cost would cross the ceiling', async () => {
+    // 0.004 spent; ceiling 0.005; a call with maxTokens 8000 on deepseek-chat projects
+    // ~0.0088 of output alone, so it must be refused before any request is made.
+    const meter = createCostMeter({ ceilingUsd: 0.005, pricing: PRICING });
+    meter.record({ kind: 'llm', model: 'deepseek-chat', usd: 0.004 });
+    const fetchImpl = fakeFetch(() => okResponse('{}'));
+    const llm = createLlmClient({ apiKey: 'k', model: 'deepseek-chat', fetchImpl, meter });
+    await assert.rejects(() => llm.chatJSON({ system: 'json', user: 'x', maxTokens: 8000 }), BudgetExceeded);
+    assert.equal(fetchImpl.calls.length, 0);
+    assert.equal(meter.estimate({ kind: 'serpapi' }), 0.01);
+  });
+
   it('refuses to call when the budget is already exhausted', async () => {
     const meter = createCostMeter({ ceilingUsd: 0.01, pricing: PRICING });
     meter.record({ kind: 'llm', model: 'deepseek-chat', usd: 0.02 });

@@ -23,10 +23,12 @@
   },
   "serp": {
     "location": "Dallas-Fort Worth, Texas, United States",
-    "max_queries": 60,
-    "max_calls": 60,
-    "cache_days": 7,
-    "city_tiers": [1, 2]
+    "max_queries": 240,
+    "max_calls": 80,
+    "cache_days": 5,
+    "city_tiers": [1, 2],
+    "rotate_weekly": true,
+    "_notes": "cache_days 5 so a weekly Friday run always refetches; max_queries covers every first template across tier 1-2 cities and run.mjs rotates an 80-query slice by ISO week so each city gets fresh SERP data every ~3 weeks."
   },
   "services": [
     { "key": "panel_upgrade", "label": "Electrical Panel Upgrade / Replacement", "priority": 5,

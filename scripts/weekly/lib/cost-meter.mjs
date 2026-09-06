@@ -61,9 +61,16 @@ export function createCostMeter({ ceilingUsd = Infinity, pricing = {} } = {}) {
     return entry;
   }
 
+  /** Projected cost of a call that has not happened yet (0 when unpriced). */
+  function estimate({ kind = 'llm', model = null, fallbackModel = null, inputTokens = 0, outputTokens = 0 } = {}) {
+    if (kind === 'serpapi') return typeof pricing.serpapi_per_call === 'number' ? pricing.serpapi_per_call : 0;
+    return priceFor(pricing, model, inputTokens, outputTokens) ?? priceFor(pricing, fallbackModel, inputTokens, outputTokens) ?? 0;
+  }
+
   return {
     ceilingUsd,
     record,
+    estimate,
     spent,
     entries: () => entries.map((e) => ({ ...e })),
     warnings: () => entries.filter((e) => e.warning).map((e) => e.warning),
