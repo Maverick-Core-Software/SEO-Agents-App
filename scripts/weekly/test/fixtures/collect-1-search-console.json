@@ -1,0 +1,46 @@
+{
+  "sites": {
+    "siteEntry": [
+      { "siteUrl": "https://someother-site.example/", "permissionLevel": "siteFullUser" },
+      { "siteUrl": "https://www.grizzlyelectricaltx.com/", "permissionLevel": "siteRestrictedUser" },
+      { "siteUrl": "sc-domain:grizzlyelectricaltx.com", "permissionLevel": "siteFullUser" }
+    ]
+  },
+  "pulls": {
+    "28:query": {
+      "rows": [
+        { "keys": ["panel upgrade fort worth"], "clicks": 0, "impressions": 80, "ctr": 0, "position": 18.64 },
+        { "keys": ["electrician rowlett tx"], "clicks": 12, "impressions": 340, "ctr": 0.035294, "position": 4.21 },
+        { "keys": ["ev charger installation royse city"], "clicks": 2, "impressions": 45, "ctr": 0.044444, "position": 9.8 },
+        { "keys": ["heather lighting ideas"], "clicks": 0, "impressions": 12, "ctr": 0, "position": 41.5 },
+        { "keys": ["electrician in Dallas-Fort Worth"], "clicks": 1, "impressions": 60, "ctr": 0.016667, "position": 12.3 }
+      ]
+    },
+    "28:page": {
+      "rows": [
+        { "keys": ["https://www.grizzlyelectricaltx.com/panel-upgrades/"], "clicks": 9, "impressions": 500, "ctr": 0.018, "position": 11.2 },
+        { "keys": ["https://www.grizzlyelectricaltx.com/blog/how-much-does-an-electrician-cost-in-dallas"], "clicks": 4, "impressions": 210, "ctr": 0.019048, "position": 7.4 }
+      ]
+    },
+    "28:query,page": {
+      "rows": [
+        { "keys": ["electrician rowlett tx", "https://www.grizzlyelectricaltx.com/"], "clicks": 11, "impressions": 300, "ctr": 0.036667, "position": 4.1 },
+        { "keys": ["panel upgrade fort worth", "https://www.grizzlyelectricaltx.com/panel-upgrades/"], "clicks": 0, "impressions": 80, "ctr": 0, "position": 18.64 }
+      ]
+    },
+    "90:query": {
+      "rows": [
+        { "keys": ["electrician rowlett tx"], "clicks": 30, "impressions": 900, "ctr": 0.033333, "position": 4.5 },
+        { "keys": ["generator interlock wylie tx"], "clicks": 3, "impressions": 70, "ctr": 0.042857, "position": 6.9 }
+      ]
+    },
+    "90:page": {
+      "rows": []
+    },
+    "90:query,page": {
+      "rows": [
+        { "keys": ["electrician rowlett tx", "https://www.grizzlyelectricaltx.com/"], "clicks": 28, "impressions": 850, "ctr": 0.032941, "position": 4.4 }
+      ]
+    }
+  }
+}

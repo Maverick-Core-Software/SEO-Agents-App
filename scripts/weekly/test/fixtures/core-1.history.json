@@ -1,0 +1,6 @@
+[
+  { "platform": "gbp", "post_date": "2026-08-28", "service": "EV Charger Installation", "hook": "Charging at home in Rowlett", "status": "published", "platform_post_id": "gbp-1", "photo_file": null, "city": "Rowlett" },
+  { "platform": "facebook", "post_date": "2026-08-24", "service": "Electrical Panel Upgrade / Replacement", "hook": "Is your panel keeping up?", "status": "published", "platform_post_id": "fb-1", "photo_file": "panel.jpg", "city": "Garland" },
+  { "platform": "gbp", "post_date": "2026-06-05", "service": "Generator Inlet, Interlock & Installation", "hook": "Storm season prep", "status": "published", "platform_post_id": "gbp-0", "photo_file": null, "city": null },
+  { "platform": "website", "post_date": null, "service": "Recessed Lighting Installation", "hook": "Recessed lighting cost", "status": "queued", "platform_post_id": null, "photo_file": null }
+]
