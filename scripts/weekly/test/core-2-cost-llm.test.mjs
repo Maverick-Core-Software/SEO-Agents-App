@@ -22,6 +22,12 @@ describe('cost meter', () => {
     assert.equal(m.spent(), 0.086); // 0.054 + 0.022 + 0.01
     assert.deepEqual(m.warnings(), ['no pricing for mystery']);
   });
+  it('prices by the served model name, then the requested one', () => {
+    const m = createCostMeter({ ceilingUsd: 1, pricing: PRICING });
+    const e = m.record({ kind: 'llm', model: 'deepseek-v4-flash', fallbackModel: 'deepseek-chat', inputTokens: 1_000_000, outputTokens: 0 });
+    assert.equal(e.usd, 0.27);
+    assert.equal(e.warning, null);
+  });
   it('assertUnder throws BudgetExceeded past the ceiling', () => {
     const m = createCostMeter({ ceilingUsd: 0.05, pricing: PRICING });
     m.record({ kind: 'llm', model: 'deepseek-chat', usd: 0.04 });
@@ -76,6 +82,16 @@ describe('llm client', () => {
     assert.equal(call.init.body.messages[1].content, '{"week":1}');
     assert.equal(meter.entries().length, 1);
     assert.equal(meter.entries()[0].label, 'gen');
+  });
+
+  it('meters a served model name that differs from the requested one', async () => {
+    const meter = createCostMeter({ ceilingUsd: 5, pricing: PRICING });
+    const fetchImpl = fakeFetch(() => okResponse('{"topic":"a","n":1}', { prompt_tokens: 1_000_000, completion_tokens: 0 }, 'served-name'));
+    const llm = createLlmClient({ apiKey: 'k', model: 'deepseek-chat', fetchImpl, meter });
+    const out = await llm.chatJSON({ system: 'json', user: 'x', schema: Schema });
+    assert.equal(out.model, 'served-name');
+    assert.equal(meter.spent(), 0.27);
+    assert.deepEqual(meter.warnings(), []);
   });
 
   it('appends a JSON instruction when the prompt never says json', async () => {

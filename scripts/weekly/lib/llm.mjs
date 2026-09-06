@@ -94,7 +94,7 @@ export function createLlmClient({ apiKey, model, baseUrl = DEFAULT_BASE_URL, fet
       output: Number(json.usage?.completion_tokens ?? 0),
     };
     const usedModel = json.model || model;
-    if (meter) meter.record({ kind: 'llm', model: usedModel, inputTokens: usage.input, outputTokens: usage.output, label });
+    if (meter) meter.record({ kind: 'llm', model: usedModel, fallbackModel: model, inputTokens: usage.input, outputTokens: usage.output, label });
 
     const content = json.choices?.[0]?.message?.content ?? '';
     const parsed = parseJsonLoose(content);

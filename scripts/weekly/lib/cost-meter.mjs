@@ -39,13 +39,16 @@ export function createCostMeter({ ceilingUsd = Infinity, pricing = {} } = {}) {
     }
   }
 
-  function record({ kind = 'llm', model = null, inputTokens = 0, outputTokens = 0, usd, label = '' } = {}) {
+  function record({ kind = 'llm', model = null, fallbackModel = null, inputTokens = 0, outputTokens = 0, usd, label = '' } = {}) {
     let cost = usd;
     let warning = null;
     if (cost === undefined || cost === null) {
+      // Providers may answer with a different model name than requested
+      // (DeepSeek serves "deepseek-chat" as "deepseek-v4-flash"); price by the
+      // served name first, then by the requested one.
       const est = kind === 'serpapi'
         ? (typeof pricing.serpapi_per_call === 'number' ? pricing.serpapi_per_call : null)
-        : priceFor(pricing, model, inputTokens, outputTokens);
+        : (priceFor(pricing, model, inputTokens, outputTokens) ?? priceFor(pricing, fallbackModel, inputTokens, outputTokens));
       if (est === null) {
         cost = 0;
         warning = `no pricing for ${model || kind}`;
