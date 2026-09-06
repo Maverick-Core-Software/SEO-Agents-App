@@ -15,6 +15,7 @@ import {
   assemblePlan,
   planShapeIssues,
   buildRepairMessage,
+  collectIssues,
   contactLine,
   redactUnknownPhones,
   homeBaseCity,
@@ -30,7 +31,11 @@ import {
   FB_TYPES_BY_DAY,
 } from '../lib/generate.mjs';
 
-const PHONE_SHAPE = /\(\d{3}\)\s?\d{3}[-.\s]\d{4}|\b\d{3}[-.]\d{3}[-.]\d{4}\b/g;
+// Every NANP shape validate.mjs findPhoneNumbers flags; anything it would catch must be absent here.
+const SEP = '[\\s.\\-\\u2010-\\u2015\\u2212]?';
+const PHONE_SHAPE = new RegExp(`(?<!\\d)(?:\\+?1${SEP})?(?:\\(\\s*[2-9]\\d{2}\\s*\\)${SEP}[2-9]\\d{2}${SEP}\\d{4}|[2-9]\\d{2}${SEP}[2-9]\\d{2}${SEP}\\d{4})(?!\\d)`, 'g');
+const hookKey = (t) => String(t ?? '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+const words = (t) => String(t ?? '').trim().split(/\s+/).filter(Boolean).length;
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE = path.join(__dirname, 'fixtures', 'generate.model-plan.json');
@@ -162,6 +167,15 @@ describe('generate helpers', () => {
     assert.equal(redactUnknownPhones('(469) 896-3862', { phones: {} }), REDACTED_PHONE);
   });
 
+  it('redactUnknownPhones catches every shape validate.mjs would flag, not only "(AAA) BBB-CCCC"', () => {
+    const R = REDACTED_PHONE;
+    const loose = 'Try 469 555 0123, 4695550123, +1 469-555-0123, 1-469-555-0123, (469)555-0123, ( 469 ) 555 0123, 469–555–0123 or 469 896 3862.';
+    assert.equal(redactUnknownPhones(loose, facts), `Try ${R}, ${R}, ${R}, ${R}, ${R}, ${R}, ${R} or 469 896 3862.`);
+    assert.equal(redactUnknownPhones('+1 (469) 896-3862 is approved', facts), '+1 (469) 896-3862 is approved');
+    const plain = 'Rowlett, TX 75089, founded 2021, a 200-amp panel at 8902 Merritt Rd., 2026-09-04, [0:00-0:03].';
+    assert.equal(redactUnknownPhones(plain, facts), plain, 'zips, years, amperage, dates and time stamps are not phones');
+  });
+
   it('homeBaseCity reads the city out of the facts address', () => {
     assert.equal(homeBaseCity(facts), 'Rowlett');
     assert.equal(homeBaseCity({ address: '1 Main St, Plano, TX 75023' }), 'Plano');
@@ -280,6 +294,21 @@ describe('buildGenerationInput', () => {
     assert.equal(input.history.open_website_tasks, undefined);
   });
 
+  it('passes every distinct recent hook (validate rejects a repeat of any of them), deduped the way validate compares', () => {
+    const posts = [];
+    for (let i = 0; i < 90; i += 1) {
+      posts.push({ platform: i % 2 ? 'gbp' : 'facebook', post_date: `2026-0${1 + (i % 8)}-0${1 + (i % 9)}`, service: 's', hook: `Hook number ${i}` });
+    }
+    posts.push({ platform: 'facebook', post_date: '2026-08-31', service: 's', hook: 'HOOK NUMBER 1!' });
+    posts.push({ platform: 'facebook', post_date: '2026-08-30', service: 's', hook: 'Hook, number 1' });
+    const input = makeInput({ history: { posts, website_tasks: [] } });
+    const hooks = input.history.recent_hooks_to_avoid;
+    assert.equal(hooks.length, 90, 'an 8-week history (~90 posts) is passed whole, not truncated to 40');
+    assert.equal(hooks[0], 'HOOK NUMBER 1!', 'newest first');
+    assert.equal(hooks.filter((h) => hookKey(h) === 'hook number 1').length, 1, 'punctuation and case variants collapse to one entry');
+    assert.equal(new Set(hooks.map(hookKey)).size, hooks.length);
+  });
+
   it('tolerates a missing history and no photos', () => {
     const input = makeInput({ history: null, photos: undefined });
     assert.deepEqual(input.history, { recent_hooks_to_avoid: [], recent_posts: [], recent_website_tasks: [] });
@@ -327,7 +356,16 @@ describe('plan.system.md', () => {
     assert.match(text, /do not write the email address/);
     assert.match(text, /history\.recent_website_tasks/);
     assert.match(text, /\[phone number withheld\]/);
-    assert.doesNotMatch(text, /\(\d{3}\) \d{3}-\d{4}/, 'no phone numbers hard-coded in the prompt');
+    assert.doesNotMatch(text, PHONE_SHAPE, 'no phone numbers hard-coded in the prompt');
+  });
+
+  it('asks for what validate.mjs checks: new hooks AND headlines, unique within the plan, a local tag on every GBP post, 30+ word bodies', () => {
+    assert.match(text, /## Hooks and headlines must be new/);
+    assert.match(text, /every GBP `headline` in this plan must differ from every entry/);
+    assert.match(text, /from each other within this plan/);
+    assert.match(text, /ignoring case\s+and punctuation/);
+    assert.match(text, /Every post carries at least one local tag/);
+    assert.match(text, /`body`: 30 to 50 words/);
   });
 
   it('keeps business truth in the facts file: no city names, addresses, domains or emails hard-coded', () => {
@@ -518,6 +556,24 @@ describe('generatePlan', () => {
     assert.equal(previous_response.facebook[0].type, 'photo');
   });
 
+  it('sends schema and shape issues together in the one repair call when the first reply fails both', async () => {
+    const broken = loadModelPlan();
+    broken.gbp.pop(); // schema: gbp must hold exactly 7 items
+    broken.facebook[0].type = 'photo'; // shape: day 1 must be a slideshow
+    broken.topic.city = 'Garland'; // shape: topic drifted from the winner
+    const llm = fakeLlm([broken, loadModelPlan()]);
+
+    await generatePlan(makeInput(), { llm, attemptId: 'att-11', systemPrompt: 'JSON please.' });
+
+    assert.equal(llm.calls.length, 2);
+    const { issues } = llm.calls[1].user;
+    const paths = issues.map((i) => i.path);
+    assert.ok(paths.includes('gbp'), 'schema issue kept');
+    assert.ok(paths.includes('facebook[0].type'), 'shape issue found on the unparsed reply');
+    assert.ok(paths.includes('topic'), 'topic drift found on the unparsed reply');
+    assert.equal(new Set(issues.map((i) => `${i.path} ${i.message}`)).size, issues.length, 'no duplicate issues');
+  });
+
   it('uses the raw text as previous_response when the first reply was not JSON', async () => {
     const llm = fakeLlm(['Sorry, I cannot do that.', loadModelPlan()]);
     await generatePlan(makeInput(), { llm, attemptId: 'att-4', systemPrompt: 'JSON please.' });
@@ -615,6 +671,23 @@ describe('generatePlan', () => {
   });
 });
 
+describe('collectIssues', () => {
+  it('reports "no plan object" for an empty result, schema plus shape for a failed parse, shape only for a passing one', () => {
+    const input = makeInput();
+    assert.deepEqual(collectIssues(undefined, input), [{ path: '', message: 'no plan object' }]);
+    assert.deepEqual(collectIssues({ data: null, issues: [], raw: '' }, input), [{ path: '', message: 'no plan object' }]);
+    const notJson = { data: null, issues: [{ path: '', message: 'model output is not JSON: x' }], raw: 'nope' };
+    assert.deepEqual(collectIssues(notJson, input), notJson.issues, 'nothing to shape-check when the reply is not JSON');
+    const broken = loadModelPlan();
+    broken.facebook[0].type = 'photo';
+    const failed = { data: null, issues: [{ path: 'gbp', message: 'bad' }], raw: `\`\`\`json\n${JSON.stringify(broken)}\n\`\`\`` };
+    assert.deepEqual(collectIssues(failed, input).map((i) => i.path), ['gbp', 'facebook[0].type']);
+    const arrayReply = { data: null, issues: [{ path: '', message: 'Expected object, received array' }], raw: '[]' };
+    assert.deepEqual(collectIssues(arrayReply, input), arrayReply.issues);
+    assert.deepEqual(collectIssues(parseOrIssues(ModelPlanSchema, loadModelPlan()), input), []);
+  });
+});
+
 describe('buildRepairMessage', () => {
   it('prefers parsed data, then loosely parsed raw, then the raw string', () => {
     const input = makeInput();
@@ -623,5 +696,94 @@ describe('buildRepairMessage', () => {
     assert.deepEqual(buildRepairMessage(input, { data: null, raw: '```json\n{"b":2}\n```' }, issues).previous_response, { b: 2 });
     assert.equal(buildRepairMessage(input, { data: null, raw: 'nope' }, issues).previous_response, 'nope');
     assert.equal(buildRepairMessage(input, { data: null, raw: undefined }, issues).previous_response, '');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The canned plan: the offline e2e feeds it to validate.mjs, so every rule the
+// prompt states and validate enforces must hold in it, not just the schema.
+// ---------------------------------------------------------------------------
+
+describe('generate.model-plan.json obeys the rules it is meant to demonstrate', () => {
+  const plan = loadModelPlan();
+  const text = JSON.stringify(plan);
+  const mentions = (t, city) => new RegExp(`\\b${city}\\b`, 'i').test(String(t ?? ''));
+
+  it('is a valid ModelPlan with no shape issues against the test selection', () => {
+    assert.deepEqual(parseOrIssues(ModelPlanSchema, plan).issues, []);
+    assert.deepEqual(planShapeIssues(plan, makeInput()), []);
+  });
+
+  it('names the winner city in at least 3 GBP posts and 2 Facebook posts', () => {
+    const gbpHits = plan.gbp.filter((g) => mentions([g.headline, g.body, g.caption, g.topic].join(' '), WINNER.city)).length;
+    const fbHits = plan.facebook.filter((f) => mentions([f.hook, f.body].join(' '), WINNER.city)).length;
+    assert.ok(gbpHits >= 3, `winner city in ${gbpHits} GBP posts`);
+    assert.ok(fbHits >= 2, `winner city in ${fbHits} Facebook posts`);
+  });
+
+  it('carries no phone number, dollar amount, domain, email, license number, forbidden tenure phrase or stray year', () => {
+    assert.deepEqual(text.match(PHONE_SHAPE) ?? [], []);
+    assert.doesNotMatch(text, /\$\s?\d/);
+    assert.doesNotMatch(text, /https?:\/\/|www\.|\.(?:com|net|org)\b|@/i);
+    assert.doesNotMatch(text, /licen[cs]e\s*(?:#|no\.?|number)/i);
+    for (const phrase of facts.forbidden_phrases) assert.equal(text.toLowerCase().includes(phrase.toLowerCase()), false, `forbidden: ${phrase}`);
+    assert.match(text, new RegExp(facts.tenure_phrase), 'uses the tenure phrase');
+    const years = [...new Set(text.match(/\b(?:19|20)\d{2}\b/g) ?? [])];
+    assert.deepEqual(years, [String(facts.founded_year)], 'the only year mentioned is the founding year');
+  });
+
+  it('uses only listed photos, lists every gap, and puts a local tag on every GBP post', () => {
+    const photoSet = new Set(PHOTOS);
+    const items = [...plan.gbp, ...plan.facebook];
+    for (const item of items) {
+      if (item.photo_file !== null) assert.ok(photoSet.has(item.photo_file), `unknown photo ${item.photo_file}`);
+    }
+    assert.equal(plan.notes.photo_gaps.length, items.filter((i) => i.photo_file === null).length);
+    for (const g of plan.gbp) {
+      assert.ok(g.hashtags.length >= 3 && g.hashtags.length <= 5, `day ${g.day} hashtag count`);
+      assert.ok(g.hashtags.some((h) => /tx$/i.test(h) || /dfw/i.test(h)), `day ${g.day} lacks a local tag`);
+      assert.ok(g.headline.length <= 58, `day ${g.day} headline ${g.headline.length} chars`);
+      assert.ok(words(g.body) >= 30, `day ${g.day} body ${words(g.body)} words`);
+    }
+  });
+
+  it('spreads services (max 3 GBP days each, never two days running) and keeps every hook and headline new and unique', () => {
+    const counts = {};
+    plan.gbp.forEach((g, i) => {
+      counts[g.service] = (counts[g.service] ?? 0) + 1;
+      if (i > 0) assert.notEqual(g.service, plan.gbp[i - 1].service, `day ${g.day} repeats the service of day ${plan.gbp[i - 1].day}`);
+    });
+    for (const [service, n] of Object.entries(counts)) assert.ok(n <= 3, `${service} on ${n} days`);
+    const keys = [...plan.gbp.map((g) => hookKey(g.headline)), ...plan.facebook.map((f) => hookKey(f.hook))];
+    assert.equal(new Set(keys).size, keys.length, 'hooks and headlines are unique within the plan');
+    const past = new Set(HISTORY.posts.map((p) => hookKey(p.hook)).filter(Boolean));
+    assert.deepEqual(keys.filter((k) => past.has(k)), [], 'no hook repeats history');
+    plan.facebook.forEach((f, i) => { if (i > 0) assert.notEqual(f.format, plan.facebook[i - 1].format, 'format rotates'); });
+    const week = new Set([WINNER.service_label, ...SELECTION.ranked.map((c) => c.service_label)]);
+    for (const f of plan.facebook) assert.ok(week.has(f.service) || facts.priority_services.length > 0, `facebook service ${f.service}`);
+  });
+
+  it('boosts by the rules and keeps the Facebook media policy', () => {
+    const yes = plan.facebook.filter((f) => f.boost.decision === 'YES');
+    assert.ok(yes.length >= 1 && yes.length <= 2, `${yes.length} YES rows`);
+    assert.equal(yes.reduce((s, f) => s + f.boost.daily_usd * f.boost.days, 0), POLICY.boost_weekly_usd);
+    for (const f of plan.facebook.filter((r) => r.boost.decision !== 'YES')) assert.deepEqual([f.boost.daily_usd, f.boost.days], [null, null]);
+    for (const f of plan.facebook) {
+      assert.ok(FB_TYPES_BY_DAY[f.day].includes(f.type), `day ${f.day} type ${f.type}`);
+      if (f.day === 1) assert.ok(f.on_screen_text.split('|').length >= 3 && /\[\d:\d\d-\d:\d\d\]/.test(f.on_screen_text), 'slideshow beats');
+      else assert.equal(f.on_screen_text, '');
+      const n = words(f.body);
+      assert.ok(n >= 30 && n <= 80, `day ${f.day} body ${n} words`);
+      assert.ok(f.hashtags.length <= 3);
+    }
+  });
+
+  it('proposes website actions only against existing pages, with drafts only for blog posts', () => {
+    assert.ok(plan.website_actions.length >= 1 && plan.website_actions.length <= 3);
+    for (const a of plan.website_actions) {
+      if (a.type !== 'website_blog_post') assert.ok(facts.existing_pages.includes(a.target), `${a.target} is not an existing page`);
+      assert.equal(a.draft === null, a.type !== 'website_blog_post');
+      assert.doesNotMatch(JSON.stringify(a), /wordpress|cms|plugin/i);
+    }
   });
 });

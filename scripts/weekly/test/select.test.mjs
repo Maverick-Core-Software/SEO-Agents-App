@@ -211,6 +211,16 @@ describe('buildCandidates', () => {
     assert.equal(fromPolicy.length, policy.services.length * tierTwoCities);
     assert.ok(!fromPolicy.some((c) => c.city === 'Denton'), 'tier 3 city is excluded');
   });
+
+  it('reads tiers numerically and treats an empty tier list as no filter, like serp.city_tiers', () => {
+    const tierOneCities = policy.cities.filter((c) => c.tier === 1).length;
+    assert.equal(buildCandidates(policy, { cityTiers: ['1'] }).length, policy.services.length * tierOneCities, 'string tiers');
+    assert.equal(buildCandidates({ ...policy, selection: { city_tiers: [] } }).length, policy.services.length * policy.cities.length, 'empty policy list');
+    assert.equal(buildCandidates(policy, { cityTiers: [] }).length, policy.services.length * policy.cities.length, 'empty option');
+    assert.equal(buildCandidates({ ...policy, selection: { city_tiers: ['x'] } }).length, policy.services.length * policy.cities.length, 'unreadable tiers filter nothing');
+    const selection = rankCandidates({ policy, observations: [], history: null, weekSpec, cityTiers: ['1'] });
+    assert.equal(selection.ranked.length, policy.services.length * tierOneCities, 'rankCandidates passes the option through');
+  });
 });
 
 // ── Service and city matching ───────────────────────────────────────────────
@@ -296,6 +306,24 @@ describe('rankCandidates: opportunity from Search Console position', () => {
     assert.match(reason(noData, 'opportunity'), /no Search Console position data/);
   });
 
+  it('treats the collector\'s zero position (field missing from the API) as no position data, not page 1', () => {
+    // collect-1's rowToObservation writes position 0 when the API omits it; Google positions start at 1.
+    const observations = [
+      scObs({ query: 'electrical panel upgrade garland', impressions: 120, clicks: 3, position: 0 }),
+      scObs({ query: 'can lights installation plano tx', impressions: 50, clicks: 1, position: 0 }),
+      scObs({ query: 'recessed lighting installation plano', impressions: 50, clicks: 1, position: 20 }),
+    ];
+    const selection = rank({ observations });
+    assertSelection(selection);
+    const panel = pick(selection, 'panel_upgrade', 'Garland');
+    assert.equal(panel.scores.opportunity, 0, 'a zero position is not "already high on page 1"');
+    assert.match(reason(panel, 'opportunity'), /no Search Console position data/);
+    assert.equal(panel.scores.demand, 1, 'the impressions still count for demand');
+    const lighting = pick(selection, 'recessed_lighting', 'Plano');
+    assert.equal(lighting.scores.opportunity, 1, 'the zero-position row does not drag the family average down');
+    assert.match(reason(lighting, 'opportunity'), /avg position 20\.0 across 50 impressions/);
+  });
+
   it('treats the 8–30 band as inclusive', () => {
     assert.equal(opportunityFromPosition(8), 1);
     assert.equal(opportunityFromPosition(30), 1);
@@ -353,13 +381,16 @@ describe('rankCandidates: demand from the collect-1 Search Console fixture', () 
   });
 
   it('carries the real fixture to a winner with page 1–3 opportunity and a runner-up', () => {
-    // troubleshooting/Dallas: priority 1, position 12.3 (opportunity 1), 60 impressions, city weight 1.1.
-    assert.equal(selection.winner.service_key, 'troubleshooting');
-    assert.equal(selection.winner.city, 'Dallas');
-    assert.equal(selection.winner.scores.opportunity, 1);
-    assert.equal(selection.ranked[1].service_key, 'ev_charger');
-    assert.equal(selection.ranked[1].city, 'Royse City');
-    assert.ok(selection.winner.total > selection.ranked[1].total);
+    // The exact winner depends on the live city weights in config/weekly-policy.json
+    // (tuned by docs/strategy); the structural guarantees are what matter here.
+    // With the strategy's weights the home ring can win on an already-ranking
+    // family (opportunity 0.3); what must hold is that the winner has evidence.
+    assert.ok(selection.winner.scores.opportunity > 0, 'winner has a Search Console family with a position');
+    assert.equal(selection.winner.scores.priority, 1, 'winner is a top-priority service');
+    assert.ok(policy.cities.some((c) => c.name === selection.winner.city));
+    assert.ok(selection.ranked.length > 1);
+    assert.ok(selection.winner.total >= selection.ranked[1].total);
+    assert.notDeepEqual([selection.ranked[1].service_key, selection.ranked[1].city], [selection.winner.service_key, selection.winner.city]);
     assert.match(selection.rationale, /SerpApi unavailable/);
   });
 });
@@ -502,6 +533,27 @@ describe('rankCandidates: recency from history', () => {
     assert.equal(pick(rank({ history }), 'ev_charger', 'Rowlett').scores.recency, 0.1, '21 days is inside 4 weeks');
     assert.equal(pick(rank({ history, policy: { ...policy, recency_weeks: 2 } }), 'ev_charger', 'Rowlett').scores.recency, 1, '21 days is outside 2 weeks');
   });
+
+  it('uses the weekly_posts status vocabulary: rows the workers never posted do not count, rows that went out do', () => {
+    const recencyFor = (status) => {
+      const history = { posts: [post({ post_date: '2026-08-28', service: 'EV Charger Installation', status, city: 'Rowlett' })], website_tasks: [] };
+      return pick(rank({ history }), 'ev_charger', 'Rowlett').scores.recency;
+    };
+    // gbp-runner returns pending_approval for rows it did not post; the workers only act on approved rows.
+    for (const status of ['pending_approval', 'pending', 'draft', 'expired', 'error', 'failed', 'skipped', 'dry_run', 'cancelled']) {
+      assert.equal(recencyFor(status), 1, `${status} never went out`);
+    }
+    for (const status of ['posted', 'approved', 'scheduled', 'scheduled_native', 'needs_verification', 'Posted', null]) {
+      assert.equal(recencyFor(status), 0.1, `${status} counts as published`);
+    }
+  });
+
+  it('accepts a Date instance as post_date', () => {
+    const history = { posts: [post({ post_date: new Date('2026-08-28T00:00:00Z'), service: 'EV Charger Installation', city: 'Rowlett' })], website_tasks: [] };
+    const candidate = pick(rank({ history }), 'ev_charger', 'Rowlett');
+    assert.equal(candidate.scores.recency, 0.1);
+    assert.match(reason(candidate, 'recency'), /posted 2026-08-28/);
+  });
 });
 
 // ── Exclusion of recent winners ─────────────────────────────────────────────
@@ -581,6 +633,26 @@ describe('rankCandidates: exclusion of the last two weeks\' winners', () => {
     assert.equal(pick(selection, 'ev_charger', 'Wylie').scores.recency, 0.1, 'recency still sees the posts');
   });
 
+  it('does not infer a winner from a week whose plan was never approved, and still does once it went out', () => {
+    const gbpStart = addDays(weekSpec.run_friday, -7);
+    const week = (status) => [0, 1, 2, 3].map((i) => post({ post_date: addDays(gbpStart, i), service: 'EV Charger Installation', status, city: 'Wylie' }));
+    const pending = rank({ history: { posts: week('pending_approval'), website_tasks: [] } });
+    assert.deepEqual(pending.excluded, [], 'a pending week excludes nothing');
+    assert.equal(pick(pending, 'ev_charger', 'Wylie').scores.recency, 1, 'and does not penalize recency');
+    const approved = rank({ history: { posts: week('approved'), website_tasks: [] } });
+    assert.equal(approved.excluded.length, policy.cities.length, 'an approved week is the winner');
+    assert.equal(pick(approved, 'ev_charger', 'Wylie').scores.recency, 0.1);
+  });
+
+  it('reads a prior revision\'s topic from history.winners as { topic: { service_key } }', () => {
+    const history = { posts: [], website_tasks: [], winners: [{ week_of: '2026-08-31', topic: { service_key: 'generator', service_label: 'Generator Inlet, Interlock & Installation', city: 'Plano' } }] };
+    const selection = rank({ history });
+    assertSelection(selection);
+    assert.ok(selection.excluded.length > 0);
+    assert.ok(selection.excluded.every((e) => e.candidate.service_key === 'generator'));
+    assert.match(selection.excluded[0].reason, /selected for week of 2026-08-31/);
+  });
+
   it('honours explicit history.winners inside the window and ignores older ones', () => {
     const history = {
       posts: [],
@@ -646,7 +718,8 @@ describe('rankCandidates: degraded selection', () => {
     assert.equal(selection.degraded, true);
     assert.equal(selection.ranked.length, policy.services.length * policy.cities.length);
     assert.equal(selection.winner.scores.priority, 1);
-    assert.equal(selection.winner.city, 'Frisco', 'the heaviest city wins on equal evidence');
+    const heaviest = [...policy.cities].sort((a, b) => b.weight - a.weight)[0].name;
+    assert.equal(selection.winner.city, heaviest, 'the heaviest city wins on equal evidence');
   });
 
   it('is not degraded when Search Console answered, even if SerpApi did not', () => {
@@ -692,7 +765,11 @@ describe('rankCandidates: city weight multiplies the total', () => {
     assert.deepEqual(frisco.scores, murphy.scores);
     near(frisco.total / murphy.total, CITY_WEIGHT.get('Frisco') / CITY_WEIGHT.get('Murphy'), 'Frisco / Murphy');
     near(rowlett.total / murphy.total, CITY_WEIGHT.get('Rowlett') / CITY_WEIGHT.get('Murphy'), 'Rowlett / Murphy');
-    assert.ok(frisco.total > murphy.total && murphy.total > rowlett.total);
+    // Ordering follows the policy's city weights, whatever they are this week.
+    const byWeight = [frisco, murphy, rowlett].sort((a, b) => CITY_WEIGHT.get(b.city) - CITY_WEIGHT.get(a.city));
+    for (let i = 1; i < byWeight.length; i += 1) {
+      assert.ok(byWeight[i - 1].total >= byWeight[i].total, `${byWeight[i - 1].city} (heavier) ranks at or above ${byWeight[i].city}`);
+    }
     for (let i = 1; i < selection.ranked.length; i += 1) {
       assert.ok(selection.ranked[i - 1].total >= selection.ranked[i].total, 'ranked is sorted by total, descending');
     }
@@ -731,6 +808,34 @@ describe('rankCandidates: performance from Facebook insights joined to history',
     assert.equal(pick(selection, 'generator', 'Plano').scores.performance, 0.5);
     assert.match(reason(pick(selection, 'generator', 'Plano'), 'performance'), /no performance data \(0\.50\)/);
     assert.doesNotMatch(selection.rationale, /Facebook insights unavailable/);
+  });
+
+  it('uses Search Console CTR for services posted inside the window when Facebook is silent', () => {
+    const observations = [
+      scObs({ query: 'electrician rowlett tx', impressions: 100, clicks: 10, position: 12 }),
+      scObs({ query: 'ev charger installation wylie', impressions: 100, clicks: 2, position: 12 }),
+      scObs({ query: 'home generator installation plano', impressions: 5, clicks: 5, position: 12 }),
+      scObs({ query: 'recessed lighting installation plano', impressions: 100, clicks: 50, position: 12 }),
+    ];
+    const history = {
+      posts: [
+        post({ post_date: '2026-08-28', service: 'Electrical Troubleshooting & Repair', city: 'Rowlett' }),
+        post({ post_date: '2026-08-27', service: 'EV Charger Installation', city: 'Wylie' }),
+        post({ post_date: '2026-08-26', service: 'Generator Inlet, Interlock & Installation', city: 'Plano' }),
+        post({ post_date: '2026-07-20', service: 'Recessed Lighting Installation', city: 'Plano' }),
+      ],
+      website_tasks: [],
+    };
+    const selection = rank({ observations, history });
+    assertSelection(selection);
+    const troubleshooting = pick(selection, 'troubleshooting', 'Plano');
+    assert.equal(troubleshooting.scores.performance, 1);
+    assert.match(reason(troubleshooting, 'performance'), /search CTR 10\.0% \(1\.00 of best\)/);
+    near(pick(selection, 'ev_charger', 'Plano').scores.performance, 0.2, '2% CTR is a fifth of the best');
+    assert.equal(pick(selection, 'generator', 'Plano').scores.performance, 0.5, 'under 10 impressions is not evidence');
+    assert.equal(pick(selection, 'recessed_lighting', 'Plano').scores.performance, 0.5, 'a post outside the 28-day window is not joined');
+    assert.equal(pick(selection, 'panel_upgrade', 'Plano').scores.performance, 0.5, 'never posted');
+    assert.match(selection.rationale, /Facebook insights unavailable; performance rests on Search Console CTR/);
   });
 });
 

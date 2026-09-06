@@ -84,8 +84,12 @@ const GENERIC_TERMS = new Set([
   'company', 'companies', 'residential',
 ]);
 
-/** weekly_posts statuses that mean the post never went out. */
-const UNPUBLISHED_STATUS = /^(error|failed|rejected|skipped|dismissed|validation_failed|dry_run|cancel)/i;
+/**
+ * weekly_posts statuses that mean the post never went out. The workers only
+ * act on `approved` rows (gbp-runner / gbp-worker CAS on status='approved'),
+ * so a past week still at `pending_approval` was never published.
+ */
+const UNPUBLISHED_STATUS = /^(error|failed|rejected|skipped|dismissed|validation_failed|dry_run|cancel|pending|draft|expired)/i;
 
 const DAY_MS = 86400000;
 
@@ -132,9 +136,14 @@ function num(v) {
   return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
-function finiteOrNull(v) {
+/**
+ * A Search Console position as a number, or null when there is none. Google
+ * positions start at 1; the collector writes 0 when the API omitted the field,
+ * so a non-positive value is "no position data", not "top of page 1".
+ */
+function positionOrNull(v) {
   const n = Number(v);
-  return Number.isFinite(n) ? n : null;
+  return Number.isFinite(n) && n > 0 ? n : null;
 }
 
 function round4(n) {
@@ -221,6 +230,7 @@ export function createServiceMatcher(policy = {}, thresholds = DEFAULT_THRESHOLD
 // Date helpers (UTC day arithmetic on YYYY-MM-DD strings; no clock)
 
 function parseDay(value) {
+  if (value instanceof Date) return Number.isFinite(value.getTime()) ? parseDay(value.toISOString()) : null;
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(value || ''));
   if (!m) return null;
   return Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
@@ -253,13 +263,17 @@ function queryFamily(service, city) {
 /**
  * Candidate skeletons for services × cities. `cityTiers` (an array of tier
  * numbers) limits the cities; default: `policy.selection.city_tiers` if set,
- * otherwise every city in the policy.
+ * otherwise every city in the policy. Tiers are compared numerically and an
+ * empty list means no filter, the same reading as `serp.city_tiers` in the
+ * SerpApi collector.
  */
 export function buildCandidates(policy = {}, { cityTiers = null } = {}) {
   const { thresholds } = selectionConstants(policy);
-  const tiers = cityTiers || (policy.selection && policy.selection.city_tiers) || null;
+  const tiers = [cityTiers, policy.selection && policy.selection.city_tiers]
+    .map((list) => (Array.isArray(list) ? list.map(Number).filter(Number.isFinite) : []))
+    .find((list) => list.length) || null;
   const allowed = tiers ? new Set(tiers) : null;
-  const cities = (policy.cities || []).filter((c) => c && c.name && (!allowed || allowed.has(c.tier)));
+  const cities = (policy.cities || []).filter((c) => c && c.name && (!allowed || allowed.has(Number(c.tier))));
   const out = [];
   for (const service of policy.services || []) {
     if (!service || !service.key) continue;
@@ -314,7 +328,7 @@ function indexObservations(observations, policy, matcher, thresholds) {
         days: periodDays(obs.period),
         impressions: num(value.impressions),
         clicks: num(value.clicks),
-        position: finiteOrNull(value.position),
+        position: positionOrNull(value.position),
       };
       (value.page ? scPage : scPure).push(row);
     } else if (obs.source === 'serpapi') {
@@ -371,7 +385,7 @@ function indexHistory(history, policy, matcher, { runFridayMs, weekOfMs }) {
       service,
       city,
       daysBefore,
-      post_date: String(post.post_date).slice(0, 10),
+      post_date: new Date(dayMs).toISOString().slice(0, 10),
       platform,
       platform_post_id: post.platform_post_id ? String(post.platform_post_id) : null,
     });
@@ -384,8 +398,9 @@ function indexHistory(history, policy, matcher, { runFridayMs, weekOfMs }) {
  * most-posted service of that week when it has at least
  * `exclusion_min_posts` and no other service ties it (a legacy week rotates
  * seven GBP services and reuses some on Facebook, so it infers nothing), plus
- * any explicit `history.winners: [{ week_of, service_key }]` in the window
- * (`service_key` may also be a service label).
+ * any explicit `history.winners` in the window: `[{ week_of, service_key }]`
+ * or a prior revision's `{ week_of, topic: { service_key } }` (`service_key`
+ * may also be a service label).
  */
 function recentWinners(posts, history, weekSpec, matcher, thresholds) {
   const winners = new Map(); // service → evidence text
@@ -412,7 +427,9 @@ function recentWinners(posts, history, weekSpec, matcher, thresholds) {
   for (const w of (history && history.winners) || []) {
     if (!w || typeof w !== 'object') continue;
     const ms = parseDay(w.week_of);
-    const raw = typeof w.service_key === 'string' ? w.service_key : '';
+    // A prior revision's topic: { service_key } or { topic: { service_key } }; a label is accepted too.
+    const raw = [w.service_key, w.topic && w.topic.service_key, w.service_label, w.service]
+      .find((v) => typeof v === 'string' && v.trim()) || '';
     const service = matcher.isKey(raw) ? raw : matcher.match(raw);
     if (ms == null || !service) continue;
     const d = daysBetween(ms, weekOfMs);

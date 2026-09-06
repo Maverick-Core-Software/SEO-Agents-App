@@ -7,7 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   compareWithLegacy, buildCompareReport, parseSide, checkDates, factsViolations, serviceCounts, formatDuration,
-  readLegacyOutputs, readShadowOutputs, LEGACY_FILES, GBP_DAYS, FB_DAYS,
+  readLegacyOutputs, readShadowOutputs, redactSecrets, LEGACY_FILES, GBP_DAYS, FB_DAYS,
 } from '../lib/compare.mjs';
 import { stagePlan } from '../lib/stage.mjs';
 import { createFileStore } from '../lib/store.mjs';
@@ -107,6 +107,20 @@ function legacyFacebook() {
   return `# Grizzly Electrical Solutions — Facebook Content Schedule\n## Week of September 7–12, 2026\n\n---\n\n${blocks.join('\n')}## BOOST BUDGET SUMMARY\n\n### Weekly Budget: $50\n`;
 }
 
+/** Legacy execution queue in the `---`-separated block format parseWebsiteTasks reads. */
+function legacyQueue() {
+  const task = (id, title, type, priority, status, description) => [
+    '---', '', `**Task ID:** ${id}`, `**Task Title:** ${title}`, `**Type:** ${type}`, `**Priority:** ${priority}`,
+    `**Status:** ${status}`, `**Description:** ${description}`, '',
+  ];
+  return [
+    '# Grizzly Electrical Solutions — Execution Queue', '',
+    ...task('T-1', 'Refresh the panel upgrade page', 'website_service_page_update', 'P1', 'pending_approval', 'Add a Rockwall section with the 200 amp panel photos.'),
+    ...task('T-2', 'Publish the surge protection blog post', 'blog_post', 'P2', 'waiting_on_owner', 'Owner must approve the draft first.'),
+    ...task('T-3', 'Old task already shipped', 'website_copy_update', 'P3', 'complete', 'done'),
+  ].join('\n');
+}
+
 let root;
 let counter = 0;
 before(() => { root = fs.mkdtempSync(path.join(os.tmpdir(), 'weekly-compare-')); });
@@ -120,9 +134,10 @@ function dirs() {
   return { base, outputsDir, shadowDir, store: createFileStore(path.join(base, 'store')) };
 }
 
-function writeLegacy(outputsDir, { gbp = legacyGbp(), facebook = legacyFacebook() } = {}) {
+function writeLegacy(outputsDir, { gbp = legacyGbp(), facebook = legacyFacebook(), queue = null } = {}) {
   if (gbp != null) fs.writeFileSync(path.join(outputsDir, LEGACY_FILES.gbp), gbp, 'utf8');
   if (facebook != null) fs.writeFileSync(path.join(outputsDir, LEGACY_FILES.facebook), facebook, 'utf8');
+  if (queue != null) fs.writeFileSync(path.join(outputsDir, LEGACY_FILES.queue), queue, 'utf8');
 }
 
 async function stageShadow({ store, shadowDir }, { plan = makePlan(), attempt = makeAttempt(), validation = VALID } = {}) {
@@ -256,6 +271,17 @@ describe('compareWithLegacy', () => {
     assert.match(report, /Legacy: 0 of 11 slots off-spec\./);
   });
 
+  it('lists legacy website tasks parsed from the execution queue (completed rows skipped)', async () => {
+    const ctx = dirs();
+    writeLegacy(ctx.outputsDir, { queue: legacyQueue() });
+    await stageShadow(ctx);
+    const report = compareWithLegacy({ shadowDir: ctx.shadowDir, outputsDir: ctx.outputsDir, facts: FACTS, weekSpec: WEEK, policy: POLICY, now: LATER });
+    assert.match(report, /\| Website \| — \| 2 \| 2 \|/);
+    assert.match(report, /grizzly_execution_queue\.md present, final_report\.md missing/);
+    assert.match(report, /### Legacy website tasks\n\n- service_update — Refresh the panel upgrade page \[pending_approval\]\n- blog_post — Publish the surge protection blog post \[waiting_on_owner\]\n/);
+    assert.doesNotMatch(report, /Old task already shipped/);
+  });
+
   it('throws when the shadow plan is missing', () => {
     const ctx = dirs();
     assert.throws(() => compareWithLegacy({ shadowDir: ctx.shadowDir, outputsDir: ctx.outputsDir, weekSpec: WEEK, now: LATER }), /plan\.json not found; stage the plan first/);
@@ -313,9 +339,13 @@ describe('pure helpers', () => {
     assert.equal(side.facebook.length, 1);
   });
   it('factsViolations labels rows by platform and day and skips empty rows', () => {
-    const side = { gbp: [{ day: 2, hook: 'Call (214) 555-0100', body: '', cta: '' }, { day: 3, hook: '', body: '', cta: '' }], facebook: [{ day: 1, body: 'We charge $2,000 flat.' }] };
+    const side = {
+      gbp: [{ day: 2, hook: 'Call (214) 555-0100', body: '', cta: '' }, { day: 3, hook: '', body: '', cta: '' }],
+      facebook: [{ day: 1, body: 'We charge $2,000 flat.', hashtags: '#DFWElectrician' }, { day: 5, cta: 'Book at grizzlyelectricalsolutions.com' }],
+    };
     const found = factsViolations(side, { facts: FACTS, weekSpec: WEEK, policy: POLICY });
-    assert.deepEqual(found.map((f) => f.split(':')[0]), ['GBP day 2', 'Facebook day 1']);
+    assert.deepEqual(found.map((f) => f.split(':')[0]), ['GBP day 2', 'Facebook day 1', 'Facebook day 5']);
+    assert.match(found[2], /domain grizzlyelectricalsolutions\.com/);
   });
   it('serviceCounts orders by count then name; formatDuration formats', () => {
     assert.deepEqual(serviceCounts([{ service: 'B' }, { service: 'A' }, { service: 'B' }, { service: '' }]), [['B', 2], ['(none)', 1], ['A', 1]]);
@@ -334,5 +364,45 @@ describe('pure helpers', () => {
     assert.match(report, /Attempt record not found/);
     assert.match(report, /- Shadow topic: unknown/);
     assert.doesNotMatch(report, /Legacy files:/);
+  });
+});
+
+describe('Windows line endings and secret hygiene', () => {
+  it('reads legacy files written with CRLF line endings the same as LF and emits an LF-only report', async () => {
+    const ctx = dirs();
+    const crlf = (s) => s.replace(/\r?\n/g, '\r\n');
+    writeLegacy(ctx.outputsDir, { gbp: crlf(legacyGbp()), facebook: crlf(legacyFacebook()), queue: crlf(legacyQueue()) });
+    assert.match(fs.readFileSync(path.join(ctx.outputsDir, LEGACY_FILES.gbp), 'utf8'), /\r\n/);
+    await stageShadow(ctx);
+    const report = compareWithLegacy({ shadowDir: ctx.shadowDir, outputsDir: ctx.outputsDir, facts: FACTS, weekSpec: WEEK, policy: POLICY, now: LATER });
+    assert.match(report, /\| GBP \| 7 \| 7 \| 7 \|/);
+    assert.match(report, /\| Facebook \| 4 \| 4 \| 4 \|/);
+    assert.match(report, /\| Website \| — \| 2 \| 2 \|/);
+    assert.match(report, /\| GBP \| 3 \| 2026-09-06 \| 2026-09-07 ✗ \| 2026-09-06 ✓ \|/);
+    assert.match(report, /Legacy: 1 of 11 slots off-spec\./);
+    const legacySection = report.split('### Legacy copy')[1].split('### Shadow copy')[0];
+    assert.equal(legacySection.match(/^- /gm).length, 3, 'the same three planted defects as with LF');
+    assert.match(report, /\| GBP 1 \| Whole-home surge protection \| Legacy headline 1 \|/);
+    assert.match(report, /- service_update — Refresh the panel upgrade page \[pending_approval\]\n/);
+    assert.doesNotMatch(report, /\r/, 'no carriage returns leak into the report');
+  });
+
+  it('redacts credential-shaped text in attempt and stage errors', () => {
+    const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJyb2xlIjoic2VydmljZV9yb2xlIn0.ZmFrZXNpZw';
+    const attempt = makeAttempt({
+      status: 'failed', finished_at: '2026-09-04T21:05:00.000Z',
+      error: `llm generate: request failed (401 https://api.deepseek.com/v1/chat?api_key=sk-abc123def456ghi789 Authorization: Bearer ${jwt})`,
+      stages: { collect: { started_at: NOW.toISOString(), finished_at: '2026-09-04T21:00:40.000Z', status: 'failed', error: 'SerpApi 401 for ?q=x&api_key=0123456789abcdef&hl=en' } },
+    });
+    const shadow = { ...parseSide({}), plan: null, selection: null, attempt };
+    const report = buildCompareReport({ legacy: { ...parseSide({}), files: {} }, shadow, weekSpec: WEEK, now: LATER });
+    assert.doesNotMatch(report, /sk-abc123def456ghi789|0123456789abcdef|eyJhbGciOiJIUzI1NiJ9/);
+    assert.match(report, /status failed \(llm generate: request failed \(401 https:\/\/api\.deepseek\.com\/v1\/chat\?api_key=\[redacted\] Authorization: Bearer \[redacted\]\)\)/);
+    assert.match(report, /\| collect \| failed \| 40s \| SerpApi 401 for \?q=x&api_key=\[redacted\]&hl=en \|/);
+    assert.equal(redactSecrets(`SUPABASE_SERVICE_KEY=${jwt} then ${jwt}`), 'SUPABASE_SERVICE_KEY=[redacted] then [redacted-jwt]');
+    assert.equal(redactSecrets('rk-live_0123456789abcdef and pk_test_x'), 'rk-[redacted] and pk_test_x');
+    assert.equal(redactSecrets('week_of=2026-09-07 rowLimit=500 keyword=surge'), 'week_of=2026-09-07 rowLimit=500 keyword=surge');
+    assert.equal(redactSecrets(null), '');
+    assert.equal(redactSecrets(''), '');
   });
 });

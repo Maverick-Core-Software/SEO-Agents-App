@@ -512,3 +512,87 @@ describe('review: repetition inside the plan and history shapes', () => {
     assert.equal(run((p) => { p.facebook[0].hook = p.gbp[0].headline; }).ok, true);
   });
 });
+
+// Second review: bypasses in the tenure scanner, per-unit prices approved by
+// bare value, substring hashtag matches, and the real policy file.
+describe('review 2: compound number words cannot hide behind their last word', () => {
+  it('reads "twenty-five years of experience" as 25, not 5', () => {
+    assert.deepEqual(findTenureClaims('Twenty-five years of experience.').map((c) => [c.raw, c.years]), [['Twenty-five years of experience', 25]]);
+    assert.deepEqual(findTenureClaims('Sixty five years of experience').map((c) => c.years), [65]);
+    assert.deepEqual(findTenureClaims('a dozen years of experience').map((c) => c.years), [12]);
+  });
+  it('fails a plan that claims twenty-five years even though "five years" is the owner phrase', () => {
+    for (const bad of ['twenty-five years of experience', 'twenty five years of experience', 'Twenty-Five Years in business']) {
+      const result = run((p) => { p.facebook[1].body += ` Our team brings ${bad}.`; });
+      assert.ok(has(result.errors, /^facebook day 3 body: tenure claim "twenty.five years/i), JSON.stringify([bad, result.errors]));
+    }
+  });
+  it('still accepts the owner phrase at the head of a claim and its number anywhere', () => {
+    const opts = { facts: FACTS, weekSpec: WEEK };
+    assert.deepEqual(textFactsErrors('Five years of experience. We have served Rockwall for five years. 5+ years strong.', opts), []);
+    // The phrase keeps working through its number when the calendar year moves on.
+    const later = weekSpecForWeekOf('2027-09-06', new Date('2027-09-03T17:00:00Z'));
+    assert.deepEqual(textFactsErrors('five years of experience, since 2021', { facts: FACTS, weekSpec: later }), []);
+    assert.equal(textFactsErrors('6 years of experience', { facts: FACTS, weekSpec: later }).length, 0);
+    assert.equal(textFactsErrors('4 years of experience', { facts: FACTS, weekSpec: later }).length, 1);
+  });
+});
+
+describe('review 2: "combined" / "hands-on" experience and uncued business sentences', () => {
+  it('catches N years of combined or hands-on experience', () => {
+    assert.deepEqual(findTenureClaims('Our team has 20 years of combined experience.').map((c) => c.years), [20]);
+    assert.deepEqual(findTenureClaims('15 years of hands-on experience').map((c) => c.years), [15]);
+    assert.deepEqual(textFactsErrors('Grizzly: 20 years of combined experience.', { facts: FACTS, weekSpec: WEEK }).length, 1);
+    assert.deepEqual(textFactsErrors('five years of combined experience', { facts: FACTS, weekSpec: WEEK }), []);
+  });
+  it('treats "keeping the lights on for over N years" as a business claim but leaves equipment alone', () => {
+    assert.equal(findTenureClaims('Keeping the lights on in Rowlett for over 10 years.').length, 1);
+    assert.equal(findTenureClaims('Proudly powering DFW for more than 12 years.').length, 1);
+    assert.equal(findTenureClaims('Copper wiring lasts for over 40 years.').length, 0);
+    assert.equal(findTenureClaims('LED lighting lasts for over 20 years.').length, 0);
+    const result = run((p) => { p.gbp[3].cta = 'Keeping the lights on for over 10 years.'; });
+    assert.ok(has(result.errors, /^gbp day 4 cta: tenure claim "over 10 years"/), JSON.stringify(result.errors));
+  });
+});
+
+describe('review 2: a per-unit price is not approved by its bare value', () => {
+  const opts = { facts: FACTS, weekSpec: WEEK };
+  it('rejects $99/hour when only a bare $99 is approved', () => {
+    assert.deepEqual(textFactsErrors('Service calls are $99/hour.', opts), ['price $99/hour is not an approved price']);
+    assert.deepEqual(textFactsErrors('$450 per outlet', opts), ['price $450 per outlet is not an approved price']);
+  });
+  it('accepts a per-unit price when an approved entry carries the same unit, and a bare amount either way', () => {
+    const facts = { ...FACTS, approved_prices: ['Boost at $25 per day', 'Service call: $99/hr'] };
+    assert.deepEqual(textFactsErrors('$25/day and $99 per hour and $25 flat', { facts, weekSpec: WEEK }), []);
+    assert.deepEqual(textFactsErrors('$25/week', { facts, weekSpec: WEEK }), ['price $25/week is not an approved price']);
+  });
+  it('fails a plan whose GBP copy turns the approved service call into an hourly rate', () => {
+    const result = run((p) => { p.gbp[0].body += ' Service call $99 per hour.'; });
+    assert.deepEqual(only(result.errors, /price/), ['gbp day 1 body: price $99 per hour is not an approved price']);
+    assert.equal(run((p) => { p.gbp[0].body += ' Service call $99.'; }).ok, true);
+  });
+});
+
+describe('review 2: hashtag locality needs the place at an edge, not buried in a word', () => {
+  const allen = { ...POLICY, cities: [...POLICY.cities, { name: 'Allen', tier: 2 }] };
+  it('does not count #ChallengeAccepted as an Allen tag', () => {
+    const result = run((p) => { p.gbp[0].hashtags = ['#ChallengeAccepted', '#Panel', '#Safety']; }, { policy: allen });
+    assert.ok(has(result.warnings, /^gbp day 1: hashtags have no local tag$/), JSON.stringify(result.warnings));
+  });
+  it('still accepts a city at the start, the end, or followed by TX', () => {
+    const result = run((p) => {
+      p.gbp[0].hashtags = ['#a', '#b', '#AllenElectrician'];
+      p.gbp[1].hashtags = ['#a', '#b', '#GrizzlyRockwall'];
+      p.gbp[2].hashtags = ['#a', '#b', '#ServingAllenTX'];
+    }, { policy: allen });
+    assert.ok(!has(result.warnings, /hashtags/), JSON.stringify(result.warnings));
+  });
+});
+
+describe('review 2: the fixture plan against the real policy file and the real facts', () => {
+  it('is clean with all 24 policy cities and the owner facts (no false tenure or hashtag hits)', () => {
+    const policy = JSON.parse(fs.readFileSync(path.join(here, '..', '..', '..', 'config', 'weekly-policy.json'), 'utf8'));
+    const result = run(() => {}, { facts: loadFacts(), policy });
+    assert.deepEqual(result, { ok: true, errors: [], warnings: [] });
+  });
+});

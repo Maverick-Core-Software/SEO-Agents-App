@@ -329,7 +329,11 @@ export async function stagePlan({
       throw new ValidationFailed('stagePlan: refusing to project a plan that failed validation', verdict.errors, verdict.warnings);
     }
     await project({ store, attempt, plan: validPlan, selection, revision, items, now: at, mode: effectiveMode });
-    revision.projected_at = iso(at);
+    // The projector persists plan_revisions.projected_at itself (project.mjs
+    // updates the row); the RPC behind stageRevision is insert-only, so the
+    // revision is never written twice here. Return a copy rather than mutating
+    // the record the store was handed.
+    return { ...revision, projected_at: iso(at) };
   }
 
   return revision;

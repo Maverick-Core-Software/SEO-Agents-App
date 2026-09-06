@@ -17,6 +17,7 @@ import {
   collectHistory,
   findCity,
   inferCity,
+  normalizeLimit,
   normalizePost,
   normalizeTask,
   normalizeWeeks,
@@ -364,5 +365,50 @@ describe('review hardening (collect-2)', () => {
       { name: 'TypeError', message: /now is not a valid date/ },
     );
     assert.equal(client.calls.length, 0);
+  });
+});
+
+describe('review hardening 2 (collect-2, adversarial)', () => {
+  it('normalizeLimit never sends 0 / NaN / negative / fractional to .limit()', async () => {
+    assert.equal(normalizeLimit(0), ROW_LIMIT);
+    assert.equal(normalizeLimit(-5), ROW_LIMIT);
+    assert.equal(normalizeLimit('x'), ROW_LIMIT);
+    assert.equal(normalizeLimit(null), ROW_LIMIT);
+    assert.equal(normalizeLimit(Infinity), ROW_LIMIT);
+    assert.equal(normalizeLimit('25'), 25);
+    assert.equal(normalizeLimit(7.9), 7);
+    const client = fixtureClient();
+    await collectHistory({ attemptId: ATTEMPT, supabase: client, now: NOW, policy, limit: 0 });
+    assert.deepEqual(client.calls[0].ops[3], ['limit', ROW_LIMIT]);
+    assert.deepEqual(client.calls[1].ops[3], ['limit', ROW_LIMIT]);
+    const client2 = fixtureClient();
+    await collectHistory({ attemptId: ATTEMPT, supabase: client2, now: NOW, policy, limit: '25' });
+    assert.deepEqual(client2.calls[0].ops[3], ['limit', 25]);
+  });
+
+  it('a client whose from() returns an object without the query chain → both tables unavailable, no throw', async () => {
+    const { observations, history } = await collectHistory({ attemptId: ATTEMPT, supabase: { from: () => ({}) }, now: NOW, policy });
+    assert.deepEqual(history, { posts: [], website_tasks: [] });
+    assert.deepEqual(observations.map((o) => [o.scope, o.status]), [[POSTS_TABLE, 'unavailable'], [TASKS_TABLE, 'unavailable']]);
+    observations.forEach(assertValidObservation);
+    assert.match(observations[0].note, /not a function/);
+  });
+
+  it('the selected columns exist in supabase/schema.sql for both tables', () => {
+    const schema = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'supabase', 'schema.sql'), 'utf8');
+    const columnsOf = (table) => {
+      const block = schema.match(new RegExp(`create table if not exists ${table} \\(([\\s\\S]*?)\\n\\);`))[1];
+      return new Set(block.split('\n').map((l) => l.trim().match(/^([a-z_]+)\s/)).filter(Boolean).map((m) => m[1]));
+    };
+    const posts = columnsOf(POSTS_TABLE);
+    for (const col of POST_COLUMNS.split(',')) assert.ok(posts.has(col), `${POSTS_TABLE}.${col} missing from schema.sql`);
+    const tasks = columnsOf(TASKS_TABLE);
+    for (const col of TASK_COLUMNS.split(',')) assert.ok(tasks.has(col), `${TASKS_TABLE}.${col} missing from schema.sql`);
+  });
+
+  it('a date-only since value is never affected by the host timezone (UTC arithmetic on the Chicago calendar date)', () => {
+    // 2026-03-08 is the US DST switch; a week ending on it still subtracts exactly 7 calendar days.
+    assert.equal(sinceDate(new Date('2026-03-09T02:00:00Z'), 1), '2026-03-01'); // Sun 2026-03-08 21:00 Chicago (CDT)
+    assert.equal(sinceDate(new Date('2026-11-02T04:30:00Z'), 1), '2026-10-25'); // Sun 2026-11-01 23:30 Chicago (CDT → CST that day)
   });
 });

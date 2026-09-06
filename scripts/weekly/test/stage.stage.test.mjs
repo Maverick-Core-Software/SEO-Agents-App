@@ -315,6 +315,21 @@ describe('stagePlan in mode new', () => {
   });
 });
 
+describe('stagePlan in mode legacy', () => {
+  it('stores the revision and items without exporting files or projecting', async () => {
+    const { store, outDir } = fresh();
+    let called = 0;
+    const project = async () => { called++; };
+    const rev = await stagePlan({ store, attempt: makeAttempt({ mode: 'legacy' }), plan: makePlan(), selection: SELECTION, validation: VALID, rendered: RENDERED, mode: 'legacy', now: NOW, outDir, project });
+    assert.equal(rev.exported_at, null);
+    assert.equal(rev.projected_at, null);
+    assert.equal(called, 0);
+    assert.ok(!fs.existsSync(outDir));
+    assert.equal((await store.listRevisions('2026-09-07')).length, 1);
+    assert.equal((await store.listItems(rev.id)).length, 13);
+  });
+});
+
 describe('stagePlan store selection', () => {
   it('prefers the atomic stageRevision when the store has it', async () => {
     const store = spyStore({ withAtomic: true });
@@ -445,5 +460,18 @@ describe('writeExports / defaultSummary', () => {
     assert.match(text, /Validation: FAILED — 1 error/);
     assert.match(text, /- bad date/);
     assert.match(text, /GBP posts: 7 \(2026-09-04 to 2026-09-10\)/);
+  });
+});
+
+describe('stagePlan after a projection', () => {
+  it('never writes the revision a second time (the Supabase RPC is insert-only) and returns a copy of the stored record', async () => {
+    const store = spyStore({ withAtomic: true });
+    const rev = await stagePlan({ store, attempt: makeAttempt({ mode: 'new' }), plan: makePlan(), selection: SELECTION, validation: VALID, mode: 'new', now: NOW, project: async () => {} });
+    assert.deepEqual(store.calls, ['listRevisions', 'stageRevision']);
+    assert.equal(rev.projected_at, ISO);
+    assert.notEqual(rev, store.revision);
+    assert.equal(store.revision.projected_at, null, 'the record handed to the store is not mutated afterwards; project.mjs updates plan_revisions.projected_at itself');
+    assert.deepEqual({ ...rev, projected_at: null }, store.revision);
+    assert.deepEqual(parseOrIssues(RevisionSchema, rev).issues, []);
   });
 });

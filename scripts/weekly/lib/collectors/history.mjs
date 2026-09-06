@@ -119,6 +119,12 @@ export function normalizeWeeks(weeks, fallback = DEFAULT_WEEKS) {
   return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
+/** Positive integer row limit (floored), else the default; never passes 0/NaN/negative to `.limit()`. */
+export function normalizeLimit(limit, fallback = ROW_LIMIT) {
+  const n = Number(limit);
+  return Number.isFinite(n) && n >= 1 ? Math.floor(n) : fallback;
+}
+
 /** Chicago calendar date of `now` minus `weeks*7` days, as YYYY-MM-DD. */
 export function sinceDate(now, weeks) {
   const w = normalizeWeeks(weeks);
@@ -304,11 +310,12 @@ export async function collectHistory({
     cities = [];
   }
 
+  const rowLimit = normalizeLimit(limit, ROW_LIMIT);
   const postWeeks = normalizeWeeks(weeks, DEFAULT_WEEKS);
   const postsSince = sinceDate(nowDate, postWeeks);
   try {
     const rows = await selectRows(supabase, {
-      table: POSTS_TABLE, columns: POST_COLUMNS, column: 'post_date', since: postsSince, limit,
+      table: POSTS_TABLE, columns: POST_COLUMNS, column: 'post_date', since: postsSince, limit: rowLimit,
     });
     history.posts = rows.map((row) => normalizePost(row, cities));
     history.posts.forEach((post, index) => observations.push(postObservation(post, { attemptId, retrievedAt, index })));
@@ -325,7 +332,7 @@ export async function collectHistory({
   const tasksSince = sinceDate(nowDate, taskWeeksN);
   try {
     const rows = await selectRows(supabase, {
-      table: TASKS_TABLE, columns: TASK_COLUMNS, column: 'updated_at', since: tasksSince, limit,
+      table: TASKS_TABLE, columns: TASK_COLUMNS, column: 'updated_at', since: tasksSince, limit: rowLimit,
     });
     history.website_tasks = rows.map((row) => normalizeTask(row));
     history.website_tasks.forEach((task, index) => observations.push(taskObservation(task, { attemptId, retrievedAt, index })));

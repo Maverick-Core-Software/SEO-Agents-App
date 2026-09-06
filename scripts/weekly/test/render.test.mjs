@@ -2,14 +2,16 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import {
   renderGbpSchedule, renderFacebookSchedule, renderWebsiteQueue, renderPlanSummary, renderBoostSummary,
   boostFields, boostSummaryRows, pickPriorityRow, gbpPhotoField, fbPhotoField,
-  formatLongDate, formatShortDay, formatDateRange, formatUsd, formatHashtags, inlineText, multilineText,
+  formatLongDate, formatShortDay, formatDateRange, formatUsd, floorCents, formatHashtags, inlineText, multilineText,
 } from '../lib/render.mjs';
-import { weekSpecForWeekOf } from '../lib/week-spec.mjs';
+import { weekSpecForWeekOf, computeWeekSpec } from '../lib/week-spec.mjs';
 import { parseOrIssues, PlanSchema } from '../lib/schemas.mjs';
 // Legacy consumers. supabase-sync.mjs and facebook-poster.mjs guard main() with an
 // invokedDirectly check; importing them only reads .env into process.env (no network).
@@ -22,6 +24,7 @@ import { captionMatchTokens } from '../../lib/fb-boost-marketing.mjs';
 import { parseGbpScheduleMarkdown } from '../../sync-gbp-schedule.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
+const PROJECT_ROOT = path.resolve(here, '..', '..', '..');
 const PLAN = JSON.parse(fs.readFileSync(path.join(here, 'fixtures', 'render.plan.json'), 'utf8'));
 const WEEK = weekSpecForWeekOf('2026-09-07', new Date('2026-09-04T17:00:00Z'));
 const clone = (v) => JSON.parse(JSON.stringify(v));
@@ -182,11 +185,16 @@ describe('formatters', () => {
     assert.equal(formatDateRange('2026-12-30', '2027-01-05'), 'December 30, 2026 – January 5, 2027');
     assert.equal(formatDateRange('2026-09-07', '2026-09-07'), 'September 7, 2026');
   });
-  it('formats dollars without trailing zeros', () => {
+  it('formats dollars as whole cents, floored, without trailing zeros', () => {
     assert.equal(formatUsd(25), '25');
     assert.equal(formatUsd(12.5), '12.5');
-    assert.equal(formatUsd(16.666), '16.67');
+    assert.equal(formatUsd(16.666), '16.66', 'floored, never rounded up past the cap');
+    assert.equal(formatUsd(10.005), '10');
+    assert.equal(formatUsd(0.29), '0.29', 'binary float noise (0.29*100 = 28.999…) must not lose a cent');
     assert.equal(formatUsd(null), '0');
+    assert.equal(floorCents(50 / 3), 16.66);
+    assert.equal(floorCents(1.1 + 2.2), 3.3);
+    assert.equal(floorCents(NaN), 0);
   });
   it('normalizes hashtags to a single #-prefixed space-separated line', () => {
     assert.equal(formatHashtags(['#A', 'b', '  ', '##c d']), '#A #b #cd');
@@ -220,8 +228,13 @@ describe('boost field helpers', () => {
     const single = boostFields({ boost: { decision: 'YES', daily_usd: 50, days: 1 } });
     assert.equal(single.duration, '1 day');
   });
-  it('unknown decisions fall back to NO; targeting is kept for MAYBE', () => {
+  it('unknown decisions fall back to NO, lowercase ones are normalized; targeting is kept for MAYBE', () => {
     assert.equal(boostFields({ boost: { decision: 'sure' } }).decision, 'NO');
+    assert.equal(boostFields({}).decision, 'NO');
+    assert.deepEqual([boostFields({ boost: { decision: 'yes', daily_usd: 25, days: 2 } }).boost, boostFields({ boost: { decision: 'maybe' } }).boost], ['yes:$25', 'maybe']);
+    // Non-integer or non-positive day counts and dailies never fund a row.
+    assert.equal(boostFields({ boost: { decision: 'YES', daily_usd: 25, days: 1.5 } }).total, 0);
+    assert.equal(boostFields({ boost: { decision: 'YES', daily_usd: 0, days: 2 } }).total, 0);
     assert.equal(boostFields({ boost: { decision: 'MAYBE' }, boost_targeting: 'Rowlett homeowners' }).targeting, 'Rowlett homeowners');
   });
   it('priority row is the largest funded YES, earliest day on ties', () => {
@@ -571,7 +584,7 @@ describe('BOOST BUDGET SUMMARY', () => {
     assert.equal(lines[4], '| Post | Day | Service | Boost Decision | Daily Budget | Duration | Total |');
     assert.equal(lines[5], '|------|-----|---------|---------------|-------------|----------|-------|');
     assert.equal(lines[6], '| Day 1 | Mon 9/7 | Electrical Panel Upgrade / Replacement | YES | $10/day | 3 days | $30 |');
-    assert.equal(lines[7], '| Day 3 | Wed 9/9 | EV Charger Installation | MAYBE | — | — | $0 |');
+    assert.equal(lines[7], '| Day 3 | Wed 9/9 | EV Charger Installation | MAYBE | — | — | — |');
     assert.equal(lines[8], '| Day 5 | Fri 9/11 | Generator Inlet, Interlock & Installation | YES | $10/day | 2 days | $20 |');
     assert.equal(lines[9], '| Day 6 | Sat 9/12 | Electrical Troubleshooting & Repair | NO | — | — | $0 |');
     assert.equal(lines[11], '- **Posts boosted:** 2 of 4');
@@ -616,6 +629,10 @@ describe('BOOST BUDGET SUMMARY', () => {
     const text = renderFacebookSchedule(plan, WEEK);
     assert.match(text, /^- \*\*Posts boosted:\*\* 0 of 4$/m);
     assert.match(text, /^- \*\*TOTAL SPEND:\*\* \$0$/m);
+    // build_facebook_crew: MAYBE never carries dollars (— in every money cell); NO reads $0 like the legacy file.
+    assert.match(text, /^\| Day 3 \| Wed 9\/9 \| EV Charger Installation \| MAYBE \| — \| — \| — \|$/m);
+    assert.match(text, /^\| Day 1 \| Mon 9\/7 \| Electrical Panel Upgrade \/ Replacement \| NO \| — \| — \| \$0 \|$/m);
+    assert.ok(!/MAYBE \|[^\n]*\$\d/.test(text), 'no dollar figure on a MAYBE row');
     assert.match(text, /^- \*\*Priority post \(boost first\):\*\* None - no post is funded this week\.$/m);
     assert.match(text, /^- \*\*Expected weekly reach from boosts:\*\* ~0 additional impressions \(no paid reach this week\)$/m);
     const summary = ledgerParseSummary(text);
@@ -649,6 +666,155 @@ describe('BOOST BUDGET SUMMARY', () => {
     assert.match(text, /^\| Day 1 \| Mon 9\/7 \| Household Panel \/ Rewire \| YES \|/m);
     assert.equal(summary.rows.get(1).decision, 'yes');
   });
+
+  it('floors a fractional daily to cents so the ledger\'s printed-daily x printed-days never exceeds the cap', () => {
+    // validate accepts |Σ daily×days − budget| ≤ 0.005, and (50/3)*3 === 50 in IEEE
+    // arithmetic, so this plan is reachable. Rounding half-up would print $16.67/day,
+    // and the ledger re-multiplies the printed figures: 16.67 × 3 = 50.01 > 50 → it
+    // fails closed with "human review required" for a plan that is actually exact.
+    assert.ok(Math.abs((50 / 3) * 3 - 50) <= 0.005, 'plan passes validate\'s tolerance');
+    const plan = clone(PLAN);
+    plan.facebook[0].boost = { decision: 'YES', daily_usd: 50 / 3, days: 3 };
+    plan.facebook[2].boost = { decision: 'NO', daily_usd: null, days: null };
+    const b = boostFields(plan.facebook[0]);
+    assert.deepEqual([b.boost, b.amount, b.duration, b.daily, b.total], ['yes:$16.66', '$16.66', '3 days', 16.66, 49.98]);
+    const text = renderFacebookSchedule(plan, WEEK);
+    assert.match(text, /^\| Day 1 \| Mon 9\/7 \| .* \| YES \| \$16\.66\/day \| 3 days \| \$49\.98 \|$/m);
+    assert.match(text, /^- \*\*TOTAL SPEND:\*\* \$49\.98$/m, 'the total is the sum of the printed rows, not the plan\'s float');
+    assert.match(text, /^\*\*BOOST:\*\* yes:\$16\.66$/m);
+    assert.match(text, /\(\$16\.66\/day x 3 days = \$49\.98\)/, 'priority line agrees with the row');
+    const summary = ledgerParseSummary(text);
+    assert.deepEqual(summary.rows.get(1), { decision: 'yes', daily: 16.66, days: 3 });
+    // The ledger multiplies the printed figures itself (float: 49.980000000000004).
+    assert.ok(Math.abs(summary.yesTotal - 49.98) < 1e-9 && summary.yesTotal <= 50, `yesTotal ${summary.yesTotal}`);
+    assert.equal(summary.conditional, false);
+    // The half-up rendering of the same plan is what the ledger refuses.
+    const halfUp = ledgerParseSummary(text.replace('$16.66/day | 3 days | $49.98', '$16.67/day | 3 days | $50'));
+    assert.ok(halfUp.yesTotal > 50, `half-up yesTotal ${halfUp.yesTotal} exceeds the cap`);
+    assert.equal(halfUp.conditional, true);
+    // Sub-cent dailies never fund a row; a cent does.
+    assert.equal(boostFields({ boost: { decision: 'YES', daily_usd: 0.004, days: 5 } }).total, 0);
+    assert.deepEqual([boostFields({ boost: { decision: 'YES', daily_usd: 0.29, days: 2 } }).amount,
+      boostFields({ boost: { decision: 'YES', daily_usd: 0.29, days: 2 } }).total], ['$0.29', 0.58]);
+    // Numeric strings are not numbers: the schema forbids them and the row stays unfunded.
+    assert.equal(boostFields({ boost: { decision: 'YES', daily_usd: '10', days: 5 } }).total, 0);
+  });
+});
+
+describe('real fb-boost-ledger (subprocess, FB_SCHEDULE_PATH, no network)', () => {
+  // scripts/fb-boost-ledger.mjs dispatches commands at import time, so the money gate is
+  // exercised end-to-end here by running `eligible` against a rendered schedule in a temp
+  // dir. `eligible` only reads (the schedule, outputs/fb-boost-ledger.json, .env) and
+  // prints one JSON line. The ledger has its own staleness clock, so the schedule is
+  // rendered for the week the ledger would see today — the one place a real `now` is
+  // unavoidable; the assertions do not depend on which day of that week it is.
+  const LEDGER = path.join(PROJECT_ROOT, 'scripts', 'fb-boost-ledger.mjs');
+  const WEEK_NOW = computeWeekSpec({ now: new Date() });
+  const PARSE_FAILURE = /human review required|no decisions parsed|schedule stale|schedule file missing|no schedule found/;
+
+  function ledgerEligible(text) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'weekly-render-ledger-'));
+    try {
+      const file = path.join(dir, 'facebook_posting_schedule.md');
+      fs.writeFileSync(file, text);
+      const stdout = execFileSync(process.execPath, [LEDGER, 'eligible'], {
+        cwd: PROJECT_ROOT,
+        env: { ...process.env, FB_SCHEDULE_PATH: file, FB_BOOST_WEEKLY_CAP: '50' },
+        encoding: 'utf8',
+        timeout: 30_000,
+      });
+      return JSON.parse(stdout.trim().split('\n').pop());
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it('reads the rendered schedule as an unconditional allocation keyed to the WeekSpec Monday', () => {
+    const out = ledgerEligible(renderFacebookSchedule(PLAN, WEEK_NOW));
+    assert.equal(out.week, WEEK_NOW.week_of, `week key from **Start Date:** — got ${JSON.stringify(out)}`);
+    assert.ok(!PARSE_FAILURE.test(out.reason || ''), `summary must parse cleanly — got ${JSON.stringify(out)}`);
+  });
+
+  it('is a real gate: an over-cap row or missing decisions in the same text are refused', () => {
+    const text = renderFacebookSchedule(PLAN, WEEK_NOW);
+    const over = ledgerEligible(text.replace('| YES | $10/day | 3 days | $30 |', '| YES | $40/day | 3 days | $120 |'));
+    assert.equal(over.eligible, false);
+    assert.match(over.reason, /over-cap YES total.*human review required/);
+    assert.deepEqual(over.summary?.['1'], { decision: 'yes', daily: 40, days: 3 });
+    const none = ledgerEligible(text.replace(/\| (YES|MAYBE|NO) \|/g, '| TBD |'));
+    assert.equal(none.eligible, false);
+    assert.match(none.reason, /no decisions parsed/);
+  });
+
+  it('accepts the floored fractional daily that a half-up rendering would have tripped', () => {
+    const plan = clone(PLAN);
+    plan.facebook[0].boost = { decision: 'YES', daily_usd: 50 / 3, days: 3 };
+    plan.facebook[2].boost = { decision: 'NO', daily_usd: null, days: null };
+    const text = renderFacebookSchedule(plan, WEEK_NOW);
+    assert.match(text, /\$16\.66\/day \| 3 days \| \$49\.98/);
+    const out = ledgerEligible(text);
+    assert.ok(!PARSE_FAILURE.test(out.reason || ''), `floored daily passes the cap — got ${JSON.stringify(out)}`);
+    const halfUp = ledgerEligible(text.replace('$16.66/day | 3 days | $49.98', '$16.67/day | 3 days | $50'));
+    assert.match(halfUp.reason || '', /over-cap YES total/, 'the old rounding is exactly what the ledger refuses');
+  });
+});
+
+describe('legacy parser drift guards', () => {
+  // The parser copies above (ledgerParseSummary, gbpPhotoPickParse, fbPhotoPickParse, …)
+  // only prove anything while they match the scripts they mirror. Each entry is a literal
+  // lifted from the real source; if a legacy parser changes, this fails here first.
+  const LITERALS = {
+    'scripts/fb-boost-ledger.mjs': [
+      '/##\\s*BOOST BUDGET SUMMARY([\\s\\S]*?)(?=\\n## |\\n?$)/i',
+      '/^\\**Day\\s+\\d+/i',
+      '/\\$(\\d+(?:\\.\\d+)?)\\s*\\/?\\s*day/i',
+      '/(\\d+)\\s*days?\\b/i',
+      '/—\\s*OR\\s*—|\\bOR\\b\\s*—|whichever|if .* underperform|shift the \\$|hold .* boost|only one boost/i',
+      '/\\*\\*Start Date:\\*\\*\\s*(\\d{4}-\\d{2}-\\d{2})/',
+      'text.split(/\\n(?=## DAY \\d)/)',
+      '/\\*{0,2}BOOST:\\*{0,2}\\s*yes:\\$?(\\d+)/i',
+      '/\\*{0,2}BOOST_DURATION:\\*{0,2}\\s*(\\d+)\\s*days?/i',
+      'process.env.FB_SCHEDULE_PATH',
+    ],
+    'scripts/gbp-photo-pick.mjs': [
+      'text.split(/^---$/m)',
+      '`^\\\\*{0,2}${key}:\\\\*{0,2}\\\\s*(.+?)\\\\s*$`, \'im\'',
+      "date.toLowerCase().includes('day')",
+    ],
+    'scripts/fb-photo-pick.mjs': [
+      'text.split(/^## DAY /m)',
+      "'^\\\\*\\\\*' + field + ':\\\\*\\\\*[ \\\\t]*(.*)$', 'm'",
+      "dateRaw.replace(/\\s*\\(.*$/, '')",
+    ],
+    'scripts/fb-photo-rewrite.mjs': [
+      '/^\\*{0,2}DAY:\\*{0,2}\\s*\\d/i',
+      "line.trim() === '---'",
+      '/^\\*{0,2}PHOTO_FILE:\\*{0,2}\\s*/i',
+      '/^\\*{0,2}TYPE:\\*{0,2}\\s*(.+?)\\s*$/i',
+      '/^\\*{0,2}DATE:\\*{0,2}\\s*(.+?)\\s*$/i',
+      '/^\\*{0,2}SERVICE:\\*{0,2}\\s*(.+?)\\s*$/i',
+    ],
+    'scripts/fb-boost-api.mjs': [
+      'text.split(/\\n(?=## DAY \\d)/)',
+      '`\\\\*\\\\*DAY:\\\\*\\\\*\\\\s*${dayNum}\\\\b`',
+      '/\\*{0,2}BOOST_TARGETING:\\*{0,2}\\s*(.+)/i',
+    ],
+    'scripts/mav-bridge.mjs': ["text.split(/\\n\\s*---\\s*\\n/).filter(b => b.includes('DAY:'))"],
+    'scripts/facebook-insights-collector.mjs': ["text.split(/\\n\\s*---\\s*\\n/).filter(b => b.includes('DAY:'))"],
+    'src/seo_agents/actions.py': [
+      're.finditer(r"^\\*{0,2}DAY:", text, flags=re.MULTILINE)',
+      'rf"^{label}:[ \\t]*(.*)$"',
+      're.match(r"^[A-Z_]+:", stripped) or re.match(r"^#{1,6}\\s", stripped) or re.match(r"^-{3,}$", stripped)',
+    ],
+    'src/seo_agents/main.py': ['line.lstrip().startswith(("DAY:", "**DAY:"))'],
+  };
+
+  for (const [file, literals] of Object.entries(LITERALS)) {
+    it(`${file} still contains the parser lines the copies mirror`, () => {
+      const src = fs.readFileSync(path.join(PROJECT_ROOT, file), 'utf8');
+      for (const literal of literals) assert.ok(src.includes(literal), `${file} no longer contains ${literal}`);
+    });
+  }
 });
 
 describe('remaining legacy consumers', () => {
@@ -729,6 +895,18 @@ describe('edge cases', () => {
     assert.match(picks.find((p) => !/^\d{4}-\d{2}-\d{2}$/.test(p.date)).date, /^\*\*SERVICE:\*\*/);
     // With a WeekSpec the missing item dates are filled in.
     assert.deepEqual(parseFacebookSchedule(renderFacebookSchedule(plan, WEEK)).map((r) => r.post_date), Object.values(WEEK.fb_dates));
+  });
+
+  it('fails closed with no week at all: no Start Date, no stray date, and resolveWeekOf refuses', () => {
+    const text = renderFacebookSchedule({ ...PLAN, week_of: '', facebook: [] }, null);
+    const lines = text.split('\n');
+    assert.equal(lines[1], '## Week of');
+    assert.equal(lines[2], 'Prepared by scripts/weekly (attempt att_render_fixture)');
+    assert.ok(!/Start Date/.test(text));
+    assert.ok(!/ $/m.test(text), 'no trailing whitespace');
+    assert.equal(ledgerWeekStart(text), null);
+    assert.throws(() => resolveWeekOf({ argv: [], fbText: text }), /week_of required/);
+    assert.deepEqual(parseFacebookSchedule(text), []);
   });
 
   it('keeps preparedBy on one header line', () => {

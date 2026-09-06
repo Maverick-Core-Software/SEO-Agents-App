@@ -67,16 +67,34 @@ export function serpCities(policy) {
     .map((c) => c.name.trim());
 }
 
+/**
+ * A cap: finite non-negative numbers are floored (1.9 → 1), anything else
+ * (undefined, NaN, negative, Infinity) is the fallback. Never rounds a cap up.
+ */
 function nonNegativeInt(value, fallback) {
   const n = Number(value);
-  return Number.isInteger(n) && n >= 0 ? n : fallback;
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : fallback;
 }
+
+/**
+ * Accept a RegExp or a string for the local-pack name pattern; drop the `g`
+ * and `y` flags, whose `lastIndex` state would make repeated `.test` calls
+ * alternate between true and false.
+ */
+export function normalizePattern(pattern, fallback = GRIZZLY_NAME_PATTERN) {
+  if (pattern instanceof RegExp) return /[gy]/.test(pattern.flags) ? new RegExp(pattern.source, pattern.flags.replace(/[gy]/g, '')) : pattern;
+  if (typeof pattern === 'string' && pattern.trim() !== '') return new RegExp(pattern, 'i');
+  return fallback;
+}
+
+const CITY_PLACEHOLDER = /\{city\}/i;
 
 /**
  * buildSerpQueries(policy) → [{ query, service_key, city, template }]
  * Deterministic: template rank, then city (policy order, tier-filtered), then
  * service (policy order). Duplicate query strings (case-insensitive) drop.
- * Capped to `serp.max_queries`.
+ * Capped to `serp.max_queries`. A template without a `{city}` placeholder is
+ * not city-specific: it is emitted once with `city: null`.
  */
 export function buildSerpQueries(policy) {
   const services = (policy && Array.isArray(policy.services)) ? policy.services : [];
@@ -95,7 +113,7 @@ export function buildSerpQueries(policy) {
         const query = fillTemplate(template, city);
         if (!query || seen.has(query.toLowerCase())) continue;
         seen.add(query.toLowerCase());
-        out.push({ query, service_key: service.key ?? null, city, template });
+        out.push({ query, service_key: service.key ?? null, city: CITY_PLACEHOLDER.test(template) ? city : null, template });
         if (out.length >= maxQueries) return out;
       }
     }
@@ -103,16 +121,23 @@ export function buildSerpQueries(policy) {
   return out;
 }
 
-/** Accept strings or descriptors; drop empties. */
+/** A non-empty trimmed string, else null (descriptor fields feed `geography`, which must be string|null). */
+function stringOrNull(value) {
+  if (typeof value !== 'string') return null;
+  const s = value.trim();
+  return s === '' ? null : s;
+}
+
+/** Accept strings or descriptors; drop empties; non-string descriptor fields become null. */
 export function normalizeQueries(queries) {
   return (Array.isArray(queries) ? queries : [])
     .map((q) => (typeof q === 'string' ? { query: q } : q))
     .filter((q) => q && typeof q === 'object' && normalizeQuery(q.query) !== '')
     .map((q) => ({
       query: normalizeQuery(q.query),
-      service_key: q.service_key ?? null,
-      city: q.city ?? null,
-      template: q.template ?? null,
+      service_key: stringOrNull(q.service_key),
+      city: stringOrNull(q.city),
+      template: stringOrNull(q.template),
     }));
 }
 
@@ -237,6 +262,7 @@ export function isGrizzlyDomain(domain, grizzlyDomain = GRIZZLY_DOMAIN) {
  */
 export function parseSerpResponse(response, { grizzlyDomain = GRIZZLY_DOMAIN, grizzlyPattern = GRIZZLY_NAME_PATTERN } = {}) {
   const r = response && typeof response === 'object' ? response : {};
+  const pattern = normalizePattern(grizzlyPattern);
   const organic = (Array.isArray(r.organic_results) ? r.organic_results : [])
     .map((row, i) => {
       const o = row && typeof row === 'object' ? row : {};
@@ -250,7 +276,7 @@ export function parseSerpResponse(response, { grizzlyDomain = GRIZZLY_DOMAIN, gr
   const places = localPlaces(r.local_results);
   const localPack = places.map((p) => ({ title: String(p.title || ''), rating: toNumber(p.rating), reviews: toNumber(p.reviews) }));
   const hit = organic.find((o) => isGrizzlyDomain(o.domain, grizzlyDomain));
-  const inLocalPack = places.some((p) => grizzlyPattern.test(String(p.title || ''))
+  const inLocalPack = places.some((p) => pattern.test(String(p.title || ''))
     || isGrizzlyDomain(domainOf(p.links && p.links.website), grizzlyDomain));
   return {
     organic,
@@ -326,13 +352,17 @@ export function buildSerpUrl({ query, location, apiKey, num = DEFAULT_NUM }) {
 }
 
 /**
- * Strip the key from anything that could land in a note: the raw key and its
- * URL-encoded form (an error message may echo the request URL).
+ * Strip the key from anything that could land in a note: the raw key, its
+ * `encodeURIComponent` form, and its form-encoded form (what `buildSerpUrl`
+ * actually puts in the URL via URLSearchParams — space → `+`, `~!'()*`
+ * percent-encoded), since an error message may echo the request URL.
  */
 export function redact(text, apiKey) {
   let s = String(text || '');
   if (!apiKey) return s;
-  for (const needle of new Set([String(apiKey), encodeURIComponent(apiKey)])) {
+  const key = String(apiKey);
+  const needles = new Set([key, encodeURIComponent(key), new URLSearchParams([['k', key]]).toString().slice(2)]);
+  for (const needle of needles) {
     if (needle) s = s.split(needle).join('[redacted]');
   }
   return s;
@@ -341,12 +371,16 @@ export function redact(text, apiKey) {
 /**
  * GET the URL and parse JSON. The timeout aborts through the signal and also
  * races the request, so a fetch implementation that ignores `signal` cannot
- * hang the collector.
+ * hang the collector. `onResponse(response)` runs once a 2xx has arrived and
+ * before the body is read (SerpApi bills the search at that point, whatever
+ * the body turns out to be); it is skipped for a response that lands after
+ * the timeout has already settled the call.
  */
-export async function fetchSerpJson({ url, fetchImpl = globalThis.fetch, timeoutMs = DEFAULT_TIMEOUT_MS }) {
+export async function fetchSerpJson({ url, fetchImpl = globalThis.fetch, timeoutMs = DEFAULT_TIMEOUT_MS, onResponse }) {
   if (typeof fetchImpl !== 'function') throw new Error('no fetch implementation available');
   const controller = new AbortController();
   const { signal } = controller;
+  let settled = false;
   const timer = Number.isFinite(timeoutMs) && timeoutMs > 0
     ? setTimeout(() => controller.abort(new Error(`SerpApi request timed out after ${timeoutMs} ms`)), timeoutMs)
     : null;
@@ -367,11 +401,13 @@ export async function fetchSerpJson({ url, fetchImpl = globalThis.fetch, timeout
       error.status = response.status;
       throw error;
     }
+    if (!settled && typeof onResponse === 'function') onResponse(response);
     return await response.json();
   })();
   try {
     return await Promise.race([request, aborted]);
   } finally {
+    settled = true;
     if (timer) clearTimeout(timer);
     if (onAbort) signal.removeEventListener('abort', onAbort);
     request.catch(() => {}); // a late failure after the race has settled is not unhandled
@@ -433,12 +469,14 @@ export async function collectSerp({
     }
   }
   const serp = pol.serp || {};
+  const rawKey = apiKey ?? (env && env.SERPAPI_API_KEY) ?? null;
   const settings = {
     cacheDays: cacheDays ?? serp.cache_days ?? DEFAULT_CACHE_DAYS,
     maxCalls: nonNegativeInt(maxCalls ?? serp.max_calls, DEFAULT_MAX_CALLS),
     location: String(location ?? serp.location ?? DEFAULT_LOCATION),
     pricePerCall: pricePerCall ?? (pol.pricing && typeof pol.pricing.serpapi_per_call === 'number' ? pol.pricing.serpapi_per_call : undefined),
-    apiKey: apiKey ?? (env && env.SERPAPI_API_KEY) ?? null,
+    // A blank or whitespace-only key is "not configured", not a key to send.
+    apiKey: rawKey === null || rawKey === undefined ? null : (String(rawKey).trim() || null),
   };
   const cities = policyCities(pol);
   const list = normalizeQueries(queries === undefined ? buildSerpQueries(pol) : queries);
@@ -454,10 +492,19 @@ export async function collectSerp({
 
     const cached = readCacheEntry(cacheDir, key);
     if (cached && !isErrorPayload(cached.response) && isFresh(cached.fetched_at, { now: nowDate, cacheDays: settings.cacheDays })) {
-      observations.push(okObservation({
-        ...base, location: settings.location, response: cached.response, rawRef: `cache:${key}`,
-        fetchedAt: cached.fetched_at, fromCache: true, grizzlyDomain, grizzlyPattern,
-      }));
+      // Never throw out of a collector: a cache entry that cannot be turned
+      // into an observation is reported as an error, not refetched (the
+      // failure is in parsing, not in the data, so a live call would not help).
+      try {
+        observations.push(okObservation({
+          ...base, location: settings.location, response: cached.response, rawRef: `cache:${key}`,
+          fetchedAt: cached.fetched_at, fromCache: true, grizzlyDomain, grizzlyPattern,
+        }));
+      } catch (err) {
+        observations.push(failedObservation({
+          ...base, status: 'error', note: redact(`cache entry unusable: ${err && err.message ? err.message : String(err)}`, settings.apiKey),
+        }));
+      }
       continue;
     }
 
@@ -478,10 +525,15 @@ export async function collectSerp({
     liveCalls += 1;
     try {
       const url = buildSerpUrl({ query: entry.query, location: settings.location, apiKey: settings.apiKey });
-      const response = await fetchSerpJson({ url, fetchImpl, timeoutMs });
-      if (meter && typeof meter.record === 'function') {
-        meter.record({ kind: 'serpapi', model: null, usd: settings.pricePerCall, label: entry.query });
-      }
+      const response = await fetchSerpJson({
+        url, fetchImpl, timeoutMs,
+        // Metered as soon as the 2xx arrives: SerpApi bills it even when the body is unusable.
+        onResponse: () => {
+          if (meter && typeof meter.record === 'function') {
+            meter.record({ kind: 'serpapi', model: null, usd: settings.pricePerCall, label: entry.query });
+          }
+        },
+      });
       if (!response || typeof response !== 'object') throw new Error('SerpApi returned a non-object response');
       if (isErrorPayload(response)) throw new Error(`SerpApi error: ${response.error}`);
       let cacheNote = null;

@@ -174,6 +174,26 @@ function cell(value, max = CELL_MAX) {
 
 function mark(ok) { return ok ? '✓' : '✗'; }
 
+/** Credential shapes that must never reach the report: key=value params, bearer tokens, sk-/rk- keys, JWTs. */
+const SECRET_PATTERNS = Object.freeze([
+  [/\b([A-Za-z0-9_-]*(?:key|token|secret|password|passwd|pwd|authorization))=([^&\s"'`]+)/gi, '$1=[redacted]'],
+  [/\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/g, 'Bearer [redacted]'],
+  [/\b(sk|rk|pk)-[A-Za-z0-9_-]{8,}/g, '$1-[redacted]'],
+  [/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}/g, '[redacted-jwt]'],
+]);
+
+/**
+ * Mask credential-shaped substrings in free text. Attempt and stage error
+ * messages are written by every collector and the LLM client, and the report
+ * is shared Markdown, so a key that slipped into an error message is masked
+ * here as a last line of defence (the collectors redact their own keys first).
+ */
+export function redactSecrets(text) {
+  let s = String(text == null ? '' : text);
+  for (const [re, sub] of SECRET_PATTERNS) s = s.replace(re, sub);
+  return s;
+}
+
 function dateCell(slot) {
   if (!slot.actual) return 'missing ✗';
   return `${slot.actual} ${mark(slot.ok)}${slot.duplicates ? ' (duplicate day)' : ''}`;
@@ -201,7 +221,7 @@ function attemptLines(attempt, { now, spentUsd }) {
   const end = running ? now.getTime() : finished;
   const spent = spentUsd != null ? spentUsd : attempt.spent_usd;
   const lines = [
-    `- Attempt \`${attempt.id}\` — mode ${attempt.mode || 'unknown'}, status ${attempt.status || 'unknown'}${attempt.error ? ` (${cell(attempt.error, 160)})` : ''}`,
+    `- Attempt \`${attempt.id}\` — mode ${attempt.mode || 'unknown'}, status ${attempt.status || 'unknown'}${attempt.error ? ` (${cell(redactSecrets(attempt.error), 160)})` : ''}`,
     `- Started ${attempt.started_at || '—'}; ${running ? 'not finished at compare time' : `finished ${attempt.finished_at}`}; runtime ${formatDuration(end - started)}${running ? ' so far' : ''}`,
     `- Spend ${usd(spent)} of ${usd(attempt.budget_usd)} budget${spentUsd != null ? ' (live meter)' : ''}`,
     `- Models: ${attempt.models && attempt.models.generate ? attempt.models.generate : 'unknown'}; git ${attempt.git_sha || 'unknown'}`,
@@ -212,7 +232,7 @@ function attemptLines(attempt, { now, spentUsd }) {
     for (const [name, stage] of stages) {
       const s = Date.parse(stage.started_at);
       const e = stage.finished_at ? Date.parse(stage.finished_at) : now.getTime();
-      lines.push(`| ${cell(name)} | ${cell(stage.status)} | ${formatDuration(e - s)}${stage.finished_at ? '' : ' (running)'} | ${cell(stage.error, 120)} |`);
+      lines.push(`| ${cell(name)} | ${cell(stage.status)} | ${formatDuration(e - s)}${stage.finished_at ? '' : ' (running)'} | ${cell(redactSecrets(stage.error), 120)} |`);
     }
   }
   lines.push('', '- Legacy runtime and spend: not recorded by the legacy pipeline.');
@@ -305,7 +325,7 @@ export function buildCompareReport({ legacy, shadow, weekSpec, facts, policy, at
   }
   if (legacy.website.length) {
     push('', '### Legacy website tasks', '');
-    for (const task of legacy.website.slice(0, 20)) push(`- ${cell(task.type)} — ${cell(task.title, 120)}${task.status ? ` [${task.status}]` : ''}`);
+    for (const task of legacy.website.slice(0, 20)) push(`- ${cell(task.type)} — ${cell(task.title, 120)}${task.status ? ` [${cell(task.status)}]` : ''}`);
     if (legacy.website.length > 20) push(`- … ${legacy.website.length - 20} more`);
   }
   push('');

@@ -36,12 +36,20 @@ export const CONTACT_LINE_TEMPLATE = '📲 Text us at {phone} to get a free inst
 export const LABELS = Object.freeze({ first: 'generate', repair: 'generate-repair' });
 
 const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-const MAX_RECENT_HOOKS = 40;
+// validate.mjs rejects a GBP headline or Facebook hook that repeats ANY published
+// hook, so the model must see every one; history covers 8 weeks (~90 posts).
+const MAX_RECENT_HOOKS = 120;
 const MAX_RECENT_POSTS = 40;
 const MAX_WEBSITE_TASKS = 20;
 const MAX_PREVIOUS_CHARS = 24000;
-/** Same phone shapes facts.mjs recognises; used to keep unapproved numbers out of the model message. */
-const PHONE_RE = /\(\d{3}\)\s?\d{3}[-.\s]\d{4}|\b\d{3}[-.]\d{3}[-.]\d{4}\b/g;
+/**
+ * Every NANP phone shape validate.mjs flags (findPhoneNumbers): optional +1,
+ * the three groups joined by a space, dot, ASCII/Unicode dash, or nothing, so
+ * "469 555 0123", "4695550123" and "+1 469-555-0123" are redacted, not just
+ * "(469) 555-0123". Kept in step with validate.mjs by test.
+ */
+const PHONE_SEP = '[\\s.\\-\\u2010-\\u2015\\u2212]?';
+const PHONE_RE = new RegExp(`(?<!\\d)(?:\\+?1${PHONE_SEP})?(?:\\(\\s*[2-9]\\d{2}\\s*\\)${PHONE_SEP}[2-9]\\d{2}${PHONE_SEP}\\d{4}|[2-9]\\d{2}${PHONE_SEP}[2-9]\\d{2}${PHONE_SEP}\\d{4})(?!\\d)`, 'g');
 export const REDACTED_PHONE = '[phone number withheld]';
 
 // ---------------------------------------------------------------------------
@@ -55,7 +63,11 @@ export function contactLine(facts) {
   return CONTACT_LINE_TEMPLATE.replace('{phone}', phone);
 }
 
-const digitsOf = (text) => String(text ?? '').replace(/\D/g, '');
+/** Ten dialling digits; a leading country code 1 is dropped so "+1 (469) …" equals "(469) …". */
+const digitsOf = (text) => {
+  const digits = String(text ?? '').replace(/\D/g, '');
+  return digits.length === 11 && digits.startsWith('1') ? digits.slice(1) : digits;
+};
 
 /**
  * Replace every phone number that is not one of `facts.phones.*` with a
@@ -124,8 +136,9 @@ export function pickSupporting(selection, n = 2) {
   return ranked.filter((c) => !sameCandidate(c, winner)).slice(0, n);
 }
 
+/** Same comparison key validate.mjs uses for hooks: lowercase, letters and digits only. */
 function normalizeHook(text) {
-  return String(text ?? '').toLowerCase().replace(/\s+/g, ' ').trim();
+  return String(text ?? '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
 }
 
 function recentHistory(history) {
@@ -317,9 +330,31 @@ export function planShapeIssues(modelPlan, input) {
   return issues;
 }
 
-function collectIssues(result, input) {
-  if (Array.isArray(result?.issues) && result.issues.length) return result.issues;
-  return planShapeIssues(result?.data, input);
+/** The reply as an object when it parses as JSON, else null. */
+function looselyParsed(raw) {
+  const parsed = parseJsonLoose(raw);
+  const value = parsed.error ? null : parsed.value;
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+}
+
+/**
+ * Every issue a reply has: the schema issues from the client plus the shape
+ * issues. When the schema failed, `data` is null, so the shape is checked on
+ * the loosely parsed raw reply instead; the single repair call then carries
+ * every known problem rather than discovering the rest after its one chance.
+ */
+export function collectIssues(result, input) {
+  const schemaIssues = Array.isArray(result?.issues) ? result.issues : [];
+  const candidate = result?.data ?? (schemaIssues.length ? looselyParsed(result?.raw) : null);
+  if (!candidate && !schemaIssues.length) return [{ path: '', message: 'no plan object' }];
+  const shape = candidate ? planShapeIssues(candidate, input) : [];
+  const seen = new Set();
+  return [...schemaIssues, ...shape].filter((i) => {
+    const key = `${i.path} ${i.message}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 // ---------------------------------------------------------------------------

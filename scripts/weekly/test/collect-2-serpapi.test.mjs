@@ -7,6 +7,7 @@ import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { ObservationSchema, parseOrIssues } from '../lib/schemas.mjs';
 import { createCostMeter } from '../lib/cost-meter.mjs';
+import { SERP_CACHE_DIR } from '../lib/paths.mjs';
 import {
   SERPAPI_URL,
   NOTE_CAP_REACHED,
@@ -21,6 +22,7 @@ import {
   isErrorPayload,
   isFresh,
   isGrizzlyDomain,
+  normalizePattern,
   normalizeQueries,
   parseSerpResponse,
   readCacheEntry,
@@ -94,11 +96,25 @@ function freshCacheDir() {
   return dir;
 }
 
+/** Listing + mtimes of the real cache dir, or null when absent; compared after the run. */
+function snapshotRealCache() {
+  if (!fs.existsSync(SERP_CACHE_DIR)) return null;
+  return fs.readdirSync(SERP_CACHE_DIR).sort().map((f) => [f, fs.statSync(path.join(SERP_CACHE_DIR, f)).mtimeMs]);
+}
+
+const realFetch = globalThis.fetch;
+let realCacheBefore;
+
 before(() => {
   cacheRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'collect-2-serp-'));
+  realCacheBefore = snapshotRealCache();
+  // Any collectSerp call that forgets fetchImpl falls through to this and fails its own assertions.
+  globalThis.fetch = async () => { throw new Error('network reachable from tests: collectSerp called without fetchImpl'); };
 });
 after(() => {
+  globalThis.fetch = realFetch;
   fs.rmSync(cacheRoot, { recursive: true, force: true });
+  assert.deepEqual(snapshotRealCache(), realCacheBefore, `tests must never write to the real cache dir ${SERP_CACHE_DIR}`);
 });
 
 describe('buildSerpQueries', () => {
@@ -126,8 +142,11 @@ describe('buildSerpQueries', () => {
     assert.ok(firstCity.every((q) => q.city === 'Rowlett'));
     assert.deepEqual(firstCity.map((q) => q.service_key), policy.services.map((s) => s.key));
     assert.equal(queries[policy.services.length].city, 'Rockwall');
-    assert.ok(queries.every((q) => q.template === policy.services.find((s) => s.key === q.service_key).query_templates[0]),
-      'the 60-cap covers only first templates');
+    // Every first template (services x tier-1/2 cities) comes before any second template.
+    const tierCities = policy.cities.filter((c) => policy.serp.city_tiers.includes(c.tier)).length;
+    const firstBlock = queries.slice(0, Math.min(queries.length, policy.services.length * tierCities));
+    assert.ok(firstBlock.every((q) => q.template === policy.services.find((s) => s.key === q.service_key).query_templates[0]),
+      'first templates fill the query list before any second template');
   });
 
   it('handles a small custom policy: order, tiers, dedupe, cap, and missing settings', () => {
@@ -595,11 +614,31 @@ describe('collectSerp (errors)', () => {
     assert.equal(obs.value.organic.length, 10);
   });
 
-  it('non-JSON body → error observation', async () => {
+  it('non-JSON body → error observation, still metered (the 2xx was served and billed)', async () => {
     const fetchImpl = fakeFetch({ respond: () => ({ ok: true, status: 200, json: async () => { throw new SyntaxError('Unexpected token <'); }, text: async () => '<html>' }) });
-    const [obs] = await collectSerp({ attemptId: ATTEMPT, queries: [WYLIE_Q], cacheDir: freshCacheDir(), cacheDays: 7, maxCalls: 10, apiKey: API_KEY, location: LOCATION, now: NOW, fetchImpl });
+    const meter = meterFor();
+    const [obs] = await collectSerp({ attemptId: ATTEMPT, queries: [WYLIE_Q], cacheDir: freshCacheDir(), cacheDays: 7, maxCalls: 10, apiKey: API_KEY, location: LOCATION, now: NOW, fetchImpl, meter, policy });
     assert.equal(obs.status, 'error');
     assert.match(obs.note, /Unexpected token/);
+    assert.equal(meter.entries().length, 1, 'a 2xx with an unusable body is still a billed search');
+    assert.equal(meter.spent(), policy.pricing.serpapi_per_call);
+  });
+
+  it('a hung body read is metered (the 2xx arrived) but a 2xx that lands after the timeout is not', async () => {
+    const hungBody = async () => ({ ok: true, status: 200, json: () => new Promise(() => {}), text: async () => '' });
+    const meter = meterFor();
+    const [hung] = await collectSerp({ attemptId: ATTEMPT, queries: [WYLIE_Q], cacheDir: freshCacheDir(), cacheDays: 7, maxCalls: 10, apiKey: API_KEY, location: LOCATION, now: NOW, fetchImpl: hungBody, meter, policy, timeoutMs: 5 });
+    assert.equal(hung.status, 'error');
+    assert.equal(meter.entries().length, 1);
+
+    let release;
+    const lateFetch = () => new Promise((resolve) => { release = () => resolve(jsonResponse(wylie)); });
+    const meter2 = meterFor();
+    const [late] = await collectSerp({ attemptId: ATTEMPT, queries: [WYLIE_Q], cacheDir: freshCacheDir(), cacheDays: 7, maxCalls: 10, apiKey: API_KEY, location: LOCATION, now: NOW, fetchImpl: lateFetch, meter: meter2, policy, timeoutMs: 5 });
+    assert.equal(late.status, 'error');
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.deepEqual(meter2.entries(), [], 'no meter entry appears after collectSerp has already returned');
   });
 
   it('a non-object JSON body → error observation', async () => {
@@ -716,5 +755,118 @@ describe('review hardening (collect-2)', () => {
       { name: 'TypeError', message: /now is not a valid date/ },
     );
     assert.equal(fetchImpl.calls.length, 0);
+  });
+});
+
+describe('review hardening 2 (collect-2, adversarial)', () => {
+  // URLSearchParams form-encodes the key (space → "+", ~!'()* percent-encoded); that is the
+  // form an error echoing the request URL carries, and it differs from encodeURIComponent.
+  const ODD_KEY = "odd key~with!parens()'and*star";
+
+  it('redact strips the form-encoded key that buildSerpUrl actually puts in the URL', () => {
+    const url = buildSerpUrl({ query: WYLIE_Q.query, location: LOCATION, apiKey: ODD_KEY });
+    const formEncoded = new URL(url).search.match(/api_key=([^&]*)/)[1];
+    assert.notEqual(formEncoded, encodeURIComponent(ODD_KEY), 'the two encodings differ for this key');
+    assert.ok(url.includes(formEncoded));
+    const out = redact(`request to ${url} failed; raw ${ODD_KEY}; enc ${encodeURIComponent(ODD_KEY)}`, ODD_KEY);
+    assert.ok(!out.includes(ODD_KEY));
+    assert.ok(!out.includes(formEncoded));
+    assert.ok(!out.includes(encodeURIComponent(ODD_KEY)));
+    assert.equal((out.match(/\[redacted\]/g) || []).length, 3);
+  });
+
+  it('a fetch error echoing the real URL never leaks a key with form-encoding-only characters', async () => {
+    const fetchImpl = async (url) => { throw new Error(`request to ${url} failed`); };
+    const [obs] = await collectSerp({ attemptId: ATTEMPT, queries: [WYLIE_Q], cacheDir: freshCacheDir(), cacheDays: 7, maxCalls: 10, apiKey: ODD_KEY, location: LOCATION, now: NOW, fetchImpl });
+    assert.equal(obs.status, 'error');
+    const formEncoded = new URLSearchParams([['k', ODD_KEY]]).toString().slice(2);
+    assert.ok(!obs.note.includes(ODD_KEY) && !obs.note.includes(formEncoded), obs.note);
+    assert.match(obs.note, /api_key=\[redacted\]/);
+  });
+
+  it('a fractional maxCalls is floored, never raised to the default cap', async () => {
+    const fetchImpl = fakeFetch();
+    const observations = await collectSerp({ attemptId: ATTEMPT, queries: [WYLIE_Q, PLANO_Q, ROCKWALL_Q], cacheDir: freshCacheDir(), cacheDays: 7, maxCalls: 1.9, apiKey: API_KEY, location: LOCATION, now: NOW, fetchImpl });
+    assert.equal(fetchImpl.calls.length, 1);
+    assert.deepEqual(observations.map((o) => o.status), ['ok', 'unavailable', 'unavailable']);
+    assert.equal(observations[1].note, NOTE_CAP_REACHED);
+  });
+
+  it('a fractional serp.max_queries is floored', () => {
+    const custom = { serp: { max_queries: 2.9 }, services: [{ key: 'a', query_templates: ['electrician {city}'] }], cities: [{ name: 'A' }, { name: 'B' }, { name: 'C' }, { name: 'D' }] };
+    assert.equal(buildSerpQueries(custom).length, 2);
+    assert.equal(buildSerpQueries({ ...custom, serp: { max_queries: -1 } }).length, 4, 'negative → default cap');
+  });
+
+  it('a template without a {city} placeholder is emitted once with city null, not tagged with the first city', async () => {
+    const custom = { serp: { max_queries: 10 }, services: [{ key: 'a', query_templates: ['electrician near me', 'electrician {city}'] }], cities: [{ name: 'Rowlett' }, { name: 'Plano' }] };
+    const queries = buildSerpQueries(custom);
+    assert.deepEqual(queries, [
+      { query: 'electrician near me', service_key: 'a', city: null, template: 'electrician near me' },
+      { query: 'electrician Rowlett', service_key: 'a', city: 'Rowlett', template: 'electrician {city}' },
+      { query: 'electrician Plano', service_key: 'a', city: 'Plano', template: 'electrician {city}' },
+    ]);
+    const fetchImpl = fakeFetch();
+    const [obs] = await collectSerp({ attemptId: ATTEMPT, queries: [queries[0]], cacheDir: freshCacheDir(), cacheDays: 7, maxCalls: 10, apiKey: API_KEY, location: LOCATION, now: NOW, fetchImpl, policy });
+    assert.equal(obs.geography, null);
+    assertValidObservation(obs);
+  });
+
+  it('non-string descriptor fields become null so geography stays schema-valid', async () => {
+    assert.deepEqual(normalizeQueries([{ query: 'x', city: 42, service_key: {}, template: ['t'] }]), [{ query: 'x', service_key: null, city: null, template: null }]);
+    const fetchImpl = fakeFetch();
+    const [obs] = await collectSerp({ attemptId: ATTEMPT, queries: [{ query: 'electrical panel upgrade Plano', city: 42 }], cacheDir: freshCacheDir(), cacheDays: 7, maxCalls: 10, apiKey: API_KEY, location: LOCATION, now: NOW, fetchImpl, policy });
+    assertValidObservation(obs);
+    assert.equal(obs.geography, 'Plano', 'inferred from the query text once the bad city is dropped');
+    assert.equal(obs.value.city, null);
+  });
+
+  it('normalizePattern: strings become case-insensitive regexes; g/y flags are dropped so repeated .test calls do not alternate', () => {
+    assert.deepEqual(normalizePattern('grizzly'), /grizzly/i);
+    assert.equal(normalizePattern(/grizzly/gi).flags, 'i');
+    const plain = /grizzly/i;
+    assert.equal(normalizePattern(plain), plain, 'a pattern without g/y is returned as is');
+    assert.deepEqual(normalizePattern(null), /grizzly/i);
+    assert.deepEqual(normalizePattern({ test: () => true }), /grizzly/i, 'a non-RegExp duck is replaced by the default');
+    assert.deepEqual(normalizePattern('  '), /grizzly/i);
+    const sticky = /grizzly/gi;
+    const resp = { local_results: { places: [{ title: 'Grizzly Electrical Solutions' }] } };
+    assert.equal(parseSerpResponse(resp, { grizzlyPattern: sticky }).grizzly_in_local_pack, true);
+    assert.equal(parseSerpResponse(resp, { grizzlyPattern: sticky }).grizzly_in_local_pack, true, 'second call with the same /g regex must not flip to false');
+    assert.equal(parseSerpResponse(resp, { grizzlyPattern: 'GRIZZLY' }).grizzly_in_local_pack, true);
+  });
+
+  it('a whitespace-only or padded API key: blank → not configured (no fetch); padded → trimmed in the URL', async () => {
+    const fetchImpl = fakeFetch();
+    const blank = await collectSerp({ attemptId: ATTEMPT, queries: [WYLIE_Q], cacheDir: freshCacheDir(), cacheDays: 7, maxCalls: 10, apiKey: '   ', location: LOCATION, now: NOW, fetchImpl });
+    assert.equal(fetchImpl.calls.length, 0);
+    assert.deepEqual([blank[0].status, blank[0].note], ['unavailable', NOTE_NO_API_KEY]);
+    const envBlank = await collectSerp({ attemptId: ATTEMPT, queries: [WYLIE_Q], cacheDir: freshCacheDir(), cacheDays: 7, maxCalls: 10, location: LOCATION, now: NOW, fetchImpl, env: { SERPAPI_API_KEY: '' } });
+    assert.equal(envBlank[0].note, NOTE_NO_API_KEY);
+    assert.equal(fetchImpl.calls.length, 0);
+    await collectSerp({ attemptId: ATTEMPT, queries: [WYLIE_Q], cacheDir: freshCacheDir(), cacheDays: 7, maxCalls: 10, location: LOCATION, now: NOW, fetchImpl, env: { SERPAPI_API_KEY: '  env-key \n' } });
+    assert.equal(new URL(fetchImpl.calls[0].url).searchParams.get('api_key'), 'env-key');
+  });
+
+  it('a cache entry that cannot be parsed into an observation → error observation, no throw, no live call', async () => {
+    const cacheDir = freshCacheDir();
+    const key = cacheKey(ROCKWALL_Q.query, LOCATION);
+    writeCacheEntry(cacheDir, key, { query: ROCKWALL_Q.query, location: LOCATION, fetched_at: NOW.toISOString(), response: rockwall });
+    const fetchImpl = fakeFetch();
+    const meter = meterFor();
+    // A grizzlyDomain whose string conversion throws is the only way to make the parser fail.
+    const poison = { toString() { throw new Error(`boom ${API_KEY}`); } };
+    const [obs] = await collectSerp({ attemptId: ATTEMPT, queries: [ROCKWALL_Q], cacheDir, cacheDays: 7, maxCalls: 10, apiKey: API_KEY, location: LOCATION, now: NOW, fetchImpl, meter, grizzlyDomain: poison });
+    assertValidObservation(obs);
+    assert.equal(obs.status, 'error');
+    assert.match(obs.note, /^cache entry unusable: boom \[redacted\]$/);
+    assert.equal(fetchImpl.calls.length, 0, 'a parse failure is not a reason to spend a live call');
+    assert.deepEqual(meter.entries(), []);
+  });
+
+  it('a collectSerp call that omits fetchImpl hits the test trap, not the network (proves the before() guard is live)', async () => {
+    const [obs] = await collectSerp({ attemptId: ATTEMPT, queries: [WYLIE_Q], cacheDir: freshCacheDir(), cacheDays: 7, maxCalls: 10, apiKey: API_KEY, location: LOCATION, now: NOW });
+    assert.equal(obs.status, 'error');
+    assert.match(obs.note, /network reachable from tests/);
   });
 });

@@ -95,16 +95,17 @@ Copy `topic` verbatim from `topic.winner` in the user message (`service_key`, `s
 ## Google Business Profile rules (7 posts)
 
 - `headline`: under 58 characters, plain and specific. No clickbait, no exclamation stacks.
-- `body`: 150 to 300 characters in a natural contractor voice. Honest, direct, practical, not
-  pushy. One clear idea per post.
+- `body`: 30 to 50 words (roughly 180 to 300 characters) in a natural contractor voice. Honest,
+  direct, practical, not pushy. One clear idea per post.
 - `caption`: 1 to 2 sentences describing the photo. When `photo_file` is null, describe the
   suggested photo instead.
 - `trend_tie`: the signal from `topic` or `seasonal_context` this post responds to, quoted
   briefly, or the single word "evergreen".
 - `cta`: a generic action such as "Use the Call button", "Request service", "Contact Grizzly",
   or "Book an appointment". Never a phone number, never a URL.
-- `hashtags`: 3 to 5. Include at least one local tag naming the winner city (the city name plus
-  "TX", no spaces, such as "#<WinnerCity>TX") and one service tag (for example "#PanelUpgrade").
+- `hashtags`: 3 to 5. Every post carries at least one local tag (a city name plus "TX", no
+  spaces, such as "#<City>TX", or "#DFW") and one service tag (for example "#PanelUpgrade").
+  Posts that name the winner city use its tag, "#<WinnerCity>TX".
 - Mix the week across high-intent service posts, trust-building project posts, educational
   posts (what to watch for, when to call), and one seasonal or trend-responsive post.
 
@@ -134,6 +135,14 @@ Copy `topic` verbatim from `topic.winner` in the user message (`service_key`, `s
   topic. On days 3, 5 and 6, `on_screen_text` is an empty string.
 - Never repeat a hook that appears in `history.recent_hooks_to_avoid`, and do not reuse their
   angles word for word.
+
+## Hooks and headlines must be new
+
+- `history.recent_hooks_to_avoid` holds every recently published Facebook hook and GBP headline.
+  Every Facebook `hook` and every GBP `headline` in this plan must differ from every entry in
+  that list, and from each other within this plan. The pipeline compares them ignoring case
+  and punctuation, so changing a comma or a capital letter does not make a hook new; the
+  whole plan is rejected on a match.
 
 ## Boost rules (a machine spends this money; ambiguity voids the week)
 

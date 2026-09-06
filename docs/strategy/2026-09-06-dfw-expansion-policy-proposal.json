@@ -1,0 +1,125 @@
+{
+  "cities": [
+    { "name": "Rowlett", "tier": 1, "weight": 1.2, "reason": "Home base and the only city on page 1-2: 1,635 impressions at 11.1 and 5 of 8 non-brand clicks in 56 days; 18 queries at position 8-30 (1,126 impressions) are the nearest click gain (search-console-analysis.json citiesRanked90d, expansionSummary.byCity). Pack #2 with 154 reviews (outputs/archive/04a3760f/gbp_report.md line 22-23). Raised from 0.9 because the live selector ranked the home base 22nd of 24 with the current weights (R13 review simulation)." },
+    { "name": "Rockwall", "tier": 1, "weight": 1.15, "reason": "Largest non-Rowlett demand: 1,474 impressions, 0 clicks at 40.3; #1 city in the last 28 days (909). The homepage, not the Rockwall page, answers 'electrician rockwall tx' at 43.5. Pack hard (Milestone 4.9/1,500), organic thin for electrician, repair and generator (serp-city-verdicts.json). 7 miles; cheapest LSA ring city. Page exists." },
+    { "name": "Garland", "tier": 1, "weight": 1.1, "reason": "5 miles; 573 impressions at 11.5; 'electrician garland' 300 desktop impressions at 1.4 (inference: pack Website link, localPackSignature). Panel and generator organic thin per the scan. Page exists." },
+    { "name": "Wylie", "tier": 1, "weight": 1.0, "reason": "Easiest scanned SERP (score -2.78, pack ceiling 130 reviews) but small demand: 148 impressions, 103 of them the desktop pack signature. Page exists at 22.5. Maintain; no flagship content." },
+    { "name": "Sachse", "tier": 1, "weight": 0.95, "reason": "Adjacent; 117 impressions at 5.6, 28-day position 1.4 (citiesRanked28d). Page exists. Maintain. Not SERP-scanned." },
+    { "name": "Sunnyvale", "tier": 1, "weight": 0.9, "reason": "Never named on the site, yet the homepage draws 88 impressions at 39.5 for 'electrician sunnyvale tx'. About 9 miles. Add to areaServed and the hub list; no page until owner-supplied jobs." },
+    { "name": "Murphy", "tier": 1, "weight": 0.9, "reason": "Page exists; 38 impressions at 12.6 in 56 days and 0 in the last 28 days. Maintain only." },
+    { "name": "Richardson", "tier": 2, "weight": 1.0, "reason": "15 miles. 359 impressions at 25.2 in 56 days but 36 at 37.9 in the last 28 days after the legacy URL 404'd (legacyUrls404). Pack moderate (ElectricMan 4.8/583); generator SERP has no pack. First LSA ring test city. Moved from draft tier 1 because the page rebuild (R4) was dropped; no city page until owner-supplied jobs and photos." },
+    { "name": "Dallas", "tier": 2, "weight": 0.95, "reason": "261 impressions at 26; the only foothold is recessed lighting (111 impressions at 16.8 on /recessed-lighting/). Pack unreachable at 20+ miles. Recessed-lighting service-page content and north-east Dallas LSA zips only; no generic city page." },
+    { "name": "Mesquite", "tier": 2, "weight": 0.95, "reason": "12 miles; 4 impressions; never named on the site. Scan says organic winnable (score 0.87, no giants). GBP service area and LSA now; a page only with owner-supplied Mesquite jobs and photos (doorway risk). Moved from draft tier 1 because R4 was dropped." },
+    { "name": "Plano", "tier": 2, "weight": 0.9, "reason": "160 impressions at 36; pack hard (six 100+ members, two giants); panel SERP has no pack; legacy /service-areas/electrician-plano-tx/ 404s. Service-page content and LSA only." },
+    { "name": "Royse City", "tier": 2, "weight": 0.9, "reason": "117 impressions at 45 on the homepage across 4 queries; Rockwall County. GBP service area and LSA zips; no content until jobs exist there (the Rockwall County section, R2, was dropped)." },
+    { "name": "McKinney", "tier": 2, "weight": 0.85, "reason": "330 impressions at 31.5 with a broad family mix (EV 97, surge 50, panel 34, smoke/CO 29) but the hardest scanned SERP (score 8.57, three giants, directory share 0.31). About 25 miles. EV, surge and smoke content on service pages plus LSA; no generic city page." },
+    { "name": "Heath", "tier": 2, "weight": 0.85, "reason": "30 impressions at 47; never named on the site. Rockwall County; GBP service area only." },
+    { "name": "Forney", "tier": 2, "weight": 0.8, "reason": "0 impressions; never named on the site; not SERP-scanned; about 15 miles. Track only until demand appears." },
+    { "name": "Fate", "tier": 2, "weight": 0.8, "reason": "0 impressions; never named on the site; not SERP-scanned. Rockwall County; track only." },
+    { "name": "Frisco", "tier": 3, "weight": 0.8, "reason": "103 impressions at 35.7 forming one panel cluster on /panel-upgrades/ (82 impressions). Scan hard (score 6.84, three giants). About 30 miles. Panel and EV content on service pages only." },
+    { "name": "Fort Worth", "tier": 3, "weight": 0.8, "reason": "#3 city by impressions (1,142, 0 clicks) entirely through DFW-generic service pages on pages 3-5 (EV 380 at 45.8, panel 236 at 37.2, recessed 114 at 22.9). About 45 miles. A service-page signal, not a city to chase. Owner decides whether 'Rockwall to West Fort Worth' stays a claimed range." },
+    { "name": "Allen", "tier": 3, "weight": 0.75, "reason": "8 impressions; not SERP-scanned; about 25 miles. Revisit after LSA data." },
+    { "name": "Greenville", "tier": 3, "weight": 0.7, "reason": "NEW, pending owner confirmation that it is served. Largest non-policy place in Search Console (335 impressions at 51.6; 251 in the last 28 days), Hunt County, about 30 minutes east; not SERP-scanned. Tracking only; no content until confirmed." },
+    { "name": "Carrollton", "tier": 3, "weight": 0.7, "reason": "0 impressions; never named on the site; about 30 miles." },
+    { "name": "Irving", "tier": 3, "weight": 0.7, "reason": "0 impressions; named only in the site's 14-city areaServed list; about 35 miles." },
+    { "name": "Arlington", "tier": 3, "weight": 0.65, "reason": "0 impressions; in areaServed only; 35+ miles." },
+    { "name": "Denton", "tier": 3, "weight": 0.6, "reason": "2 impressions; about 45 miles." },
+    { "name": "Waxahachie", "tier": 3, "weight": 0.6, "reason": "0 impressions; the 'McKinney to Waxahachie' range phrase in the facts file does not appear on the site." }
+  ],
+  "service_city_emphasis": [
+    { "service_key": "troubleshooting", "cities": ["Rowlett", "Garland", "Wylie", "Sachse", "Rockwall"], "reason": "Generic 'electrician {city}' and repair queries are the whole home-ring demand: Rowlett 961 impressions at 9.6 (5 clicks), Garland 442 at 6.7, Wylie 142 at 3.9, Sachse 88 at 6.6, Rockwall 968 at 43.7 (citiesRanked90d families). The desktop pack signature ('electrician', 'electrical repair', 'electrician garland', 'electrician wylie') is this family. GBP posts and service-page copy stay in the home ring." },
+    { "service_key": "generator", "cities": ["Rowlett", "Rockwall", "Richardson", "Garland"], "reason": "Rowlett generator family 166 impressions at 11.2 ('generator installation rowlett tx' 144 desktop at 12.4, keyQueryDeviceSplit); Rockwall 48 at 27.8 with the generator SERP organic all social/directory; Richardson generator SERP has no pack; Garland generator organic thin (serp-city-verdicts.json). /generator-inlet-installation/ holds 5 of the property's 79 clicks; the generic 'generator installation' query sits at 449 impressions at 24.1." },
+    { "service_key": "commercial", "cities": ["Rowlett"], "reason": "'commercial electrician rowlett tx' 221 desktop impressions at 14.2 (keyQueryDeviceSplit); Rowlett commercial family 221 at 14.2. The facts file lists light commercial as second priority, so this stays a Rowlett-only emphasis." },
+    { "service_key": "panel_upgrade", "cities": ["Garland", "Frisco", "Richardson", "Plano"], "reason": "Garland panel family 15 impressions at 8.2 plus the 404'd /service-areas/panel-change-garland-tx/ (169 impressions at 32.2); Frisco is one panel cluster (82 at 36.9 on /panel-upgrades/); Richardson panel 40 at 8.9; Plano panel SERP has no pack. Service-page content only; the desktop pack signature includes 'electrical panel replacement' 226 at 1.0 and 'sub panel installation' 82 at 1.0 near Rowlett." },
+    { "service_key": "surge_protection", "cities": ["Rockwall", "McKinney", "Fort Worth", "Dallas"], "reason": "/whole-home-surge-protection/ is the #2 page in the last 28 days (682 impressions, 0 clicks). City demand: Rockwall 135 at 31.5, Fort Worth 96 at 28.8, McKinney 50 at 30.1, Dallas 27 at 28.2 (citiesRanked90d families). Seasonal peak March to June per the config." },
+    { "service_key": "ev_charger", "cities": ["McKinney", "Rockwall", "Frisco", "Fort Worth"], "reason": "McKinney EV 97 impressions at 36.7; Rockwall EV 67 at 34.6 (demand is real, but the Rockwall EV SERP has a pack and four city-targeted pages, so service-page content only); Frisco's only thin organic slot is EV; Fort Worth EV 380 at 45.8 on /ev-charger-installation/ is a service-page signal, not a city to chase. Never pair with the 'Electric vehicle charging station' GBP category." },
+    { "service_key": "recessed_lighting", "cities": ["Dallas", "Fort Worth"], "reason": "Dallas recessed lighting 111 impressions at 16.8 on /recessed-lighting/ is the best non-home foothold; Fort Worth 114 at 22.9; /blog/recessed-lighting-cost-dfw/ reached position 6.0 on 52 impressions in the last 28 days (pages28d). Service-page and existing-post content only." },
+    { "service_key": "rewire", "cities": ["Garland", "Fort Worth", "Dallas"], "reason": "The Garland page's lead section is the 1960s-80s housing stock and Federal Pacific/aluminum wiring; Garland rewire 18 impressions at 36.9; Fort Worth rewire 41 at 10 (R13 review); Dallas rewire 22 at 28.1. Service-page content only." },
+    { "service_key": "smoke_co", "cities": ["McKinney"], "reason": "McKinney smoke/CO family 29 impressions at 26; /smoke-co-detector-installation/ earned 1 click on 79 impressions in the last 28 days (pages28d). Seasonal October to November per the config." },
+    { "service_key": "outlet_switch", "cities": ["Rowlett"], "reason": "No city-named demand observed beyond the home ring; 'outlet installation' 28 desktop impressions at 1.0 is part of the near-Rowlett pack signature. Keep to the home ring and the GBP Services list." },
+    { "service_key": "inspection", "cities": ["Rowlett"], "reason": "No city-named demand observed; /electrical-inspections/ 153 impressions and 0 clicks in both windows. Home ring and the GBP Services list only." },
+    { "service_key": "ceiling_fan", "cities": ["Rowlett"], "reason": "No city-named demand observed. Home ring and the GBP Services list only." }
+  ],
+  "website_actions": [
+    {
+      "type": "structured_data",
+      "title": "Remove the self-serving aggregateRating and copied Review objects from the homepage and /reviews/ JSON-LD",
+      "target": "index.html lines 71-82; reviews/index.html lines 199-240",
+      "priority": "high",
+      "description": "Google's review-snippet guideline makes LocalBusiness pages that control their own reviews ineligible for star snippets, and the hard-coded reviewCount '150' breaks the facts-file rule against quoting a review count from memory (the listing showed 154 on 2026-09-04, outputs/archive/04a3760f/gbp_report.md line 23). Delete the aggregateRating block and the six Review objects; keep the Electrician/LocalBusiness node. From R8 (kept) and R11 (surviving subset).",
+      "owner_gate": true
+    },
+    {
+      "type": "content",
+      "title": "Correct or remove the '150+' review count on /reviews/ and the homepage",
+      "target": "reviews/index.html lines 6, 7, 12, 13, 18, 19, 71, 74, 79, 159, 161; index.html line 74",
+      "priority": "high",
+      "description": "The owner reads the live count and rating from the listing. Either update every occurrence to the exact live number or drop the number and keep the 5.0 wording only if the listing still shows 5.0. Nothing is quoted from memory. From R8 (kept).",
+      "owner_gate": true
+    },
+    {
+      "type": "link",
+      "title": "Point the /reviews/ 'Leave us a review on Google' button at the GBP write-a-review link",
+      "target": "reviews/index.html line 123",
+      "priority": "high",
+      "description": "The button currently links to a Google Maps place URL. Replace it with the short write-a-review link from the Business Profile 'Get more reviews' panel, the same link used in the Housecall Pro request. From R8 (kept).",
+      "owner_gate": true
+    },
+    {
+      "type": "structured_data",
+      "title": "Align areaServed, the homepage city chips and the /service-areas/ hub list to the owner-confirmed served-city list",
+      "target": "index.html line 64 (areaServed) and line 1044 (chips); the identical areaServed array in 22 files including service-areas/electrician-wylie-tx/index.html, which omits Wylie; service-areas/index.html lines 121-130",
+      "priority": "medium",
+      "description": "Consistency only. areaServed is not a documented LocalBusiness property and moves no ranking. Add Sachse, Wylie, Murphy, Sunnyvale and Mesquite; the owner decides whether Grapevine, Farmers Branch, Fort Worth, Arlington and Irving stay. Use one list everywhere: GBP service areas (R7), areaServed, chips and hub. From R7 (kept) and the surviving subsets of R5 and R11.",
+      "owner_gate": true
+    },
+    {
+      "type": "content",
+      "title": "Fix the known homepage issues: the 'Years Experience' counter, the (469) 555-0123 form placeholder, and confirm the Contact nav item",
+      "target": "index.html lines 780-783 (data-count 10/15/100), the contact form placeholder near line 1062, nav item at line 721",
+      "priority": "medium",
+      "description": "The counter animates to '10+ Years Experience' while the facts file says founded 2021, five years, never 'over a decade'. The owner supplies the three real numbers. Replace the fake placeholder with a neutral format hint. The nav already uses #contact and nothing links to /contact/, so that facts-file item is probably stale; confirm and close it. Known issues per grizzly-business-facts.md 'Known open website issues'.",
+      "owner_gate": true
+    },
+    {
+      "type": "structured_data",
+      "title": "Hours: change the site JSON-LD and footer only if the owner says the GBP hours are wrong",
+      "target": "index.html lines 50-61 (openingHoursSpecification) and the footer hours block",
+      "priority": "low",
+      "description": "GBP and the site both say Mon-Fri 8-6 and Sat 8-2; only the facts file says 8-5, and the facts file names the listing as authoritative. Default is no site change and a facts-file correction. This action exists only for the case where the owner says GBP is wrong; then GBP, JSON-LD and the footer get the same answer. From R7 (kept).",
+      "owner_gate": true
+    },
+    {
+      "type": "city_page",
+      "title": "Link the six existing city pages from the homepage by converting their chips to links and adding a short footer list",
+      "target": "index.html line 1044 (chips for Rowlett, Rockwall, Garland, Sachse, Wylie, Murphy) and the footer near line 1098",
+      "priority": "low",
+      "description": "A 20-30 minute edit with no ranking claim: the city pages already have 20 inbound internal links each and still faded in August, so this is crawl hygiene, not a lever. Only cities with pages become links; the other chips stay plain text. No new city pages. Surviving subset of R1 and R2 (dropped).",
+      "owner_gate": true
+    },
+    {
+      "type": "city_page",
+      "title": "Add Mesquite and Sunnyvale to the /service-areas/ hub 'call for availability' list; no new city pages until the owner supplies real jobs and photos",
+      "target": "service-areas/index.html lines 121-130",
+      "priority": "low",
+      "description": "Sunnyvale draws 88 homepage impressions and Mesquite is 12 miles away, yet neither is named anywhere on the site. Naming them in the hub is a one-line change each. A dedicated page for either city is gated on first-hand proof (jobs, photos, quotes) because a proof-less page is the doorway pattern Google's spam policy describes. Surviving subset of R4 (dropped).",
+      "owner_gate": true
+    },
+    {
+      "type": "redirect",
+      "title": "Redirect the five service-specific legacy /service-areas/* URLs to their matching live service pages; leave the eight legacy city URLs as 404",
+      "target": "vercel.json redirects: /service-areas/panel-change-garland-tx/ and /service-areas/panel-change-rowlett-tx/ to /panel-upgrades/; /service-areas/generator-inlet-installation-rowlett-tx/ to /generator-inlet-installation/; /service-areas/emergency-electrician-rowlett-tx/ to /emergency-electrician/; /service-areas/recessed-can-light-installation-dallas-tx/ to /recessed-lighting/",
+      "priority": "low",
+      "description": "All 13 legacy URLs had 0 impressions in the last 28 days and are already out of the index (live-checks-2026-09-06.json), so the expected traffic change is about zero. Only URLs with a genuinely matching live page are redirected; Google's site-move guidance says not to send many old URLs to one unrelated page, so the city URLs (richardson, mckinney, plano, dallas, farmers-branch) stay 404. Ten-minute hygiene subset of R3 (dropped).",
+      "owner_gate": true
+    },
+    {
+      "type": "sitemap",
+      "title": "Add the two 2026-07-31 blog posts to sitemap.xml, give them Article JSON-LD, and shorten their titles",
+      "target": "sitemap.xml; blog/generator-interlock-vs-transfer-switch/index.html; blog/recessed-lighting-cost-dfw/index.html",
+      "priority": "low",
+      "description": "Both posts are already indexed (114 and 103 impressions in 56 days; site-audit-2026-09-06.json notInSitemap), so this is hygiene with no expected ranking change. Titles are 96 and 105 characters. Article markup only helps title, image and date display. Surviving subset of R6 and R11 (dropped).",
+      "owner_gate": true
+    }
+  ]
+}

@@ -17,9 +17,14 @@
 //     `**KEY:** value` because several getters only read the header line;
 //   - the BOOST BUDGET SUMMARY table is fb-boost-ledger's authoritative allocation:
 //     Post cell `Day N`, decision exactly YES / MAYBE / NO, daily budget `$N/day`,
-//     duration `N day(s)`, `—` in the budget cells of non-YES rows, and no
+//     duration `N day(s)`, `—` in the budget cells of non-YES rows (a MAYBE row's
+//     Total cell too — it never carries dollars; a NO row's Total reads $0), and no
 //     conditional wording ("whichever", "— OR —", "hold the boost", ...) anywhere in
-//     the section, because the ledger treats that as "human review required".
+//     the section, because the ledger treats that as "human review required";
+//   - dollar figures are floored to whole cents, never rounded half-up: the ledger
+//     re-multiplies the printed daily by the printed days and refuses anything over
+//     the cap, so a daily of 50/3 must print as $16.66 (x3 = $49.98), not $16.67
+//     (x3 = $50.01, which fails closed even though the plan itself sums to $50).
 
 const BRAND = 'Grizzly Electrical Solutions';
 const DASH = '—';
@@ -72,10 +77,19 @@ export function formatDateRange(startIso, endIso) {
   return `${MONTHS[a.month]} ${a.day}, ${a.year} – ${MONTHS[b.month]} ${b.day}, ${b.year}`;
 }
 
-/** '25' | '12.5' | '16.67' — no currency symbol, no trailing zeros. */
-export function formatUsd(n) {
+/**
+ * Floor to whole cents. The epsilon absorbs binary float noise (0.29 * 100 is
+ * 28.999999999999996) without ever lifting a value to the next cent.
+ */
+export function floorCents(n) {
   const v = Number(n);
-  if (!Number.isFinite(v)) return '0';
+  if (!Number.isFinite(v)) return 0;
+  return Math.floor(v * 100 + 1e-7) / 100;
+}
+
+/** '25' | '12.5' | '16.66' — whole cents, no currency symbol, no trailing zeros. */
+export function formatUsd(n) {
+  const v = floorCents(n);
   if (Number.isInteger(v)) return String(v);
   return v.toFixed(2).replace(/0+$/, '').replace(/\.$/, '');
 }
@@ -170,7 +184,11 @@ export function boostFields(item) {
   const boost = item?.boost || {};
   const decision = ['YES', 'MAYBE', 'NO'].includes(String(boost.decision).toUpperCase())
     ? String(boost.decision).toUpperCase() : 'NO';
-  const daily = Number.isFinite(boost.daily_usd) && boost.daily_usd > 0 ? boost.daily_usd : null;
+  // Whole cents only (see the header note): a fractional daily is floored, and the
+  // row total is the product of the printed figures so the ledger's own arithmetic
+  // (printed daily x printed days) reproduces it exactly.
+  const cents = Number.isFinite(boost.daily_usd) ? floorCents(boost.daily_usd) : 0;
+  const daily = cents > 0 ? cents : null;
   const days = Number.isInteger(boost.days) && boost.days > 0 ? boost.days : null;
   const funded = decision === 'YES' && daily !== null && days !== null;
   const targeting = inlineText(item?.boost_targeting);
@@ -178,7 +196,7 @@ export function boostFields(item) {
     decision,
     daily: funded ? daily : null,
     days: funded ? days : null,
-    total: funded ? daily * days : 0,
+    total: funded ? Math.round(daily * days * 100) / 100 : 0,
     boost: decision === 'YES' ? (funded ? `yes:$${formatUsd(daily)}` : 'yes') : decision.toLowerCase(),
     amount: funded ? `$${formatUsd(daily)}` : DASH,
     duration: funded ? plural(days, 'day') : DASH,
@@ -426,7 +444,10 @@ export function renderBoostSummary(plan, weekSpec, options = {}) {
   ];
   for (const r of rows) {
     const funded = r.decision === 'YES' && r.total > 0;
-    out.push(`| Day ${r.day} | ${r.dateShort} | ${r.service} | ${r.decision} | ${funded ? `$${formatUsd(r.daily)}/day` : DASH} | ${funded ? plural(r.days, 'day') : DASH} | $${formatUsd(r.total)} |`);
+    // build_facebook_crew: a MAYBE row carries '—' for daily budget, duration AND total
+    // (never dollars); a NO row reads $0, as in outputs/facebook_posting_schedule.md.
+    const totalCell = r.decision === 'MAYBE' ? DASH : `$${formatUsd(r.total)}`;
+    out.push(`| Day ${r.day} | ${r.dateShort} | ${r.service} | ${r.decision} | ${funded ? `$${formatUsd(r.daily)}/day` : DASH} | ${funded ? plural(r.days, 'day') : DASH} | ${totalCell} |`);
   }
   out.push(
     '',
@@ -455,11 +476,18 @@ export function renderFacebookSchedule(plan, weekSpec, options = {}) {
   const weekOf = weekSpec?.week_of || plan.week_of || (items[0] ? fbDate(items[0], weekSpec) : '');
   const first = items[0] ? fbDate(items[0], weekSpec) : weekOf;
   const last = items.length ? fbDate(items[items.length - 1], weekSpec) : weekOf;
+  const period = formatDateRange(first, last);
 
+  // With no week at all the header stays well-formed but carries no date, so
+  // resolveWeekOf / scheduleWeekStart fail closed instead of reading a stray value.
   const parts = [
     `# ${BRAND} — Facebook Content Schedule`,
-    `## Week of ${weekOf}`,
-    `**Start Date:** ${weekOf} | **Schedule Period:** ${formatDateRange(first, last)} | Prepared by ${preparedBy}`,
+    `## Week of ${weekOf}`.trimEnd(),
+    [
+      weekOf ? `**Start Date:** ${weekOf}` : '',
+      period ? `**Schedule Period:** ${period}` : '',
+      `Prepared by ${preparedBy}`,
+    ].filter(Boolean).join(' | '),
     '',
     '---',
     '',

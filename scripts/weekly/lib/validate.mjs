@@ -11,7 +11,8 @@
  * Errors (any one fails the plan): schema; a date that is not the WeekSpec
  * date for that day; a phone number other than facts.phones.*; a domain other
  * than facts.domain; a tenure claim that contradicts facts.founded_year; a
- * dollar amount in GBP/Facebook copy that is not in facts.approved_prices; a
+ * dollar amount in GBP/Facebook copy that is not in facts.approved_prices
+ * (matched by value, and by unit too when the copy says "/day" or "per hour"); a
  * photo_file not in the inventory; Facebook boost YES rows that do not sum to
  * policy.boost_weekly_usd exactly, more than two YES rows, or a MAYBE/NO row
  * carrying dollars; a hook identical (normalized) to a published hook or to
@@ -137,13 +138,20 @@ export function findDomains(text) {
 // Tenure claims. The owner's rule: "since 2021" or "five years"; never
 // "over a decade", never "3+ years". Warranty and equipment-age phrases
 // ("25-year warranty", "panels over 20 years old") are not tenure claims.
-const NUM_WORDS = {
-  one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
-  eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15, twenty: 20, thirty: 30, forty: 40, fifty: 50,
-};
-const NUM_SRC = `(\\d{1,2}|${Object.keys(NUM_WORDS).join('|')})`;
+const ONES = ['one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine'];
+const TEENS = ['ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen', 'seventeen', 'eighteen', 'nineteen'];
+const TENS = ['twenty', 'thirty', 'forty', 'fifty', 'sixty', 'seventy', 'eighty', 'ninety'];
+const NUM_WORDS = Object.fromEntries([
+  ...ONES.map((w, i) => [w, i + 1]),
+  ...TEENS.map((w, i) => [w, i + 10]),
+  ...TENS.map((w, i) => [w, (i + 2) * 10]),
+  ['dozen', 12],
+]);
+// Compound tens first ("twenty-five") so the scan cannot settle for the trailing "five".
+const NUM_SRC = `(\\d{1,2}|(?:${TENS.join('|')})(?:[-\\s](?:${ONES.join('|')}))?|${[...TEENS, ...ONES, 'dozen'].join('|')})`;
 const YRS_SRC = "(?:years?|yrs?)\\b'?";
-const TENURE_TAIL_SRC = '(?:of\\s+)?(?:experience|expertise|in\\s+business|in\\s+the\\s+(?:trade|industry|business)|serving|of\\s+service|strong|and\\s+counting|as\\b|helping|keeping|running|proudly)';
+const EXPERIENCE_SRC = '(?:(?:combined|hands-on|professional|industry|field|electrical|real-world|proven|solid)\\s+)?(?:experience|expertise)';
+const TENURE_TAIL_SRC = `(?:of\\s+)?(?:${EXPERIENCE_SRC}|in\\s+business|in\\s+the\\s+(?:trade|industry|business)|serving|of\\s+service|strong|and\\s+counting|as\\b|helping|keeping|running|proudly)`;
 const DECADE_SRC = '\\b(?:(?:over|more than|nearly|almost|about|a|an|two|three|several|the past|the last)\\s+){0,2}decades?\\b';
 const REGION_SRC = 'dfw|north\\s+texas|texas|the\\s+(?:dfw\\s+)?(?:metroplex|area)|dallas|fort\\s+worth';
 const TENURE_PATTERNS = [
@@ -157,7 +165,10 @@ const TENURE_PATTERNS = [
   { kind: 'since', re: /\bsince\s+((?:19|20)\d{2})\b/gi },
   { kind: 'founded', re: /\b(?:established|est\.?|founded|opened|started|in\s+business)\s+(?:in\s+)?((?:19|20)\d{2})\b/gi },
 ];
-const BUSINESS_CUE_RE = /\b(?:we|we've|we're|our|us|grizzly|team|family[- ]owned|locally[- ]owned|owner[- ]operated|trusted|licensed|serving|served|electricians?|business)\b/i;
+// Words that make "for over N years" a claim about the business rather than about
+// wiring or a warranty. "wiring"/"lighting" are left out: "copper wiring lasts for
+// over 40 years" is equipment talk.
+const BUSINESS_CUE_RE = /\b(?:we|we've|we're|our|us|grizzly|team|crew|company|family[- ]owned|locally[- ]owned|owner[- ]operated|trusted|licensed|serving|served|electricians?|business|experience|expertise|proudly|keeping|helping|powering)\b/i;
 
 /** "N years in DFW" / "N years across Rowlett": the region list plus any `places` the caller knows. */
 function placePattern(places) {
@@ -173,9 +184,16 @@ function sentenceAround(text, start, end) {
   return text.slice(s, rel < 0 ? text.length : end + rel);
 }
 
+/** "12" → 12, "fifteen" → 15, "twenty-five" / "twenty five" → 25; null for anything else. */
 function toYears(token) {
-  const t = String(token).toLowerCase();
-  return /^\d+$/.test(t) ? Number(t) : NUM_WORDS[t] ?? null;
+  const t = String(token).toLowerCase().trim();
+  if (/^\d+$/.test(t)) return Number(t);
+  let total = 0;
+  for (const part of t.split(/[-\s]+/)) {
+    if (!(part in NUM_WORDS)) return null;
+    total += NUM_WORDS[part];
+  }
+  return total;
 }
 
 /**
@@ -216,8 +234,31 @@ function normalizePhoneLike(value) {
   return found.length ? found[0] : String(value).trim();
 }
 
+// Per-unit suffixes ("$25/day", "$99 per hour") are part of the price: an approved
+// bare "$99" does not approve "$99/hour". Units are normalized so "/hr" and
+// "per hour" agree.
+const UNIT_ALIASES = { hr: 'hour', hrs: 'hour', hours: 'hour', ft: 'foot', feet: 'foot', sqft: 'sq ft', 'sq. ft': 'sq ft' };
+const UNIT_RE = /(?:\/|\bper\s+)\s?([a-z]+(?:\.?\s?ft)?)\s*$/i;
+
+/** The per-unit word of a raw dollar phrase ("$25/day" → "day", "$99 per hr" → "hour"), or null. */
+function unitOf(raw) {
+  const m = String(raw).match(UNIT_RE);
+  if (!m) return null;
+  const unit = normalizeSpace(m[1]).toLowerCase();
+  return UNIT_ALIASES[unit] || unit;
+}
+
+/** Key for value+unit lookups: "99" for a bare amount, "99|day" for "$99/day". */
+function priceKey(raw) {
+  const v = dollarValue(raw);
+  if (v == null) return null;
+  const unit = unitOf(raw);
+  return unit ? `${v}|${unit}` : String(v);
+}
+
 function approvedPrices(list) {
   const values = new Set();
+  const keys = new Set();
   const raw = new Set();
   for (const entry of Array.isArray(list) ? list : []) {
     const s = String(entry);
@@ -226,9 +267,11 @@ function approvedPrices(list) {
       raw.add(normalizeSpace(amount).toLowerCase());
       const v = dollarValue(amount);
       if (v != null) values.add(v);
+      const key = priceKey(amount);
+      if (key != null) keys.add(key);
     }
   }
-  return { values, raw };
+  return { values, keys, raw };
 }
 
 function cityNames(policy) {
@@ -246,7 +289,10 @@ function factsContext(facts, weekSpec, policy) {
   const forbiddenPhrases = (Array.isArray(f.forbidden_phrases) ? f.forbidden_phrases : [])
     .filter(Boolean).map((s) => normalizeSpace(String(s)).toLowerCase());
   const approved = approvedPrices(f.approved_prices);
+  const phrase = phraseNumbers(unique(tenurePhrases));
   return {
+    phraseYears: phrase.years,
+    phraseSinceYears: phrase.sinceYears,
     phones: new Set(phones),
     knownIssuePhones: new Set(findPhoneNumbers(textOf(f.known_issues))),
     domain: f.domain ? String(f.domain).toLowerCase().replace(/^www\./, '') : null,
@@ -256,6 +302,7 @@ function factsContext(facts, weekSpec, policy) {
     tenurePhrases: unique(tenurePhrases),
     forbiddenPhrases: unique(forbiddenPhrases),
     approvedValues: approved.values,
+    approvedKeys: approved.keys,
     approvedRaw: approved.raw,
     places: unique([...cityNames(policy), ...list(f.service_area).map(String)]),
   };
@@ -266,12 +313,39 @@ function tenureGuidance(ctx) {
   return ctx.foundedYear != null ? `founded ${ctx.foundedYear}` : 'founding year unknown';
 }
 
+const PHRASE_YEARS_RE = new RegExp(`^${NUM_SRC}\\s*(?:\\+|-?plus)?\\s*${YRS_SRC}`, 'i');
+const PHRASE_SINCE_RE = /\b(?:since|est\.?|established|founded)\s+((?:19|20)\d{2})\b/i;
+
+/** The numbers the owner's tenure phrases encode: "five years" → years 5, "since 2021" → year 2021. */
+function phraseNumbers(phrases) {
+  const years = new Set();
+  const sinceYears = new Set();
+  for (const p of phrases) {
+    const y = p.match(PHRASE_YEARS_RE);
+    if (y && toYears(y[1]) != null) years.add(toYears(y[1]));
+    const s = p.match(PHRASE_SINCE_RE);
+    if (s) sinceYears.add(Number(s[1]));
+  }
+  return { years, sinceYears };
+}
+
+/**
+ * The claim starts with the owner phrase as whole words ("five years of
+ * experience"), not merely contains it: "twenty-five years" is not "five years".
+ */
+function startsWithPhrase(raw, phrase) {
+  return raw === phrase || raw.startsWith(`${phrase} `);
+}
+
 function claimIsConsistent(claim, ctx) {
   const raw = normalizeSpace(claim.raw).toLowerCase();
-  if (ctx.tenurePhrases.some((p) => raw.includes(p))) return true;
+  if (ctx.tenurePhrases.some((p) => startsWithPhrase(raw, p))) return true;
   if (claim.kind === 'decade') return false;
-  if (claim.kind === 'since' || claim.kind === 'founded') return ctx.foundedYear != null && claim.year === ctx.foundedYear;
-  return ctx.expectedYears != null && claim.years != null && claim.years === ctx.expectedYears;
+  if (claim.kind === 'since' || claim.kind === 'founded') {
+    return (ctx.foundedYear != null && claim.year === ctx.foundedYear) || ctx.phraseSinceYears.has(claim.year);
+  }
+  if (claim.years == null) return false;
+  return (ctx.expectedYears != null && claim.years === ctx.expectedYears) || ctx.phraseYears.has(claim.years);
 }
 
 /** Tenure violations in `text` as messages (no label). */
@@ -301,7 +375,10 @@ function tenureViolations(text, ctx) {
 function isApprovedAmount(raw, ctx) {
   if (ctx.approvedRaw.has(normalizeSpace(raw).toLowerCase())) return true;
   const v = dollarValue(raw);
-  return v != null && ctx.approvedValues.has(v);
+  if (v == null || !ctx.approvedValues.has(v)) return false;
+  // A bare amount matches any approved entry with that value; a per-unit amount
+  // must match an approved entry carrying the same unit.
+  return unitOf(raw) == null || ctx.approvedKeys.has(priceKey(raw));
 }
 
 /** Raw violations found in one text blob; each list holds strings. */
@@ -523,10 +600,15 @@ function localTagWords(policy, topicCity) {
   return unique([...words.filter((w) => w.length >= 4), ...REGION_TAG_WORDS]);
 }
 
+/**
+ * A tag is local when a city or region word starts or ends it, or is followed by
+ * "tx" inside it ("#RockwallElectrician", "#ServingAllenTX"). A bare substring is
+ * not enough: "#ChallengeAccepted" is not an Allen tag.
+ */
 function hasLocalTag(hashtags, words) {
   return list(hashtags).some((tag) => {
     const t = String(tag).toLowerCase().replace(/[^a-z0-9]/g, '');
-    return words.some((w) => t.includes(w)) || /^tx/.test(t) || /tx$/.test(t);
+    return words.some((w) => t.startsWith(w) || t.endsWith(w) || t.includes(`${w}tx`)) || /^tx/.test(t) || /tx$/.test(t);
   });
 }
 
