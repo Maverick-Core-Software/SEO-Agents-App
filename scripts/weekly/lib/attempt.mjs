@@ -80,6 +80,7 @@ export async function createAttempt({
   if (!store) throw new TypeError('createAttempt: store is required');
   if (!week_of) throw new TypeError('createAttempt: week_of is required');
   if (!mode) throw new TypeError('createAttempt: mode is required');
+  if (!Number.isFinite(new Date(now).getTime())) throw new TypeError(`createAttempt: now must be a valid date; got ${JSON.stringify(now)}`);
   const attemptId = id || makeAttemptId(week_of, now);
   const base = {
     id: attemptId,
@@ -134,7 +135,7 @@ export async function stageStart(store, attempt, name, now = new Date()) {
 
 /** Close a stage: status defaults to 'failed' when an error is given, else 'ok'. */
 export async function stageEnd(store, attempt, name, { status, error } = {}, now = new Date()) {
-  const previous = attempt.stages[name] || { started_at: iso(now) };
+  const previous = (attempt.stages || {})[name] || { started_at: iso(now) };
   const errText = errorText(error);
   const stage = {
     started_at: previous.started_at,

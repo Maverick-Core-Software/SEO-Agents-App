@@ -11,10 +11,12 @@ import {
   SITES_URL,
   PULLS,
   buildQueryUrl,
+  citiesForTagging,
   collectSearchConsole,
   findCity,
   loadSearchConsoleFetch,
   normalizeDays,
+  resolveNow,
   resolveTokenFile,
   rowsToObservations,
 } from '../lib/collectors/search-console.mjs';
@@ -85,6 +87,18 @@ describe('collectSearchConsole (injected gbpFetchImpl)', () => {
       assert.equal(call.options.method, 'POST');
       assert.deepEqual(JSON.parse(call.options.body), { startDate, endDate, dimensions, rowLimit });
     });
+
+    // Pin the actual dates, not just agreement with dateRange(): the range
+    // ends 2 days before now (Search Console lag) and spans 28 / 90
+    // inclusive days. NOW is local noon, so this holds in any machine zone.
+    const ranges = gbpFetchImpl.calls.slice(1).map((c) => {
+      const b = JSON.parse(c.options.body);
+      return `${b.startDate}..${b.endDate}`;
+    });
+    assert.deepEqual(ranges, [
+      '2026-08-06..2026-09-02', '2026-08-06..2026-09-02', '2026-08-06..2026-09-02',
+      '2026-06-05..2026-09-02', '2026-06-05..2026-09-02', '2026-06-05..2026-09-02',
+    ]);
   });
 
   it('emits one schema-valid ok observation per row', async () => {
@@ -403,5 +417,114 @@ describe('collectSearchConsole (real auth module, throwaway token file, injected
       fetchImpl: fakeFetch({ fail: { ok: false, status: 401, text: async () => 'unauthorized', json: async () => ({}) } }),
     });
     await assert.rejects(failing(SITES_URL), (err) => err.status === 401 && err.body === 'unauthorized' && !err.message.includes(TOKEN));
+  });
+});
+
+describe('review findings: now handling, policy fallback, row ids', () => {
+  const MISSING_POLICY = path.join(__dirname, 'fixtures', 'collect-1-no-such-policy.json');
+
+  it('resolveNow: undefined/null mean the current time, Date/ISO pass through, junk throws a TypeError naming the collector', () => {
+    const before = Date.now();
+    for (const v of [undefined, null]) {
+      const t = resolveNow(v, 'x').getTime();
+      assert.ok(t >= before && t <= Date.now() + 1000, `resolveNow(${v}) is the current time`);
+    }
+    assert.equal(resolveNow(NOW, 'x'), NOW);
+    assert.equal(resolveNow(NOW.toISOString(), 'x').getTime(), NOW.getTime());
+    assert.throws(() => resolveNow('not a date', 'collectSearchConsole'), { name: 'TypeError', message: /collectSearchConsole: invalid now: not a date/ });
+    assert.throws(() => resolveNow(new Date(NaN), 'x'), TypeError);
+  });
+
+  it('collectSearchConsole: null now is the current time (not 1970); an unparseable now rejects loudly instead of a RangeError', async () => {
+    const before = Date.now();
+    const [obs] = await collectSearchConsole({ attemptId: ATTEMPT, now: null, gbpFetchImpl: fakeGbpFetch(), policy });
+    assert.ok(Date.parse(obs.retrieved_at) >= before - 1000);
+    assert.notEqual(obs.retrieved_at.slice(0, 4), '1970');
+    await assert.rejects(
+      collectSearchConsole({ attemptId: ATTEMPT, now: 'yesterday-ish', gbpFetchImpl: fakeGbpFetch(), policy }),
+      { name: 'TypeError', message: /collectSearchConsole: invalid now/ },
+    );
+  });
+
+  it('an unreadable policy file is not a Search Console outage: rows still come back, untagged', async () => {
+    const gbpFetchImpl = fakeGbpFetch();
+    const observations = await collectSearchConsole({ attemptId: ATTEMPT, now: NOW, gbpFetchImpl, policyPath: MISSING_POLICY });
+    assert.equal(gbpFetchImpl.calls.length, 7, 'the read went ahead');
+    assert.ok(observations.length > 0);
+    assert.ok(observations.every((o) => o.status === 'ok' && o.geography === null));
+
+    assert.deepEqual(citiesForTagging(undefined, MISSING_POLICY), []);
+    assert.deepEqual(citiesForTagging(null, MISSING_POLICY), [], 'null policy falls back to the file');
+    assert.deepEqual(citiesForTagging({ cities: [{ name: 'Gotham' }] }, MISSING_POLICY), ['Gotham'], 'an injected policy never touches the file');
+    assert.ok(citiesForTagging(undefined).includes('Rowlett'), 'the default path is the real policy');
+  });
+
+  it('row ids do not collide when a key contains spaces that mimic a different key split', () => {
+    const ctx = {
+      attemptId: ATTEMPT, retrievedAt: NOW.toISOString(), days: 28, dimensions: ['query', 'page'],
+      period: { start: '2026-08-06', end: '2026-09-02' }, siteUrl: GRIZZLY_SITE, cities: [],
+    };
+    const [a, b] = rowsToObservations([{ keys: ['a b', 'c'], clicks: 2 }, { keys: ['a', 'b c'], clicks: 1 }], ctx);
+    assert.notEqual(a.id, b.id);
+  });
+});
+
+describe('review findings: concurrent token files and a signal-ignoring fetch', () => {
+  let tmpDir;
+  let tokenA;
+  let tokenB;
+  let tokenC;
+  let savedEnv;
+
+  function jsonResponse(payload) {
+    return { ok: true, status: 200, json: async () => payload, text: async () => JSON.stringify(payload) };
+  }
+
+  before(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'collect-1-sc-race-'));
+    const expiry = Date.parse('2099-01-01T00:00:00Z');
+    tokenA = path.join(tmpDir, 'token-a.json');
+    tokenB = path.join(tmpDir, 'token-b.json');
+    tokenC = path.join(tmpDir, 'token-c.json');
+    fs.writeFileSync(tokenA, JSON.stringify({ token: 'token-A-0123456789', expiry_date: expiry }));
+    fs.writeFileSync(tokenB, JSON.stringify({ token: 'token-B-0123456789', expiry_date: expiry }));
+    fs.writeFileSync(tokenC, JSON.stringify({ token: 'token-C-0123456789', expiry_date: expiry }));
+    savedEnv = process.env.GBP_TOKEN_FILE;
+  });
+
+  after(() => {
+    if (savedEnv === undefined) delete process.env.GBP_TOKEN_FILE;
+    else process.env.GBP_TOKEN_FILE = savedEnv;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  // Runs first so neither token file's auth module is already cached: the
+  // race being tested is the first evaluation reading GBP_TOKEN_FILE.
+  it('two concurrent collectors with different token files each send their own token and leave GBP_TOKEN_FILE as it was', async () => {
+    process.env.GBP_TOKEN_FILE = 'C:/sentinel/grizzly-gbp.json';
+    const seen = { a: [], b: [] };
+    const fetchFor = (bucket) => async (url, options) => {
+      seen[bucket].push(options.headers.Authorization);
+      return jsonResponse(String(url) === SITES_URL ? fixture.sites : { rows: [] });
+    };
+    const [a, b] = await Promise.all([
+      collectSearchConsole({ attemptId: ATTEMPT, now: NOW, tokenFile: tokenA, fetchImpl: fetchFor('a'), policy }),
+      collectSearchConsole({ attemptId: ATTEMPT, now: NOW, tokenFile: tokenB, fetchImpl: fetchFor('b'), policy }),
+    ]);
+    assert.deepEqual(a, []);
+    assert.deepEqual(b, []);
+    assert.equal(seen.a.length, 7);
+    assert.equal(seen.b.length, 7);
+    assert.ok(seen.a.every((h) => h === 'Bearer token-A-0123456789'), 'collector A used token A throughout');
+    assert.ok(seen.b.every((h) => h === 'Bearer token-B-0123456789'), 'collector B used token B throughout');
+    assert.equal(process.env.GBP_TOKEN_FILE, 'C:/sentinel/grizzly-gbp.json');
+  });
+
+  it('times out a fetchImpl that ignores the abort signal and never settles', async () => {
+    const fetchImpl = () => new Promise(() => {});
+    const observations = await collectSearchConsole({ attemptId: ATTEMPT, now: NOW, tokenFile: tokenC, fetchImpl, policy, timeoutMs: 20 });
+    assert.equal(observations.length, 1);
+    assert.equal(observations[0].status, 'unavailable');
+    assert.match(observations[0].note, /timed out after 20 ms/);
   });
 });

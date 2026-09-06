@@ -1,0 +1,125 @@
+[
+  {
+    "id": "serp:e2e-panel-rockwall",
+    "attempt_id": "FIXTURE",
+    "source": "serpapi",
+    "scope": "electrical panel upgrade Rockwall",
+    "geography": "Rockwall",
+    "period": null,
+    "status": "ok",
+    "metric": "serp",
+    "value": {
+      "query": "electrical panel upgrade Rockwall",
+      "service_key": "panel_upgrade",
+      "city": "Rockwall",
+      "template": "electrical panel upgrade {city}",
+      "location": "Dallas-Fort Worth, Texas, United States",
+      "from_cache": true,
+      "fetched_at": "2026-09-03T02:10:00.000Z",
+      "organic": [
+        { "position": 1, "title": "Electrical Panel Upgrade Rockwall TX | Milestone", "link": "https://www.callmilestone.com/electrical/panel-upgrade", "domain": "callmilestone.com" },
+        { "position": 2, "title": "Panel Replacement Rockwall | Berkeys", "link": "https://www.berkeys.com/electrical/panel", "domain": "berkeys.com" },
+        { "position": 3, "title": "Rockwall Electrician - Panel Upgrades | W3 Electric", "link": "https://callw3.com/panel-upgrades/", "domain": "callw3.com" },
+        { "position": 4, "title": "How much does a panel upgrade cost? - Reddit", "link": "https://www.reddit.com/r/rockwall/comments/panel", "domain": "reddit.com" },
+        { "position": 12, "title": "Electrical Panel Upgrades & Replacement DFW | Grizzly Electrical Solutions", "link": "https://www.grizzlyelectricaltx.com/panel-upgrades/", "domain": "grizzlyelectricaltx.com" }
+      ],
+      "paa": [
+        "How much does it cost to upgrade an electrical panel to 200 amps?",
+        "How do I know if my electrical panel needs to be replaced?",
+        "Do I need a permit to replace an electrical panel in Texas?"
+      ],
+      "local_pack": [
+        { "title": "Milestone Electric, A/C, & Plumbing", "rating": 4.9, "reviews": 1500 },
+        { "title": "Rockwall Electric Co", "rating": 4.8, "reviews": 212 },
+        { "title": "W3 Electric", "rating": 4.9, "reviews": 640 }
+      ],
+      "grizzly_organic_position": 12,
+      "grizzly_in_local_pack": false
+    },
+    "raw_ref": "cache:e2e-panel-rockwall",
+    "retrieved_at": "2026-09-04T17:00:00.000Z",
+    "note": null
+  },
+  {
+    "id": "serp:e2e-ev-garland",
+    "attempt_id": "FIXTURE",
+    "source": "serpapi",
+    "scope": "ev charger installation Garland",
+    "geography": "Garland",
+    "period": null,
+    "status": "ok",
+    "metric": "serp",
+    "value": {
+      "query": "ev charger installation Garland",
+      "service_key": "ev_charger",
+      "city": "Garland",
+      "template": "ev charger installation {city}",
+      "location": "Dallas-Fort Worth, Texas, United States",
+      "from_cache": true,
+      "fetched_at": "2026-09-03T02:11:00.000Z",
+      "organic": [
+        { "position": 1, "title": "EV Charger Installation Garland TX | ElectricMan", "link": "https://www.electricman.com/ev-charger", "domain": "electricman.com" },
+        { "position": 2, "title": "Home EV Charger Installation DFW | Grizzly Electrical Solutions", "link": "https://www.grizzlyelectricaltx.com/ev-charger-installation/", "domain": "grizzlyelectricaltx.com" }
+      ],
+      "paa": [],
+      "local_pack": [
+        { "title": "Grizzly Electrical Solutions", "rating": 5.0, "reviews": 154 },
+        { "title": "ElectricMan", "rating": 4.8, "reviews": 583 },
+        { "title": "Garland Electric", "rating": 4.7, "reviews": 98 }
+      ],
+      "grizzly_organic_position": 2,
+      "grizzly_in_local_pack": true
+    },
+    "raw_ref": "cache:e2e-ev-garland",
+    "retrieved_at": "2026-09-04T17:00:00.000Z",
+    "note": null
+  },
+  {
+    "id": "serp:e2e-electrician-rowlett",
+    "attempt_id": "FIXTURE",
+    "source": "serpapi",
+    "scope": "electrician Rowlett tx",
+    "geography": "Rowlett",
+    "period": null,
+    "status": "ok",
+    "metric": "serp",
+    "value": {
+      "query": "electrician Rowlett tx",
+      "service_key": "troubleshooting",
+      "city": "Rowlett",
+      "template": "electrician {city} tx",
+      "location": "Dallas-Fort Worth, Texas, United States",
+      "from_cache": false,
+      "fetched_at": "2026-09-04T17:00:00.000Z",
+      "organic": [
+        { "position": 1, "title": "Rowlett Electrician | Grizzly Electrical Solutions", "link": "https://www.grizzlyelectricaltx.com/", "domain": "grizzlyelectricaltx.com" },
+        { "position": 2, "title": "Electrician Rowlett TX | W3 Electric", "link": "https://callw3.com/rowlett/", "domain": "callw3.com" }
+      ],
+      "paa": [],
+      "local_pack": [
+        { "title": "Grizzly Electrical Solutions", "rating": 5.0, "reviews": 154 },
+        { "title": "W3 Electric", "rating": 4.9, "reviews": 640 },
+        { "title": "Rowlett Electric", "rating": 4.6, "reviews": 45 }
+      ],
+      "grizzly_organic_position": 1,
+      "grizzly_in_local_pack": true
+    },
+    "raw_ref": "serpapi:e2e-electrician-rowlett",
+    "retrieved_at": "2026-09-04T17:00:00.000Z",
+    "note": null
+  },
+  {
+    "id": "serp:e2e-generator-wylie",
+    "attempt_id": "FIXTURE",
+    "source": "serpapi",
+    "scope": "generator interlock Wylie tx",
+    "geography": "Wylie",
+    "period": null,
+    "status": "unavailable",
+    "metric": "serp",
+    "value": null,
+    "raw_ref": null,
+    "retrieved_at": "2026-09-04T17:00:00.000Z",
+    "note": "cap reached"
+  }
+]

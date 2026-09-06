@@ -1,10 +1,12 @@
 // scripts/weekly/test/core-1.store.test.mjs
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 import { createFileStore, DEFAULT_LEASE_TTL_MS } from '../lib/store.mjs';
 import { AttemptSchema, RevisionSchema, PlanItemSchema } from '../lib/schemas.mjs';
 
@@ -311,21 +313,145 @@ describe('listPublishedHistory', () => {
     assert.deepEqual(await fresh('hist-none').listPublishedHistory({ weeks: 8 }), []);
   });
 
-  it('returns the array in history.json; filters by weeks when now is given; keeps undated rows', async () => {
+  it('applies the weeks window against now (weeks defaults to 8, like the Supabase store); undated rows are kept; weeks 0 = everything', async () => {
     const store = fresh('hist');
     fs.mkdirSync(store.dir, { recursive: true });
     fs.copyFileSync(fixture, path.join(store.dir, 'history.json'));
-    const all = await store.listPublishedHistory({ weeks: 8 });
-    assert.equal(all.length, 4);
+    assert.equal((await store.listPublishedHistory({ weeks: 0 })).length, 4);
     const recent = await store.listPublishedHistory({ weeks: 8, now: NOW });
     assert.deepEqual(recent.map((p) => p.platform_post_id), ['gbp-1', 'fb-1', null]);
+    assert.deepEqual(await store.listPublishedHistory({ now: NOW }), recent, 'weeks defaults to 8');
+    assert.deepEqual((await store.listPublishedHistory({ weeks: 1.5, now: NOW })).map((p) => p.platform_post_id), ['gbp-1', null]);
+    // Without `now` the clock is the fallback: the window still applies, undated rows always survive.
+    const live = await store.listPublishedHistory({ weeks: 8 });
+    assert.ok(live.length <= 4 && live.some((p) => p.post_date === null), 'clock fallback filters, keeps undated rows');
+    await assert.rejects(store.listPublishedHistory({ weeks: 8, now: 'yesterday' }), TypeError);
   });
 
   it('accepts an object with a posts array', async () => {
     const store = fresh('hist-obj');
     fs.mkdirSync(store.dir, { recursive: true });
     fs.writeFileSync(path.join(store.dir, 'history.json'), JSON.stringify({ posts: [{ platform: 'gbp', post_date: '2026-08-01' }] }));
-    assert.equal((await store.listPublishedHistory({})).length, 1);
-    assert.equal((await store.listPublishedHistory()).length, 1);
+    assert.equal((await store.listPublishedHistory({ weeks: 0 })).length, 1);
+    assert.equal((await store.listPublishedHistory({ now: new Date('2026-08-02T00:00:00Z') })).length, 1);
+    assert.equal((await store.listPublishedHistory({ now: new Date('2026-12-01T00:00:00Z') })).length, 0);
+  });
+});
+
+describe('leases: argument validation and garbage handling (reviewer additions)', () => {
+  const week = '2026-09-07';
+
+  it('rejects an invalid now or a non-positive ttlMs with a TypeError and writes no lease', async () => {
+    const store = fresh('lease-args');
+    await assert.rejects(store.acquireLease({ week_of: week, attempt_id: 'att-1', now: new Date('nope') }), TypeError);
+    await assert.rejects(store.acquireLease({ week_of: week, attempt_id: 'att-1', now: 'not a date' }), /now must be a valid date/);
+    for (const ttlMs of [0, -1, NaN, Infinity, '10']) {
+      await assert.rejects(store.acquireLease({ week_of: week, attempt_id: 'att-1', ttlMs, now: NOW }), /ttlMs must be a positive number/);
+    }
+    assert.equal(await store.getLease(week), null);
+    assert.equal(fs.existsSync(path.join(store.dir, 'leases')), false);
+  });
+
+  it('waits for another process\'s lease lock and then sees what that process wrote', async () => {
+    const store = fresh('lease-lock-wait');
+    const lock = path.join(store.dir, 'leases', `${week}.json.lock`);
+    fs.mkdirSync(path.dirname(lock), { recursive: true });
+    fs.writeFileSync(lock, 'other-process\n');
+    const other = { attempt_id: 'att-9', lease_until: new Date(NOW.getTime() + 60_000).toISOString() };
+    const started = Date.now();
+    const pending = store.acquireLease({ week_of: week, attempt_id: 'att-1', ttlMs: 60_000, now: NOW });
+    setTimeout(() => { fs.writeFileSync(path.join(store.dir, 'leases', `${week}.json`), JSON.stringify(other)); fs.rmSync(lock); }, 60);
+    assert.deepEqual(await pending, { ok: false, holder: 'att-9', lease_until: other.lease_until });
+    assert.ok(Date.now() - started >= 55, 'acquire waited for the lock');
+    assert.equal(fs.existsSync(lock), false, 'lock released after the critical section');
+    const release = store.releaseLease({ week_of: week, attempt_id: 'att-9' });
+    assert.deepEqual(await release, { ok: true });
+  });
+
+  it('a stale lock (holder died) is broken; a busy lock times out with an Error and leaves the lease alone', async () => {
+    const store = createFileStore(path.join(root, 'lease-lock-stale'), { lockWaitMs: 150, lockStaleMs: 1000 });
+    const lock = path.join(store.dir, 'leases', `${week}.json.lock`);
+    fs.mkdirSync(path.dirname(lock), { recursive: true });
+    fs.writeFileSync(lock, 'dead-process\n');
+    const old = (Date.now() - 5000) / 1000;
+    fs.utimesSync(lock, old, old);
+    assert.equal((await store.acquireLease({ week_of: week, attempt_id: 'att-1', ttlMs: 60_000, now: NOW })).ok, true);
+    assert.equal(fs.existsSync(lock), false);
+    fs.writeFileSync(lock, 'busy-process\n');
+    await assert.rejects(store.acquireLease({ week_of: week, attempt_id: 'att-2', ttlMs: 60_000, now: NOW }), /lease lock busy/);
+    await assert.rejects(store.releaseLease({ week_of: week, attempt_id: 'att-1' }), /lease lock busy/);
+    assert.equal((await store.getLease(week)).attempt_id, 'att-1', 'lease untouched by the callers that could not lock');
+    assert.deepEqual(fs.readdirSync(path.dirname(lock)).sort(), [`${week}.json`, `${week}.json.lock`], 'no .stale/.tmp leftovers');
+  });
+
+  it('release removes a lease nobody can hold (unparseable / no attempt_id) and reports ok', async () => {
+    const store = fresh('lease-release-garbage');
+    const file = path.join(store.dir, 'leases', `${week}.json`);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, '{not json');
+    assert.deepEqual(await store.releaseLease({ week_of: week, attempt_id: 'att-1' }), { ok: true });
+    assert.equal(fs.existsSync(file), false);
+    fs.writeFileSync(file, JSON.stringify({ lease_until: new Date(NOW.getTime() + 60_000).toISOString() }));
+    assert.deepEqual(await store.releaseLease({ week_of: week, attempt_id: 'att-1' }), { ok: true });
+    assert.equal(fs.existsSync(file), false);
+  });
+
+  it('taking over an expired or corrupt lease leaves no .stale or .tmp files behind', async () => {
+    const store = fresh('lease-clean');
+    const file = path.join(store.dir, 'leases', `${week}.json`);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({ attempt_id: 'old', lease_until: new Date(NOW.getTime() - 1).toISOString() }));
+    assert.equal((await store.acquireLease({ week_of: week, attempt_id: 'att-1', ttlMs: 1000, now: NOW })).ok, true);
+    fs.writeFileSync(file, 'garbage');
+    assert.equal((await store.acquireLease({ week_of: week, attempt_id: 'att-2', ttlMs: 1000, now: NOW })).ok, true);
+    assert.equal((await store.acquireLease({ week_of: week, attempt_id: 'att-2', ttlMs: 1000, now: NOW })).ok, true, 'renewal');
+    const leftovers = fs.readdirSync(path.dirname(file)).filter((n) => n !== `${week}.json`);
+    assert.deepEqual(leftovers, []);
+  });
+});
+
+describe('leases across OS processes (the in-process queue cannot serialise these)', () => {
+  const week = '2026-09-07';
+  const WORKER = path.join(here, 'core-1.lease-worker.mjs');
+  const execFileP = promisify(execFile);
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  /** Spawn one worker per id, hold them at a gate until all are ready, then release them together. */
+  async function race(dir, ids, { now = NOW, ttlMs = 60_000 } = {}) {
+    const gate = path.join(dir, '..', 'go');
+    const runs = ids.map((id) => execFileP(process.execPath, [WORKER, dir, week, id, now.toISOString(), String(ttlMs), gate], { timeout: 30_000 }));
+    const deadline = Date.now() + 15_000;
+    while (ids.some((id) => !fs.existsSync(`${gate}.ready.${id}`)) && Date.now() < deadline) await sleep(2);
+    fs.writeFileSync(gate, '');
+    const outputs = await Promise.all(runs);
+    return outputs.map((o) => JSON.parse(o.stdout));
+  }
+
+  it('concurrent processes racing for a fresh week admit exactly one, and the file names the winner', async () => {
+    const dir = fs.mkdtempSync(path.join(root, 'xproc-fresh-'));
+    const store = createFileStore(path.join(dir, 'store'));
+    const results = await race(store.dir, ['p1', 'p2', 'p3', 'p4', 'p5', 'p6']);
+    const winners = results.filter((r) => r.ok);
+    assert.equal(winners.length, 1, JSON.stringify(results));
+    for (const r of results.filter((r) => !r.ok)) {
+      assert.equal(r.error, undefined, 'losers are refused, not crashed');
+      assert.equal(r.holder, winners[0].attempt_id);
+      assert.equal(r.lease_until, winners[0].lease_until);
+    }
+    assert.equal((await store.getLease(week)).attempt_id, winners[0].attempt_id);
+    assert.deepEqual(fs.readdirSync(path.join(store.dir, 'leases')), [`${week}.json`], 'no stale/tmp leftovers');
+  });
+
+  it('concurrent processes taking over an expired lease admit exactly one', async () => {
+    const dir = fs.mkdtempSync(path.join(root, 'xproc-expired-'));
+    const store = createFileStore(path.join(dir, 'store'));
+    await store.acquireLease({ week_of: week, attempt_id: 'old', ttlMs: 1000, now: NOW });
+    const later = new Date(NOW.getTime() + 60_000);
+    const results = await race(store.dir, ['q1', 'q2', 'q3', 'q4', 'q5', 'q6'], { now: later });
+    const winners = results.filter((r) => r.ok);
+    assert.equal(winners.length, 1, JSON.stringify(results));
+    assert.ok(results.every((r) => r.error === undefined), 'losers are refused, not crashed');
+    assert.equal((await store.getLease(week)).attempt_id, winners[0].attempt_id);
+    assert.deepEqual(fs.readdirSync(path.join(store.dir, 'leases')), [`${week}.json`]);
   });
 });

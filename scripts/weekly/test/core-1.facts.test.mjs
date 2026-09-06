@@ -159,3 +159,45 @@ describe('parseFacts edge cases', () => {
     assert.throws(() => loadFacts(path.join(here, 'fixtures', 'does-not-exist.md')), /ENOENT/);
   });
 });
+
+describe('parseFacts robustness (reviewer additions)', () => {
+  it('a UTF-8 BOM hides neither the title nor a first-line heading; raw keeps the bytes', () => {
+    const BOM = String.fromCharCode(0xfeff);
+    const withTitle = `${BOM}# Bom Co — Facts\n\n## Identity\n\n- Founded: 2018\n`;
+    const a = parseFacts(withTitle);
+    assert.equal(a.raw, withTitle);
+    assert.equal(a.business_name, 'Bom Co', 'title fallback still works behind a BOM');
+    assert.equal(a.founded_year, 2018);
+    const b = parseFacts(`${BOM}## Identity\n\n- Business name: Bom Co\n`);
+    assert.equal(b.business_name, 'Bom Co', 'a heading on the first line is still a heading');
+  });
+
+  it('typographic quotes around tenure and forbidden phrases are read like straight quotes', () => {
+    const facts = parseFacts('## Identity\n\n- Founded: 2020. Say “since 2020” or “six years”. Never “over a decade”. Never "3+ years".\n');
+    assert.deepEqual(facts.tenure_phrases, ['since 2020', 'six years']);
+    assert.equal(facts.tenure_phrase, 'since 2020');
+    assert.deepEqual(facts.forbidden_phrases, ['over a decade', '3+ years']);
+  });
+
+  it('a bulleted priority-services section yields one service per bullet (ordinals stripped)', () => {
+    const facts = parseFacts('## Priority services\n\n- Panel upgrades\n- EV chargers, generator inlets\n- Light commercial second.\n');
+    assert.deepEqual(facts.priority_services, ['Panel upgrades', 'EV chargers', 'generator inlets', 'Light commercial']);
+  });
+
+  it('a Website/Domain line without http(s) still yields the domain (never the email domain); website_url stays null', () => {
+    const a = parseFacts('## Contact\n\n- Email: hi@mail.example\n- Website: www.Acme.Example is the only website domain.\n');
+    assert.equal(a.domain, 'acme.example');
+    assert.equal(a.website_url, null);
+    assert.equal(a.email, 'hi@mail.example');
+    const b = parseFacts('## Contact\n\n- Domain: acme.example/\n');
+    assert.equal(b.domain, 'acme.example');
+    const c = parseFacts('## Contact\n\n- Website: https://www.acme.example/ (bare mention: other.example)\n');
+    assert.equal(c.domain, 'acme.example', 'a real URL wins over the bare-host fallback');
+    assert.equal(parseFacts('## Contact\n\n- Email: hi@mail.example\n').domain, null, 'no website line, no domain');
+  });
+
+  it('a "Homepage ..." heading before the pages section does not shadow it', () => {
+    const facts = parseFacts('## Homepage notes\n\nThe /hero/ block is fine.\n\n## Pages that already exist\n\nService and info pages: /a/, /b/\n');
+    assert.deepEqual(facts.existing_pages, ['/a/', '/b/']);
+  });
+});

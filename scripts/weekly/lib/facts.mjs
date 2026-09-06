@@ -12,7 +12,10 @@ const EMAIL_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/;
 const URL_RE = /https?:\/\/[^\s)]+/;
 const YEAR_RE = /\b(?:19|20)\d{2}\b/;
 const PATH_RE = /\/[a-z0-9][a-z0-9-]*\//gi;
-const QUOTED_RE = /"([^"]+)"/g;
+// Straight or typographic double quotes: editors often turn "since 2021" into “since 2021”.
+const QUOTED_RE = /["“]([^"“”]+)["”]/g;
+// Bare host for a `Website:` line written without a scheme (www.example.com, example.com/).
+const DOMAIN_RE = /\b(?:[a-z0-9-]+\.)+[a-z]{2,}\b/i;
 
 /** Split markdown into `##` sections: [{ heading, lines }]. Text before the first heading has heading ''. */
 function splitSections(lines) {
@@ -103,9 +106,10 @@ function quotedAfter(text, keyword) {
   return unique(out);
 }
 
+/** Priority services: comma lists in paragraphs, or one service per bullet; ordinal words stripped. */
 function parsePriorityServices(section) {
   const out = [];
-  for (const para of paragraphs(section)) {
+  for (const para of [...paragraphs(section), ...bullets(section)]) {
     for (const s of sentences(para)) {
       for (const item of s.split(',')) {
         const cleaned = item.trim().replace(/\s+(first|second|third|fourth|last)$/i, '').trim();
@@ -119,7 +123,8 @@ function parsePriorityServices(section) {
 /** Parse facts markdown text. Pure; exported for tests and fixtures. */
 export function parseFacts(text) {
   const raw = String(text);
-  const lines = raw.replace(/\r\n?/g, '\n').split('\n');
+  // `raw` keeps the file's bytes; parsing drops a UTF-8 BOM and normalises line endings.
+  const lines = (raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw).replace(/\r\n?/g, '\n').split('\n');
   const title = (lines.find((l) => /^#\s+/.test(l)) || '').replace(/^#\s+/, '').trim();
   const sections = splitSections(lines);
 
@@ -127,7 +132,8 @@ export function parseFacts(text) {
   const contact = bullets(findSection(sections, 'contact'));
   const hoursSection = findSection(sections, 'hours');
   const platformSection = findSection(sections, 'platform');
-  const pagesSection = findSection(sections, 'page');
+  // Prefer the plural ("Pages that already exist") so a "Homepage ..." heading cannot shadow it.
+  const pagesSection = findSection(sections, 'pages') || findSection(sections, 'page');
   const prioritySection = findSection(sections, 'priority');
   const issuesSection = findSection(sections, 'known', 'issue');
   const pricesSection = findSection(sections, 'approved', 'price');
@@ -159,6 +165,12 @@ export function parseFacts(text) {
   let domain = null;
   if (website_url) {
     try { domain = new URL(website_url).hostname.replace(/^www\./, ''); } catch { domain = null; }
+  }
+  if (!domain) {
+    // A `Website:` / `Domain:` bullet written without http(s): still the only allowed domain.
+    const bare = field(contact, 'Website') || field(contact, 'Domain');
+    const host = bare ? bare.match(DOMAIN_RE) : null;
+    if (host) domain = host[0].toLowerCase().replace(/^www\./, '');
   }
 
   // Pages

@@ -1,0 +1,16 @@
+{
+  "posts": [
+    { "platform": "facebook", "post_date": "2026-08-31", "service": "Electrical Troubleshooting & Repair", "hook": "Flickering lights in Rockwall? It is rarely the bulb.", "status": "posted", "platform_post_id": "123456789_333", "photo_file": "IMG_3001.JPG", "city": "Rockwall", "type": "photo", "day": 1 },
+    { "platform": "gbp", "post_date": "2026-09-01", "service": "Recessed Lighting Installation", "hook": "Brighter kitchens in Sachse before the holidays", "status": "posted", "platform_post_id": "gbp-2026-09-01", "photo_file": "IMG_2990.JPG", "city": "Sachse", "type": null, "day": 5 },
+    { "platform": "gbp", "post_date": "2026-08-28", "service": "EV Charger Installation", "hook": "Charging at home in Rowlett just got easier", "status": "posted", "platform_post_id": "gbp-2026-08-28", "photo_file": "ev-charger-garage.jpg", "city": "Rowlett", "type": null, "day": 1 },
+    { "platform": "facebook", "post_date": "2026-08-26", "service": "EV Charger Installation", "hook": "Thinking about an EV? Read this first.", "status": "posted", "platform_post_id": "123456789_111", "photo_file": "IMG_2950.JPG", "city": "Rowlett", "type": "carousel", "day": 3 },
+    { "platform": "gbp", "post_date": "2026-08-21", "service": "Electrical Troubleshooting & Repair", "hook": "Breaker keeps tripping in Rockwall?", "status": "posted", "platform_post_id": "gbp-2026-08-21", "photo_file": "IMG_2901.JPG", "city": "Rockwall", "type": null, "day": 1 },
+    { "platform": "facebook", "post_date": "2026-08-19", "service": "Generator Inlet, Interlock & Installation", "hook": "Storm season is not over yet.", "status": "posted", "platform_post_id": "123456789_222", "photo_file": "IMG_2877.JPG", "city": null, "type": "photo", "day": 3 },
+    { "platform": "gbp", "post_date": "2026-08-14", "service": "Whole-Home Surge Protection", "hook": "Surge protection before the next storm", "status": "posted", "platform_post_id": "gbp-2026-08-14", "photo_file": "IMG_2702.JPG", "city": null, "type": null, "day": 1 },
+    { "platform": "gbp", "post_date": "2026-09-03", "service": "Ceiling Fan Installation", "hook": "Ceiling fans before the fall cool-down", "status": "pending_approval", "platform_post_id": null, "photo_file": null, "city": null, "type": null, "day": 7 }
+  ],
+  "website_tasks": [
+    { "title": "Fix the primary navigation Contact link (/contact/ returns 404)", "type": "seo_fix", "status": "open", "updated_at": "2026-08-20T15:00:00+00:00" },
+    { "title": "Owner to supply the three homepage stat counter numbers", "type": "alert", "status": "waiting_owner", "updated_at": "2026-08-13T15:00:00+00:00" }
+  ]
+}

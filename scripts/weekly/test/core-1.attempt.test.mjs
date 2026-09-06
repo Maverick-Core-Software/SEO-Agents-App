@@ -345,3 +345,24 @@ describe('helpers', () => {
     });
   });
 });
+
+describe('reviewer additions', () => {
+  it('createAttempt rejects an invalid now with a TypeError before taking a lease', async () => {
+    const store = fresh('create-bad-now');
+    await assert.rejects(createAttempt(baseArgs(store, { now: new Date('nope') })), TypeError);
+    await assert.rejects(createAttempt(baseArgs(store, { now: 'not a date' })), /now must be a valid date/);
+    assert.equal(await store.getLease(WEEK), null);
+  });
+
+  it('stageEnd and finishAttempt tolerate an attempt record whose stages map is missing', async () => {
+    const store = fresh('stage-nostages');
+    const attempt = await createAttempt(baseArgs(store));
+    delete attempt.stages;
+    await stageEnd(store, attempt, 'compare', { status: 'skipped', error: 'no legacy outputs' }, at(10));
+    assert.deepEqual(attempt.stages.compare, { started_at: at(10).toISOString(), finished_at: at(10).toISOString(), status: 'skipped', error: 'no legacy outputs' });
+    delete attempt.stages;
+    await finishAttempt(store, attempt, {}, at(20));
+    assert.equal(attempt.status, 'succeeded');
+    assert.deepEqual((await store.getAttempt(attempt.id)).stages, {}, 'the persisted stages map is replaced, not merged with stale data');
+  });
+});

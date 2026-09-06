@@ -5,7 +5,9 @@
 //   revisions/<id>.json  items/<revision_id>.jsonl   history.json (optional, read-only)
 // Every write is tmp + rename so a crash never leaves a half-written record, and
 // writes to the same path are serialised in-process so parallel collectors can
-// append observations for one attempt without losing lines. Records are validated
+// append observations for one attempt without losing lines. Lease changes also take
+// a transient `leases/<week_of>.json.lock` (O_EXCL) so two pipeline processes cannot
+// both be admitted for the same week. Records are validated
 // against lib/schemas.mjs on the way in; a schema-invalid record is a bug upstream
 // and is refused rather than persisted.
 import fs from 'node:fs/promises';
@@ -21,9 +23,14 @@ import {
 const DEFAULT_LEASE_TTL_MS = 30 * 60 * 1000;
 const SAFE_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
+/** How long acquire/release wait for another process's lease lock, and when a lock counts as abandoned. */
+const DEFAULT_LOCK_WAIT_MS = 10 * 1000;
+const DEFAULT_LOCK_STALE_MS = 30 * 1000;
+
 let tmpCounter = 0;
 const queues = new Map();
 const noop = () => {};
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** Run `fn` after every earlier job queued under `key` has settled. Returns fn's promise. */
 function serialize(key, fn) {
@@ -53,21 +60,30 @@ function validate(schema, value, label) {
 
 const isMissing = (e) => e && e.code === 'ENOENT';
 
+/** Windows can refuse to rename over a file an indexer/AV has briefly open; retry a few times. */
+async function renameWithRetry(from, to) {
+  for (let attempt = 1; ; attempt++) {
+    try { await fs.rename(from, to); return; }
+    catch (e) {
+      if (attempt >= 4 || !['EPERM', 'EBUSY', 'EACCES'].includes(e.code)) throw e;
+      await sleep(25 * attempt);
+    }
+  }
+}
+
 async function writeAtomic(filePath, text) {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   const tmp = `${filePath}.${process.pid}.${++tmpCounter}.tmp`;
   await fs.writeFile(tmp, text, 'utf8');
-  // Windows can refuse to replace a file that an indexer/AV has briefly open; retry a few times.
-  for (let attempt = 1; ; attempt++) {
-    try { await fs.rename(tmp, filePath); return; }
-    catch (e) {
-      if (attempt >= 4 || !['EPERM', 'EBUSY', 'EACCES'].includes(e.code)) {
-        await fs.rm(tmp, { force: true }).catch(noop);
-        throw e;
-      }
-      await new Promise((r) => setTimeout(r, 25 * attempt));
-    }
-  }
+  try { await renameWithRetry(tmp, filePath); }
+  catch (e) { await fs.rm(tmp, { force: true }).catch(noop); throw e; }
+}
+
+/** Create `filePath` only if it does not exist yet (O_EXCL). False when another writer got there first. */
+async function writeExclusive(filePath, text) {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  try { await fs.writeFile(filePath, text, { encoding: 'utf8', flag: 'wx' }); return true; }
+  catch (e) { if (e.code === 'EEXIST') return false; throw e; }
 }
 
 async function readJson(filePath) {
@@ -101,9 +117,55 @@ function leaseExpiry(lease) {
   return Number.isNaN(t) ? -Infinity : t;
 }
 
-export function createFileStore(dir) {
+const isLease = (value) => Boolean(value) && typeof value === 'object' && typeof value.attempt_id === 'string';
+
+/** Read a lease file as { present, lease }; unparseable content is present garbage (lease: null). */
+async function readLease(filePath) {
+  try { return { present: true, lease: JSON.parse(await fs.readFile(filePath, 'utf8')) }; }
+  catch (e) {
+    if (isMissing(e)) return { present: false, lease: null };
+    if (e instanceof SyntaxError) return { present: true, lease: null };
+    throw e;
+  }
+}
+
+const isStale = (st, staleMs, nowMs) => nowMs - st.mtimeMs > staleMs;
+
+/**
+ * Run `fn` while holding `lockPath`, an O_EXCL lock file that serialises the
+ * read-check-write of a lease across OS processes (the in-process queue cannot).
+ * A busy lock is polled for up to `waitMs`. A lock older than `staleMs` belongs to
+ * a holder that died inside the (millisecond-long) critical section: it is moved
+ * aside with a rename only one process can win, then re-checked so a lock that was
+ * refreshed under us is put back rather than broken.
+ */
+async function withFileLock(lockPath, { waitMs, staleMs }, fn) {
+  const token = `${process.pid}.${++tmpCounter}.${Math.random().toString(16).slice(2, 10)}`;
+  const deadline = Date.now() + waitMs;
+  while (!(await writeExclusive(lockPath, `${token}\n`))) {
+    let stale;
+    try { stale = isStale(await fs.stat(lockPath), staleMs, Date.now()); }
+    catch (e) { if (!isMissing(e)) throw e; continue; } // released between our attempts: try again now
+    if (stale) {
+      const aside = `${lockPath}.${token}.stale`;
+      try {
+        await fs.rename(lockPath, aside);
+        if (isStale(await fs.stat(aside), staleMs, Date.now())) await fs.rm(aside, { force: true });
+        else await fs.rename(aside, lockPath).catch(noop); // a live lock got under our rename: restore it
+      } catch (e) { if (!isMissing(e)) throw e; }
+      continue;
+    }
+    if (Date.now() > deadline) throw new Error(`lease lock busy for ${waitMs} ms: ${lockPath}`);
+    await sleep(5 + Math.floor(Math.random() * 10));
+  }
+  try { return await fn(); }
+  finally { await fs.rm(lockPath, { force: true }).catch(noop); }
+}
+
+export function createFileStore(dir, { lockWaitMs = DEFAULT_LOCK_WAIT_MS, lockStaleMs = DEFAULT_LOCK_STALE_MS } = {}) {
   if (typeof dir !== 'string' || !dir) throw new TypeError('createFileStore(dir): dir is required');
   const root = path.resolve(dir);
+  const lockOptions = { waitMs: lockWaitMs, staleMs: lockStaleMs };
   const attemptPath = (id) => path.join(root, 'attempts', `${safeName(id, 'attempt id')}.json`);
   const leasePath = (weekOf) => path.join(root, 'leases', `${safeName(weekOf, 'week_of')}.json`);
   const observationsPath = (attemptId) => path.join(root, 'observations', `${safeName(attemptId, 'attempt_id')}.jsonl`);
@@ -146,34 +208,38 @@ export function createFileStore(dir) {
     /**
      * Take or renew the per-week lease. Succeeds when no lease exists, the existing
      * lease has expired (lease_until < now), or the same attempt already holds it.
+     * The read-check-write runs under `leases/<week_of>.json.lock` so two runs of the
+     * pipeline in different processes cannot both be admitted.
      */
     async acquireLease({ week_of, attempt_id, ttlMs = DEFAULT_LEASE_TTL_MS, now = new Date() }) {
       const file = leasePath(week_of);
       safeName(attempt_id, 'attempt_id');
       const nowMs = new Date(now).getTime();
-      return serialize(file, async () => {
-        let existing = null;
-        try { existing = await readJson(file); }
-        catch (e) { if (!(e instanceof SyntaxError)) throw e; existing = null; }
-        const heldByOther = existing && existing.attempt_id !== attempt_id && leaseExpiry(existing) >= nowMs;
-        if (heldByOther) return { ok: false, holder: existing.attempt_id, lease_until: existing.lease_until };
-        const lease = { attempt_id, lease_until: new Date(nowMs + ttlMs).toISOString(), acquired_at: new Date(nowMs).toISOString() };
+      if (!Number.isFinite(nowMs)) throw new TypeError(`acquireLease: now must be a valid date; got ${JSON.stringify(now)}`);
+      if (!(Number.isFinite(ttlMs) && ttlMs > 0)) throw new TypeError(`acquireLease: ttlMs must be a positive number; got ${JSON.stringify(ttlMs)}`);
+      const lease = { attempt_id, lease_until: new Date(nowMs + ttlMs).toISOString(), acquired_at: new Date(nowMs).toISOString() };
+      return serialize(file, () => withFileLock(`${file}.lock`, lockOptions, async () => {
+        const { lease: existing } = await readLease(file);
+        if (isLease(existing) && existing.attempt_id !== attempt_id && leaseExpiry(existing) >= nowMs) {
+          return { ok: false, holder: existing.attempt_id, lease_until: existing.lease_until };
+        }
         await writeAtomic(file, pretty(lease));
         return { ok: true, lease_until: lease.lease_until };
-      });
+      }));
     },
 
-    /** Drop the lease if `attempt_id` holds it. A lease held by another attempt is left alone. */
+    /** Drop the lease if `attempt_id` holds it (or nobody can: unreadable). A lease held by another attempt is left alone. */
     async releaseLease({ week_of, attempt_id }) {
       const file = leasePath(week_of);
-      return serialize(file, async () => {
-        let existing = null;
-        try { existing = await readJson(file); } catch (e) { if (!(e instanceof SyntaxError)) throw e; }
-        if (!existing) return { ok: true };
-        if (existing.attempt_id !== attempt_id) return { ok: false, holder: existing.attempt_id, lease_until: existing.lease_until };
+      return serialize(file, () => withFileLock(`${file}.lock`, lockOptions, async () => {
+        const { present, lease: existing } = await readLease(file);
+        if (!present) return { ok: true };
+        if (isLease(existing) && existing.attempt_id !== attempt_id) {
+          return { ok: false, holder: existing.attempt_id, lease_until: existing.lease_until ?? null };
+        }
         await fs.rm(file, { force: true });
         return { ok: true };
-      });
+      }));
     },
 
     async getLease(week_of) {
@@ -242,14 +308,17 @@ export function createFileStore(dir) {
 
     /**
      * Published history for selection. The file store reads `<dir>/history.json`
-     * (an array of posts, or `{ posts: [...] }`) when present, else []. When both
-     * `weeks` and `now` are given, posts older than `weeks` weeks are dropped.
+     * (an array of posts, or `{ posts: [...] }`) when present, else []. Posts dated
+     * more than `weeks` weeks before `now` are dropped (undated posts are kept) — the
+     * same window the Supabase store applies. `weeks: 0` returns everything.
      */
-    async listPublishedHistory({ weeks, now } = {}) {
+    async listPublishedHistory({ weeks = 8, now = new Date() } = {}) {
       const parsed = await readJson(historyPath);
       const posts = Array.isArray(parsed) ? parsed : parsed && Array.isArray(parsed.posts) ? parsed.posts : [];
-      if (!weeks || !now) return posts;
-      const cutoff = new Date(now).getTime() - weeks * 7 * 24 * 60 * 60 * 1000;
+      if (!(Number.isFinite(weeks) && weeks > 0)) return posts;
+      const nowMs = new Date(now).getTime();
+      if (!Number.isFinite(nowMs)) throw new TypeError(`listPublishedHistory: now must be a valid date; got ${JSON.stringify(now)}`);
+      const cutoff = nowMs - weeks * 7 * 24 * 60 * 60 * 1000;
       return posts.filter((p) => {
         const t = p && p.post_date ? Date.parse(p.post_date) : NaN;
         return Number.isNaN(t) || t >= cutoff;

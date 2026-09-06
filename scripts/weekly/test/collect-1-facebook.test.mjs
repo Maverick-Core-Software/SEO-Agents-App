@@ -6,8 +6,10 @@ import { fileURLToPath } from 'node:url';
 import { ObservationSchema, parseOrIssues } from '../lib/schemas.mjs';
 import { summarizePost } from '../../lib/facebook-insights.mjs';
 import {
+  FEED_LIMIT,
   collectFacebook,
   excerpt,
+  feedTruncatedObservation,
   inWindow,
   postToObservation,
   scrubSecrets,
@@ -106,8 +108,9 @@ describe('collectFacebook (injected client)', () => {
     assert.equal(b.value.engaged, null);
     assert.equal(b.value.reactions, 4);
     assert.equal(b.value.comments, 1);
-    assert.equal(b.value.shares, 0);
-    assert.equal(b.value.media_views, 0);
+    assert.equal(b.value.shares, 0, 'shares comes from the feed itself, so 0 is a real zero');
+    assert.equal(b.value.media_views, null, 'post_media_view was refused for this post: null, not 0');
+    assert.equal(b.value.clicks, 3, 'post_clicks was returned, so its count stands');
     assert.equal(b.value.media_type, 'video');
     assert.equal(b.note, 'unavailable metrics: post_media_view', 'note names the metric, not the API error text');
     assert.equal(b.note.includes('not a valid insights metric'), false);
@@ -321,5 +324,114 @@ describe('pure helpers', () => {
       impressions: null, reach: null, engaged: null, reactions: 3, comments: 0, shares: 0, clicks: 0, media_views: 0,
       interactions: 3, media_type: 'text', created_time: null, permalink_url: null, message_excerpt: '',
     });
+  });
+});
+
+describe('review findings: refused metrics, feed truncation, now/env handling, policy fallback', () => {
+  const MISSING_POLICY = path.join(__dirname, 'fixtures', 'collect-1-no-such-policy.json');
+  const HOUR_MS = 60 * 60 * 1000;
+
+  /** n copies of POST_B, newest first, `stepMs` apart, starting at `from`. */
+  function datedPosts(n, { stepMs = HOUR_MS, from = NOW } = {}) {
+    return Array.from({ length: n }, (_, i) => ({
+      ...POST_B, id: `p${String(i).padStart(2, '0')}`, created_time: new Date(from.getTime() - i * stepMs).toISOString(),
+    }));
+  }
+
+  it('refused insight metrics are null (not 0) for reactions, clicks and media_views; feed-sourced counts stay numeric', () => {
+    const post = summarizePost(RAW_B, [
+      { name: 'post_activity_by_action_type', values: [], unavailable: 'nope' },
+      { name: 'post_clicks', values: [], unavailable: 'nope' },
+      { name: 'post_media_view', values: [], unavailable: 'nope' },
+      { name: 'post_reactions_by_type_total', values: [], unavailable: 'nope' },
+    ]);
+    const obs = postToObservation(post, {
+      attemptId: ATTEMPT, retrievedAt: NOW.toISOString(), period: { start: '2026-08-07', end: '2026-09-04' }, cities: [],
+    });
+    assertValidObservation(obs);
+    assert.equal(obs.value.reactions, null);
+    assert.equal(obs.value.clicks, null);
+    assert.equal(obs.value.media_views, null);
+    assert.equal(obs.value.comments, 1, 'comments come from the feed');
+    assert.equal(obs.value.shares, 0, 'shares come from the feed');
+    assert.equal(obs.note, 'unavailable metrics: post_activity_by_action_type, post_clicks, post_media_view, post_reactions_by_type_total');
+  });
+
+  it('flags a full feed page whose oldest post is still inside the window', async () => {
+    const posts = datedPosts(FEED_LIMIT);
+    const observations = await collectFacebook({ attemptId: ATTEMPT, now: NOW, client: fakeClient(posts), policy });
+    assert.equal(observations.length, FEED_LIMIT + 1);
+    const marker = observations.at(-1);
+    assertValidObservation(marker);
+    assert.equal(marker.id, 'fb:feed-truncated');
+    assert.equal(marker.status, 'ok');
+    assert.equal(marker.metric, 'feed_truncated');
+    assert.equal(marker.scope, 'page');
+    assert.deepEqual(marker.value, { limit: FEED_LIMIT, oldest_created_time: posts.at(-1).created_time });
+    assert.match(marker.note, /older in-window posts were not read/);
+    assert.ok(observations.slice(0, -1).every((o) => o.metric === 'post_engagement'));
+  });
+
+  it('does not flag truncation on a short page or when the oldest post is outside the window; an undated post does not hide it', async () => {
+    const short = await collectFacebook({ attemptId: ATTEMPT, now: NOW, client: fakeClient(datedPosts(FEED_LIMIT - 1)), policy });
+    assert.equal(short.length, FEED_LIMIT - 1);
+    assert.ok(short.every((o) => o.metric === 'post_engagement'));
+
+    const spanning = datedPosts(FEED_LIMIT, { stepMs: 2 * 24 * HOUR_MS }); // 0..48 days back
+    const outside = await collectFacebook({ attemptId: ATTEMPT, now: NOW, client: fakeClient(spanning), policy });
+    assert.equal(outside.length, 15, 'posts 0..28 days back');
+    assert.ok(outside.every((o) => o.metric === 'post_engagement'));
+
+    const withUndated = [...datedPosts(FEED_LIMIT - 1), { ...POST_B, id: 'undated', created_time: null }];
+    const undated = await collectFacebook({ attemptId: ATTEMPT, now: NOW, client: fakeClient(withUndated), policy });
+    assert.equal(undated.length, FEED_LIMIT, '24 posts plus the marker: every dated post on a full page is inside the window');
+    assert.equal(undated.at(-1).metric, 'feed_truncated');
+  });
+
+  it('honours limit for both the client call and the truncation threshold, and falls back to 25 on junk or oversize', async () => {
+    const client = fakeClient(datedPosts(5));
+    const five = await collectFacebook({ attemptId: ATTEMPT, now: NOW, client, policy, limit: 5 });
+    assert.deepEqual(client.calls, [['topPosts', { limit: 5 }]]);
+    assert.equal(five.length, 6);
+    assert.equal(five.at(-1).value.limit, 5);
+
+    const junk = fakeClient(datedPosts(3));
+    const three = await collectFacebook({ attemptId: ATTEMPT, now: NOW, client: junk, policy, limit: NaN });
+    assert.deepEqual(junk.calls, [['topPosts', { limit: FEED_LIMIT }]]);
+    assert.equal(three.length, 3);
+
+    const big = fakeClient([]);
+    await collectFacebook({ attemptId: ATTEMPT, now: NOW, client: big, policy, limit: 500 });
+    assert.deepEqual(big.calls, [['topPosts', { limit: FEED_LIMIT }]], 'the shared client caps at 25, so ask for 25');
+  });
+
+  it('null now is the current time (not 1970); an unparseable now rejects loudly; env: null is a credentials problem, not a crash', async () => {
+    const before = Date.now();
+    const fresh = { ...POST_A, created_time: new Date().toISOString() };
+    const [a] = await collectFacebook({ attemptId: ATTEMPT, now: null, client: fakeClient([fresh]), policy });
+    assert.equal(a.status, 'ok');
+    assert.ok(Date.parse(a.retrieved_at) >= before - 1000);
+
+    await assert.rejects(
+      collectFacebook({ attemptId: ATTEMPT, now: 'soon', client: fakeClient([]), policy }),
+      { name: 'TypeError', message: /collectFacebook: invalid now/ },
+    );
+
+    const fetchImpl = async () => { throw new Error('fetch must not be called'); };
+    const [obs] = await collectFacebook({ attemptId: ATTEMPT, now: NOW, env: null, fetchImpl, policy });
+    assert.equal(obs.status, 'unavailable');
+    assert.match(obs.note, /FB_PAGE_ID is not set/);
+  });
+
+  it('an unreadable policy file is not an outage: posts still come back, untagged', async () => {
+    const [a] = await collectFacebook({ attemptId: ATTEMPT, now: NOW, client: fakeClient([POST_A]), policyPath: MISSING_POLICY });
+    assert.equal(a.status, 'ok');
+    assert.equal(a.geography, null);
+  });
+
+  it('feedTruncatedObservation is schema-valid on its own', () => {
+    assertValidObservation(feedTruncatedObservation({
+      attemptId: ATTEMPT, retrievedAt: NOW.toISOString(), period: null, limit: 25, oldestCreatedTime: '2026-08-10T00:00:00+0000',
+    }));
   });
 });
