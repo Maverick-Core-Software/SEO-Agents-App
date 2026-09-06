@@ -1,0 +1,389 @@
+{
+  "search_metadata": {
+    "id": "6a9cff909c23129f5f8637ef",
+    "status": "Success",
+    "markdown_endpoint": "https://serpapi.com/searches/sGaIdyBl04qa_iJ7DVvM7fVCo8yu81QnbAjJ_QGFlcg/6a9cff909c23129f5f8637ef.md",
+    "pixel_position_endpoint": "https://serpapi.com/searches/sGaIdyBl04qa_iJ7DVvM7fVCo8yu81QnbAjJ_QGFlcg/6a9cff909c23129f5f8637ef.json_with_pixel_position",
+    "created_at": "2026-09-06 05:52:16 UTC",
+    "processed_at": "2026-09-06 05:52:16 UTC",
+    "google_url": "https://www.google.com/search?q=ev+charger+installation+Wylie&oq=ev+charger+installation+Wylie&uule=w+CAIQICIFRGFsbGFzIEZvcnQgV29ydGggSW50ZXJuYXRpb25hbCBBaXJwb3J0LFRleGFzLFVuaXRlZCBTdGF0ZXM&hl=en&gl=us&sourceid=chrome&ie=UTF-8",
+    "total_time_taken": 5.69
+  },
+  "search_parameters": {
+    "engine": "google",
+    "q": "ev charger installation Wylie",
+    "location_requested": "Dallas-Fort Worth, Texas, United States",
+    "location_used": "Dallas Fort Worth International Airport,Texas,United States",
+    "google_domain": "google.com",
+    "hl": "en",
+    "gl": "us",
+    "device": "desktop"
+  },
+  "search_information": {
+    "query_displayed": "ev charger installation Wylie",
+    "total_results": 241000,
+    "time_taken_displayed": 0.3,
+    "organic_results_state": "Results for exact spelling"
+  },
+  "organic_results": [
+    {
+      "position": 1,
+      "title": "Electric Car Charger Installation in Wylie, Texas",
+      "link": "https://callmilestone.com/wylie/electrical/car-charger-installation/",
+      "redirect_link": "https://www.google.com/url?sa=t&source=web&rct=j&opi=89978449&url=CAESfAHrOzAVYNfHBzabcmEQNpKzszIXI-7yiJ_4G3FFy_w6A6sm0_xuniDufX4s0eHchHzafSh9Ib_aCtRcySRzutQUUjBeOmSYMBwPcL_pcldOXC_8XVVI3gRjE7OlYAF6OmncPb3Ev6SeiqcMpVtCAyD4RkkMBqUo7dZbR70&ved=2ahUKEwiJ_IvXodmWAxURUfUHHYWDDusQFnoECB0QAQ&uoh=1",
+      "displayed_link": "https://callmilestone.com › wylie › electrical › car-charg...",
+      "favicon": "https://serpapi.com/images/i/iVBORw0KGgoAAAANSUhEUgAAABwAAAAcCAMAAABF0y-mAAAAJ1BMVEVHcEy-OjS-OjS-OjS-OjS-OjS-OjS-OjS-OjS-OjS-OjS-OjS-OjR6tEOLAAAADHRSTlMAhCQ1EHC83e6bU6eIxaisAAAAs0lEQVQokdVRSRLDMAgzYOIl_P-9BWQyOffSKQcbLBYJt_Z_xlvJjREJpfUM9jTYBfDKYCSoZktHPkjEHZloaaZ5VqmmOxNcuJEeU8erciC_r3i5syu9wKgkk-TRvesUeOA2KI4dT8uTFz_gPjomWDogXONLllNOZ_qUF9iSisqRYwSlcrbXRZisejB0FYgdnE2MI3o_oILelV2bHMmwO6lgKtfsQvFHPkUp9oxQv_r939kHsrEKds2r6LwAAAAASUVORK5CYII.png",
+      "snippet": "Milestone has been providing electric car charger installation in the Wylie area. Our team of expertly trained electricians is capable of all types of ...",
+      "snippet_highlighted_words": [
+        "Milestone has been providing electric car charger installation in the Wylie area"
+      ],
+      "rich_snippet": {
+        "top": {
+          "detected_extensions": {
+            "rating": 4.9,
+            "reviews": 14582
+          },
+          "extensions": [
+            "4.9(14,582)"
+          ]
+        }
+      },
+      "about_this_result": {
+        "source": {
+          "description": "Milestone has been providing electric car charger installation in the Wylie area. Our team of expertly trained electricians is capable of all types of ...",
+          "source_info_link": "https://callmilestone.com/wylie/electrical/car-charger-installation/",
+          "icon": "https://serpapi.com/images/i/iVBORw0KGgoAAAANSUhEUgAAABwAAAAcCAMAAABF0y-mAAAAJ1BMVEVHcEy-OjS-OjS-OjS-OjS-OjS-OjS-OjS-OjS-OjS-OjS-OjS-OjR6tEOLAAAADHRSTlMAhCQ1EHC83e6bU6eIxaisAAAAs0lEQVQokdVRSRLDMAgzYOIl_P-9BWQyOffSKQcbLBYJt_Z_xlvJjREJpfUM9jTYBfDKYCSoZktHPkjEHZloaaZ5VqmmOxNcuJEeU8erciC_r3i5syu9wKgkk-TRvesUeOA2KI4dT8uTFz_gPjomWDogXONLllNOZ_qUF9iSisqRYwSlcrbXRZisejB0FYgdnE2MI3o_oILelV2bHMmwO6lgKtfsQvFHPkUp9oxQv_r939kHsrEKds2r6LwAAAAASUVORK5CYII.png"
+        },
+        "languages": [
+          "en"
+        ],
+        "regions": [
+          "US"
+        ]
+      },
+      "about_page_link": "https://www.google.com/search?q=About+https://callmilestone.com/wylie/electrical/car-charger-installation/&tbm=ilp",
+      "about_page_serpapi_link": "https://serpapi.com/search.json?engine=google_about_this_result&google_domain=google.com&q=About+https%3A%2F%2Fcallmilestone.com%2Fwylie%2Felectrical%2Fcar-charger-installation%2F",
+      "source": "Milestone Electric, A/C, & Plumbing"
+    },
+    {
+      "position": 2,
+      "title": "Wylie | Residential Electrical Repairs by WEHAC",
+      "link": "https://callw3.com/wylie/",
+      "redirect_link": "https://www.google.com/url?sa=t&source=web&rct=j&opi=89978449&url=CAESUQHrOzAV_ckbLEcbLWIUO7Nkt_Ht36w8MnFLpLBwgaj6QVe8Fi9i8l0USauWpJqA-GeHsSuksPN2OYSioxv5nAGSQW-jnCJKA5kft6UfbmfKOg&ved=2ahUKEwiJ_IvXodmWAxURUfUHHYWDDusQFnoECBsQAQ&uoh=1",
+      "displayed_link": "https://callw3.com › wylie",
+      "snippet": "EV chargers, Schedule Online (972) 793-0733. Our EV charging installation services ensure you can be self-sufficient, can take over 24 hours to charge your car.",
+      "snippet_highlighted_words": [
+        "Schedule Online (972) 793-0733"
+      ],
+      "about_this_result": {
+        "source": {
+          "description": "EV chargers, Schedule Online (972) 793-0733. Our EV charging installation services ensure you can be self-sufficient, can take over 24 hours to charge your car.",
+          "source_info_link": "https://callw3.com/wylie/"
+        },
+        "languages": [
+          "en"
+        ],
+        "regions": [
+          "US"
+        ]
+      },
+      "about_page_link": "https://www.google.com/search?q=About+https://callw3.com/wylie/&tbm=ilp",
+      "about_page_serpapi_link": "https://serpapi.com/search.json?engine=google_about_this_result&google_domain=google.com&q=About+https%3A%2F%2Fcallw3.com%2Fwylie%2F",
+      "source": "W3 Electric"
+    },
+    {
+      "position": 3,
+      "title": "Wylie EV Charger Installation in Wylie TX",
+      "link": "https://www.friscoevchargerinstallation.com/ev-charger-installation-in-wylie",
+      "redirect_link": "https://www.google.com/url?sa=t&source=web&rct=j&opi=89978449&url=CAEShAEB6zswFY840db8p6ivefi_nqhMpF1EBk8GPPDl5ZCn8XnhhOIv9HZp9np1DLCckTK7G5VWyv6wNZVVjIPve8ezwPrq_nq1o0d0KBiUddx0v7BgQQ51JQOU8ZAaqy2Y4MrjJXEwYNjUb2v8-uvtZwbZevhjKwD3srZ5fFKLRIYSAX-kVk4&ved=2ahUKEwiJ_IvXodmWAxURUfUHHYWDDusQFnoECBwQAQ&uoh=1",
+      "displayed_link": "https://www.friscoevchargerinstallation.com › ev-charg...",
+      "favicon": "https://serpapi.com/images/i/_9j_4AAQSkZJRgABAQAAAQABAAD_2wCEAAkGBwgHBgkIBwgKCgkLDRYPDQwMDRsUFRAWIB0iIiAdHx8kKDQsJCYxJx8fLT0tMTU3Ojo6Iys_RD84QzQ5OjcBCgoKDQwNGg8PGjclHyU3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc1NDc3Nzc3Nzc3Nzc3LTU3Nzc3Nzc3Nzc3MTc3N__AABEIABwAHAMBIgACEQEDEQH_xAAXAAEBAQEAAAAAAAAAAAAAAAAGBQME_8QALhAAAgEDAgMDDQAAAAAAAAAAAQIDAAQRBSESE0FRUvAGFBYiMTNhcYGxwdHh_8QAFwEBAQEBAAAAAAAAAAAAAAAABQIEA__EAB8RAAICAQQDAAAAAAAAAAAAAAECABEDEyIx8QQSIf_aAAwDAQACEQMRAD8Aj2gKaMyoPeTqGI7ADj80q0_R7bULCPkNxXKKAwG4P9x9qMaLLHJG1rK2EmwOLut0PjoTSPQNS81tjaugWRJgjk-Pbtimgzeu3mCuzi6PU4bnTZdJ1aArhuY4wMdOoNFL2JUupFTdQxA-Wab63fO873czZaFFjhHdYru30_VB55AZTUsxI3cy8JJNzC2u2hYMp3G9WrjVIonlvFbK3bBhxqfV3PEOwkHG9FAxpNa20dz5KQtIAWW8YA8CkgYG2SKyP5JwrdXFMWBHY3NNZ1BeUsYaRpJmEzcaleBcYQb7nI3z8RR95stmrHl2zekk6liQsUKjJ6CNaOFjmq1S4uc9NQfgn__Z.jpeg",
+      "snippet": "On average, you should expect to pay $800 - $1200 for EV charger installation in Wylie, TX. ​. The Process of Installing Your Level 2 EV Charger in Wylie.",
+      "snippet_highlighted_words": [
+        "EV charger installation",
+        "Wylie",
+        "EV Charger",
+        "Wylie"
+      ],
+      "about_this_result": {
+        "source": {
+          "description": "On average, you should expect to pay $800 - $1200 for EV charger installation in Wylie, TX. ​. The Process of Installing Your Level 2 EV Charger in Wylie.",
+          "source_info_link": "https://www.friscoevchargerinstallation.com/ev-charger-installation-in-wylie",
+          "icon": "https://serpapi.com/images/i/_9j_4AAQSkZJRgABAQAAAQABAAD_2wCEAAkGBwgHBgkIBwgKCgkLDRYPDQwMDRsUFRAWIB0iIiAdHx8kKDQsJCYxJx8fLT0tMTU3Ojo6Iys_RD84QzQ5OjcBCgoKDQwNGg8PGjclHyU3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc1NDc3Nzc3Nzc3Nzc3LTU3Nzc3Nzc3Nzc3MTc3N__AABEIABwAHAMBIgACEQEDEQH_xAAXAAEBAQEAAAAAAAAAAAAAAAAGBQME_8QALhAAAgEDAgMDDQAAAAAAAAAAAQIDAAQRBSESE0FRUvAGFBYiMTNhcYGxwdHh_8QAFwEBAQEBAAAAAAAAAAAAAAAABQIEA__EAB8RAAICAQQDAAAAAAAAAAAAAAECABEDEyIx8QQSIf_aAAwDAQACEQMRAD8Aj2gKaMyoPeTqGI7ADj80q0_R7bULCPkNxXKKAwG4P9x9qMaLLHJG1rK2EmwOLut0PjoTSPQNS81tjaugWRJgjk-Pbtimgzeu3mCuzi6PU4bnTZdJ1aArhuY4wMdOoNFL2JUupFTdQxA-Wab63fO873czZaFFjhHdYru30_VB55AZTUsxI3cy8JJNzC2u2hYMp3G9WrjVIonlvFbK3bBhxqfV3PEOwkHG9FAxpNa20dz5KQtIAWW8YA8CkgYG2SKyP5JwrdXFMWBHY3NNZ1BeUsYaRpJmEzcaleBcYQb7nI3z8RR95stmrHl2zekk6liQsUKjJ6CNaOFjmq1S4uc9NQfgn__Z.jpeg"
+        },
+        "languages": [
+          "en"
+        ],
+        "regions": [
+          "US"
+        ]
+      },
+      "about_page_link": "https://www.google.com/search?q=About+https://www.friscoevchargerinstallation.com/ev-charger-installation-in-wylie&tbm=ilp",
+      "about_page_serpapi_link": "https://serpapi.com/search.json?engine=google_about_this_result&google_domain=google.com&q=About+https%3A%2F%2Fwww.friscoevchargerinstallation.com%2Fev-charger-installation-in-wylie",
+      "source": "friscoevchargerinstallation.com"
+    },
+    {
+      "position": 4,
+      "title": "EV Charger Installation in Wylie, TX",
+      "link": "https://www.thumbtack.com/tx/wylie/ev-charger-installation",
+      "redirect_link": "https://www.google.com/url?sa=t&source=web&rct=j&opi=89978449&url=CAEScgHrOzAVah9qCovE_wvJFMKQ5JvLnkUotbDq_3Idou_INekJa-3mEQ4LLIsfPrd-qH7IV4WugygE8ZDRZAo1iuIrRgPgIYl7JsRLrzj2LqLZxTAqya4L44J2taIfWV2cFzrqqZfgQqbjvqHTSE2He6o24Q&ved=2ahUKEwiJ_IvXodmWAxURUfUHHYWDDusQFnoECBoQAQ&uoh=1",
+      "displayed_link": "https://www.thumbtack.com › TX › Wylie",
+      "favicon": "https://serpapi.com/images/i/iVBORw0KGgoAAAANSUhEUgAAABwAAAAcCAMAAABF0y-mAAAAPFBMVEVHcEwzqt0ZotoVotoQodoAntkjpNsAn9lOsuEUodoAm9gAmtcAmdeq1u8Al9bs9_z____F4_RlueNUteKZXLYfAAAAFHRSTlMALXy46P5U_xDY____________Ds8hPeUAAADBSURBVHgBfdOBCoQgDIDhqVtrZmr2_u96MlDUO-8DiPoBJSd0xjokQmcNrA7khvCY0ik8kRM6w1_M1Db15J9OjbqevwZe19V9chXuidajRuQqpjxIkSvU3WwiGbAa_T0J-tGCYxV0JzGyPlk5XbLxT34CdwLEXXjyFPFfJMB9FHD76MDuowWzjWQAcI5Xb6g_vvF3zrfn5mhHpqjkXKi9yHLYIaXAzbuMCZVC-yGipalXeETy7oaa56Fu10EQZbwOH-m8FSjHpawEAAAAAElFTkSuQmCC.png",
+      "snippet": "Here is the definitive list of Wylie's ev charger installation as rated by the Wylie, TX community. Want to see who made the cut?",
+      "snippet_highlighted_words": [
+        "Here is the definitive list of Wylie's ev charger installation"
+      ],
+      "about_this_result": {
+        "source": {
+          "description": "Here is the definitive list of Wylie's ev charger installation as rated by the Wylie, TX community. Want to see who made the cut?",
+          "source_info_link": "https://www.thumbtack.com/tx/wylie/ev-charger-installation",
+          "icon": "https://serpapi.com/images/i/iVBORw0KGgoAAAANSUhEUgAAABwAAAAcCAMAAABF0y-mAAAAPFBMVEVHcEwzqt0ZotoVotoQodoAntkjpNsAn9lOsuEUodoAm9gAmtcAmdeq1u8Al9bs9_z____F4_RlueNUteKZXLYfAAAAFHRSTlMALXy46P5U_xDY____________Ds8hPeUAAADBSURBVHgBfdOBCoQgDIDhqVtrZmr2_u96MlDUO-8DiPoBJSd0xjokQmcNrA7khvCY0ik8kRM6w1_M1Db15J9OjbqevwZe19V9chXuidajRuQqpjxIkSvU3WwiGbAa_T0J-tGCYxV0JzGyPlk5XbLxT34CdwLEXXjyFPFfJMB9FHD76MDuowWzjWQAcI5Xb6g_vvF3zrfn5mhHpqjkXKi9yHLYIaXAzbuMCZVC-yGipalXeETy7oaa56Fu10EQZbwOH-m8FSjHpawEAAAAAElFTkSuQmCC.png"
+        },
+        "languages": [
+          "en"
+        ],
+        "regions": [
+          "US"
+        ]
+      },
+      "about_page_link": "https://www.google.com/search?q=About+https://www.thumbtack.com/tx/wylie/ev-charger-installation&tbm=ilp",
+      "about_page_serpapi_link": "https://serpapi.com/search.json?engine=google_about_this_result&google_domain=google.com&q=About+https%3A%2F%2Fwww.thumbtack.com%2Ftx%2Fwylie%2Fev-charger-installation",
+      "source": "Thumbtack"
+    },
+    {
+      "position": 5,
+      "title": "EV Charger Installation in Wylie | Allstars Electric Heating & Air",
+      "link": "https://www.allstarselectric.com/electrical/ev-chargers/",
+      "redirect_link": "https://www.google.com/url?sa=t&source=web&rct=j&opi=89978449&url=CAEScAHrOzAV6GNTeUEYB3Zi70Apx4l2MKP2rcKaLEiUX7umHLHXh8X_jLr2T3Qo-OZduXk9fCKmmBJeX4V7Bz3usSdmoJSEbXVptr5EGtdahH9E2enq-uScN4gq__YO5HlkEQBJjcaKpfWydW9dr2kXE-A&ved=2ahUKEwiJ_IvXodmWAxURUfUHHYWDDusQFnoECDUQAQ&uoh=1",
+      "displayed_link": "https://www.allstarselectric.com › electrical › ev-chargers",
+      "favicon": "https://serpapi.com/images/i/iVBORw0KGgoAAAANSUhEUgAAABwAAAAcCAMAAABF0y-mAAAA0lBMVEVHcEz____tAAD____-6-rtAgbtCA7________uAADvAADd5fPuBxLr8Pj9_v__7ei4wuHT2u39wL7________tAAPuAADtAA75HhLu8fj_________________jIXtAAAAPqsAM6icqNQALKcAOKoAMKgAO6vyBQWgsNuNn9IAJqVBar6ZptR1j82pt91nicu8xeIANKgwVLNadL_2wsUYTrP1MS7_iIP7b2vk0N38s7IAG6Pl7_vjv8v2RkT4urwAM6rX2ev9ko8AEaEADKG9v91VACF2AAAAIHRSTlMAWT9QE2QSBHaozucivP2P_eDFqCF271bCxAMLHCSp45eunfgAAAESSURBVCiRjZLpdoIwEIWD0Brctfs-NAurCCJY1Nr9_V-phkIltOnp_ZPlO7mZO2cQ-q8utb_owDhUshtncqKEQ_rYUcLx2slUvtcu818PFBCnnCh9xwRYmP3OjMAC7i_rvka7FMJzDkAW56i8uEJIHwTBfSGXAQCdOcUhcDeT1q5nF8naEopBiBZ7L823nSIVdjwOkrzpwq56ddydWzVEn6PlaW9f1tHU-2bMz7emlEMfxSWL3ZV91kjZJ9XDyO41WDusfqWzh1YDaj4F4ISKp09mAwpXK31Jdgv7sBswZEW4YUj4D18tsb7Cich8Jfv23_w8M8vI75Hs69TC6SPZV9vc3u2Hx-hK9WIkjw5WTVJNn0sMJ_Y-HLKlAAAAAElFTkSuQmCC.png",
+      "snippet": "Call us today at (972) 703-5343 or complete our online form to book an appointment. We offer warranties on all new EV charger installations!",
+      "snippet_highlighted_words": [
+        "Call us today at (972) 703-5343"
+      ],
+      "about_this_result": {
+        "source": {
+          "description": "Call us today at (972) 703-5343 or complete our online form to book an appointment. We offer warranties on all new EV charger installations!",
+          "source_info_link": "https://www.allstarselectric.com/electrical/ev-chargers/",
+          "icon": "https://serpapi.com/images/i/iVBORw0KGgoAAAANSUhEUgAAABwAAAAcCAMAAABF0y-mAAAA0lBMVEVHcEz____tAAD____-6-rtAgbtCA7________uAADvAADd5fPuBxLr8Pj9_v__7ei4wuHT2u39wL7________tAAPuAADtAA75HhLu8fj_________________jIXtAAAAPqsAM6icqNQALKcAOKoAMKgAO6vyBQWgsNuNn9IAJqVBar6ZptR1j82pt91nicu8xeIANKgwVLNadL_2wsUYTrP1MS7_iIP7b2vk0N38s7IAG6Pl7_vjv8v2RkT4urwAM6rX2ev9ko8AEaEADKG9v91VACF2AAAAIHRSTlMAWT9QE2QSBHaozucivP2P_eDFqCF271bCxAMLHCSp45eunfgAAAESSURBVCiRjZLpdoIwEIWD0Brctfs-NAurCCJY1Nr9_V-phkIltOnp_ZPlO7mZO2cQ-q8utb_owDhUshtncqKEQ_rYUcLx2slUvtcu818PFBCnnCh9xwRYmP3OjMAC7i_rvka7FMJzDkAW56i8uEJIHwTBfSGXAQCdOcUhcDeT1q5nF8naEopBiBZ7L823nSIVdjwOkrzpwq56ddydWzVEn6PlaW9f1tHU-2bMz7emlEMfxSWL3ZV91kjZJ9XDyO41WDusfqWzh1YDaj4F4ISKp09mAwpXK31Jdgv7sBswZEW4YUj4D18tsb7Cich8Jfv23_w8M8vI75Hs69TC6SPZV9vc3u2Hx-hK9WIkjw5WTVJNn0sMJ_Y-HLKlAAAAAElFTkSuQmCC.png"
+        },
+        "languages": [
+          "en"
+        ],
+        "regions": [
+          "US"
+        ]
+      },
+      "about_page_link": "https://www.google.com/search?q=About+https://www.allstarselectric.com/electrical/ev-chargers/&tbm=ilp",
+      "about_page_serpapi_link": "https://serpapi.com/search.json?engine=google_about_this_result&google_domain=google.com&q=About+https%3A%2F%2Fwww.allstarselectric.com%2Felectrical%2Fev-chargers%2F",
+      "source": "allstarselectric.com"
+    },
+    {
+      "position": 6,
+      "title": "Level 2 EV Charger Installation In Lake Wylie, SC | Permit & 60a",
+      "link": "https://www.touchstoneelectric.com/completed-jobs/level-2-ev-charger-installation-in-lake-wylie-sc-permit-and-60a-33716944",
+      "redirect_link": "https://www.google.com/url?sa=t&source=web&rct=j&opi=89978449&url=CAESsgEB6zswFUrLoWlkLabCerISKW8UKdzFR5Jz5vww0sx22GTUKrSfNMgz_xt2Q0O9wiYaeiEeyKYlC9Nf2dWGhMWMhl-QBr7AjxvCjLcFGmOz2yPMatVANgJB2K9vj0xFZK2HNxGHj78pAStliS-rMjIGOqWSUbPMprqRD18CK6QTZZHjbEmoEQJIZzFT85316zUm7hEypYt48rQw8SkagdVG3WvpyVRfUkG2gdHYZRrMd49a&ved=2ahUKEwiJ_IvXodmWAxURUfUHHYWDDusQFnoECDQQAQ&uoh=1",
+      "displayed_link": "https://www.touchstoneelectric.com › completed-jobs",
+      "favicon": "https://serpapi.com/images/i/iVBORw0KGgoAAAANSUhEUgAAABwAAAAcCAMAAABF0y-mAAAAh1BMVEVHcEwAAAAAAAF1YAOoiQR3NRNzXgO8mAXZrwX4xwf7ywb8vQ87FAoAAAD5yQbclBX8zAWvYRedgQV8NRXyrBS7dBaiVBeQSRYAAAC4lgPRpgf0wgiUVBNnKRIAAAAAAAjLhhWqigXGoAXmugXirgxMQAGdgAQAAAASAAWrdBDpnxX7yQU-IQlfrTLsAAAALXRSTlMADkR7urCD9v____9rCP___-akjf_4xp0g4___3nY3TP_F_v__YqooWt___8VBQaWeAAAAvUlEQVR4AX2OBRKEQAwEg5PlCHvuuMP_v3duW7ehy6cjA38YpmU7oMtd2_NRBDNQCE3rkRMRUmQozn3lD-QcFBYCn5AQMliq0iZ87NEqWm-2O1XuZbA6HG9W1_O0Ocfm8baYgB6LUKTAkBHKDSdzwuDMuF2BVMazUCsrgViUzN2aEGXU6OX-JpFZDH2BIor1su1y4hYhBF_2MTCYOJyAw5K9ycpazoFlv0p4eZhYbPqWl9UaeLZn4BlhAt3HKxcqC6I_iQ1eAAAAAElFTkSuQmCC.png",
+      "snippet": "Level 2 EV charger installed in Lake Wylie, SC with Duke Energy rebate support, new 60A breaker, 6/2 wiring run, and permit. Safe, code-compliant home E...",
+      "snippet_highlighted_words": [
+        "Level 2 EV charger installed in Lake Wylie"
+      ],
+      "about_this_result": {
+        "source": {
+          "description": "Level 2 EV charger installed in Lake Wylie, SC with Duke Energy rebate support, new 60A breaker, 6/2 wiring run, and permit. Safe, code-compliant home E...",
+          "source_info_link": "https://www.touchstoneelectric.com/completed-jobs/level-2-ev-charger-installation-in-lake-wylie-sc-permit-and-60a-33716944",
+          "icon": "https://serpapi.com/images/i/iVBORw0KGgoAAAANSUhEUgAAABwAAAAcCAMAAABF0y-mAAAAh1BMVEVHcEwAAAAAAAF1YAOoiQR3NRNzXgO8mAXZrwX4xwf7ywb8vQ87FAoAAAD5yQbclBX8zAWvYRedgQV8NRXyrBS7dBaiVBeQSRYAAAC4lgPRpgf0wgiUVBNnKRIAAAAAAAjLhhWqigXGoAXmugXirgxMQAGdgAQAAAASAAWrdBDpnxX7yQU-IQlfrTLsAAAALXRSTlMADkR7urCD9v____9rCP___-akjf_4xp0g4___3nY3TP_F_v__YqooWt___8VBQaWeAAAAvUlEQVR4AX2OBRKEQAwEg5PlCHvuuMP_v3duW7ehy6cjA38YpmU7oMtd2_NRBDNQCE3rkRMRUmQozn3lD-QcFBYCn5AQMliq0iZ87NEqWm-2O1XuZbA6HG9W1_O0Ocfm8baYgB6LUKTAkBHKDSdzwuDMuF2BVMazUCsrgViUzN2aEGXU6OX-JpFZDH2BIor1su1y4hYhBF_2MTCYOJyAw5K9ycpazoFlv0p4eZhYbPqWl9UaeLZn4BlhAt3HKxcqC6I_iQ1eAAAAAElFTkSuQmCC.png"
+        },
+        "languages": [
+          "en"
+        ],
+        "regions": [
+          "US"
+        ]
+      },
+      "about_page_link": "https://www.google.com/search?q=About+https://www.touchstoneelectric.com/completed-jobs/level-2-ev-charger-installation-in-lake-wylie-sc-permit-and-60a-33716944&tbm=ilp",
+      "about_page_serpapi_link": "https://serpapi.com/search.json?engine=google_about_this_result&google_domain=google.com&q=About+https%3A%2F%2Fwww.touchstoneelectric.com%2Fcompleted-jobs%2Flevel-2-ev-charger-installation-in-lake-wylie-sc-permit-and-60a-33716944",
+      "source": "Touchstone Electric"
+    },
+    {
+      "position": 7,
+      "title": "THE BEST 10 EV CHARGING STATIONS IN WYLIE, TX",
+      "link": "https://www.yelp.com/search?cflt\\u003devchargingstations\\u0026find_loc\\u003dWylie%2C+TX",
+      "redirect_link": "https://www.google.com/url?sa=t&source=web&rct=j&opi=89978449&url=CAESgAEB6zswFR9-XBqV9joWx6sUXG0quBlmJOe2qITuZRp_5mkAlueOL6Flr1Ap6sKtSzI--RXLdxoVoFh_hZXqXA0UEhP7a2cCvw-yZA2ac6zuUTQfWgzV5Zg_YDiS2gZo20W0MUfof_E-gWw6CwTuyAKn5SyiuRLXSBEb2ip_pTdvbA&ved=2ahUKEwiJ_IvXodmWAxURUfUHHYWDDusQFnoECDsQAQ&uoh=1",
+      "displayed_link": "https://www.yelp.com › ... › EV Charging Stations",
+      "favicon": "https://serpapi.com/searches/6a9cff909c23129f5f8637ef/images/qkXwADdZx7YtyTHdZR-4OizcASp9VOfJOP4WqPNpwDw.png",
+      "snippet": "Best EV Charging Stations in Wylie, TX (877) 798-3752 (877) 494-4254. Installation EV Charging Stations in Wylie,",
+      "snippet_highlighted_words": [
+        "877) 798-3752"
+      ],
+      "rich_snippet": {
+        "top": {
+          "detected_extensions": {
+            "rating": 4.1,
+            "reviews": 2234
+          },
+          "extensions": [
+            "4.1(2,234)"
+          ]
+        }
+      },
+      "about_this_result": {
+        "source": {
+          "description": "Best EV Charging Stations in Wylie, TX (877) 798-3752 (877) 494-4254. Installation EV Charging Stations in Wylie,",
+          "source_info_link": "https://www.yelp.com/search?cflt=evchargingstations&find_loc=Wylie%2C+TX",
+          "icon": "https://serpapi.com/searches/6a9cff909c23129f5f8637ef/images/qkXwADdZx7YtyTHdZR-4Oslq5W5W1Dnhig1t7Tmwh3-1Bq9HybSWO600wLWQBKrD.png"
+        },
+        "languages": [
+          "en"
+        ],
+        "regions": [
+          "US"
+        ]
+      },
+      "about_page_link": "https://www.google.com/search?q=About+https://www.yelp.com/search?cflt=evchargingstations&find_loc=Wylie%2C+TX&tbm=ilp",
+      "about_page_serpapi_link": "https://serpapi.com/search.json?engine=google_about_this_result&google_domain=google.com&q=About+https%3A%2F%2Fwww.yelp.com%2Fsearch%3Fcflt%3Devchargingstations%26find_loc%3DWylie%252C%2BTX",
+      "source": "Yelp"
+    },
+    {
+      "position": 8,
+      "title": "Seventy8 and Westgate Apartments EV Charging Stations",
+      "link": "https://chargehub.com/en/ev-charging-stations/united-states/texas/wylie/seventy-8-and-westgate-apartments/electric-car-stations-near-me?locId\\u003d151546",
+      "redirect_link": "https://www.google.com/url?sa=t&source=web&rct=j&opi=89978449&url=CAESzQEB6zswFfc_N9EUEz-vDfrLn66mBT7m2B9iv-5qsPrTL4SLszd9uONQVNPAPVAA5BuF2hfVgxme5MDn7-wDxntmmemrFQMBddqqy-ehpMrCUh72EKb-yajLPI5B0kWK8YmjZahsHrS5T8SFd6vUztxC8DhdkHq7IZZIfejBod0_-jUspOtLsfnxj2AcBf8Y0yXQD3x5SbQsYnEYcbAPmBK-4QkWMUY0NTpEb0sSSg4Cbqp2MVI_f_VlZ_y6kd6_K7YBm8XgfYV0jGNFLFLa&ved=2ahUKEwiJ_IvXodmWAxURUfUHHYWDDusQFnoECDkQAQ&uoh=1",
+      "displayed_link": "https://chargehub.com › ... › Texas › Wylie",
+      "favicon": "https://serpapi.com/images/i/iVBORw0KGgoAAAANSUhEUgAAABwAAAAcCAMAAABF0y-mAAAANlBMVEVHcEwx0K0x0K0x0K0xz6wx0K0x0K0jz6oUzaiX5dPL8unh-fRy3cTx_Pr___-I4sxP1rin6dle03SHAAAAB3RSTlMAj-r_B9b39xeGeQAAALBJREFUeAGNksUBACEMBIMdmgX6L_bcfb4DcSISUt0ghe6dUQ8YTUI9Ikg-y4bUC7-ldTNXaZUPcSTYs7SJMRPP0mYAwXs_SGet3csCxOKsSwC4f5N20lZwn1W5gJm9jKh2CgBwrTXbWRYwA2n9yPuchRepcJF9Mhfh7ZD5HHZXEAN3BRUgqowRzjmnwxASAMYu58P42N4MPj8O_nllD7zL1wN7PU1tnpzURFo09_80dR4fETxkEe7pAAAAAElFTkSuQmCC.png",
+      "snippet": "Find all the EV Charging Stations available at Seventy8 and Westgate Apartments, in Wylie, TX. Charger availabilities, connector types and level 2 or 3.",
+      "snippet_highlighted_words": [
+        "EV Charging",
+        "Wylie"
+      ],
+      "about_this_result": {
+        "source": {
+          "description": "Find all the EV Charging Stations available at Seventy8 and Westgate Apartments, in Wylie, TX. Charger availabilities, connector types and level 2 or 3.",
+          "source_info_link": "https://chargehub.com/en/ev-charging-stations/united-states/texas/wylie/seventy-8-and-westgate-apartments/electric-car-stations-near-me?locId=151546",
+          "icon": "https://serpapi.com/images/i/iVBORw0KGgoAAAANSUhEUgAAABwAAAAcCAMAAABF0y-mAAAANlBMVEVHcEwx0K0x0K0x0K0xz6wx0K0x0K0jz6oUzaiX5dPL8unh-fRy3cTx_Pr___-I4sxP1rin6dle03SHAAAAB3RSTlMAj-r_B9b39xeGeQAAALBJREFUeAGNksUBACEMBIMdmgX6L_bcfb4DcSISUt0ghe6dUQ8YTUI9Ikg-y4bUC7-ldTNXaZUPcSTYs7SJMRPP0mYAwXs_SGet3csCxOKsSwC4f5N20lZwn1W5gJm9jKh2CgBwrTXbWRYwA2n9yPuchRepcJF9Mhfh7ZD5HHZXEAN3BRUgqowRzjmnwxASAMYu58P42N4MPj8O_nllD7zL1wN7PU1tnpzURFo09_80dR4fETxkEe7pAAAAAElFTkSuQmCC.png"
+        },
+        "languages": [
+          "en"
+        ],
+        "regions": [
+          "US"
+        ]
+      },
+      "about_page_link": "https://www.google.com/search?q=About+https://chargehub.com/en/ev-charging-stations/united-states/texas/wylie/seventy-8-and-westgate-apartments/electric-car-stations-near-me?locId=151546&tbm=ilp",
+      "about_page_serpapi_link": "https://serpapi.com/search.json?engine=google_about_this_result&google_domain=google.com&q=About+https%3A%2F%2Fchargehub.com%2Fen%2Fev-charging-stations%2Funited-states%2Ftexas%2Fwylie%2Fseventy-8-and-westgate-apartments%2Felectric-car-stations-near-me%3FlocId%3D151546",
+      "source": "ChargeHub"
+    },
+    {
+      "position": 9,
+      "title": "EV Charger Installation in Wylie, Texas",
+      "link": "https://mrelectric.com/locations/texas/wylie/ev-chargers/",
+      "redirect_link": "https://www.google.com/url?sa=t&source=web&rct=j&opi=89978449&url=CAEScQHrOzAV988BN-EwgVrQ5MQNlZoJ0UTizf4KxnyhABAWq7TmSkH71wtgVCUJiq56NZHqwc9b9PJCA93NX_wey5vccy-hiSyI-cSh44E5SwLc2RMCQyZ1IrxzyPZDlcKA-j8izDc8jJq3DuWScqIyoSiR&ved=2ahUKEwiJ_IvXodmWAxURUfUHHYWDDusQFnoECDYQAQ&uoh=1",
+      "displayed_link": "https://mrelectric.com › Locations › Texas › Wylie",
+      "favicon": "https://serpapi.com/images/i/iVBORw0KGgoAAAANSUhEUgAAABwAAAAcCAMAAABF0y-mAAAAbFBMVEVHcEwFdr0Fdr0Fdr0Fdr0Fdr0Fdr0Fdr0Fdr0Fdr0Fdr0Ac74Fdr0AccQAc8AAdb4Bdr3_zAC9rVdFg6fStj2mpG38xwAAarl6lIzvwgUaernC1-oyfq9sj5VaiZ_t8_mKmYI7iMV2p9OYvd0x4VQ-AAAAC3RSTlMAYMJf3zGG7D4WwbRk-1YAAAFWSURBVCiRdVNpl4IwDKwooDbpQTnkVvf__8dN08Ci7-184EGGdCZHldqQF1kJUGZFrr5xImJDefqgbheOOmsdv1xuf9yVIxbNNNGDP66fnJmq1ntfz-gO7I05nCk-QGh8ldh0MuuZxT_RWKsxtA2yLvtkK6bnkHZggg86xqJnrsE8WkOH6dfgAKuKU0uqPbnhgOvGLv7YMwm5KpKduqESunHsHOjFJ7JQWSJjpn6v6-icmdtEZkkSzJOO0j_j-taATZ3IUqV22sHPho8FC-0jdQmEpN9bZ7uVJLGuUxeIlGlY7BszvDTo4Ccr0xFDXClaHa2JIsBdSmHVEDOwf4oilZLLm8OWLFEf_aIllKtNlCxNhoDVsEtK45mdHoQFhYPzPrLUCMJu53IYdkw1SJAaZdiyJiTq45pI5tcSOQgEsbNz22rSZhJY77CahPP_S324DvfDdfgFh28jTfzYZUYAAAAASUVORK5CYII.png",
+      "snippet": "Trusted local EV charger installation in Wylie, TX. Call us now! (469) 625-4070. Reliable installation with upfront pricing.",
+      "snippet_highlighted_words": [
+        "469) 625-4070"
+      ],
+      "about_this_result": {
+        "source": {
+          "description": "Trusted local EV charger installation in Wylie, TX. Call us now! (469) 625-4070. Reliable installation with upfront pricing.",
+          "source_info_link": "https://mrelectric.com/locations/texas/wylie/ev-chargers/",
+          "icon": "https://serpapi.com/images/i/iVBORw0KGgoAAAANSUhEUgAAABwAAAAcCAMAAABF0y-mAAAAbFBMVEVHcEwFdr0Fdr0Fdr0Fdr0Fdr0Fdr0Fdr0Fdr0Fdr0Fdr0Ac74Fdr0AccQAc8AAdb4Bdr3_zAC9rVdFg6fStj2mpG38xwAAarl6lIzvwgUaernC1-oyfq9sj5VaiZ_t8_mKmYI7iMV2p9OYvd0x4VQ-AAAAC3RSTlMAYMJf3zGG7D4WwbRk-1YAAAFWSURBVCiRdVNpl4IwDKwooDbpQTnkVvf__8dN08Ci7-184EGGdCZHldqQF1kJUGZFrr5xImJDefqgbheOOmsdv1xuf9yVIxbNNNGDP66fnJmq1ntfz-gO7I05nCk-QGh8ldh0MuuZxT_RWKsxtA2yLvtkK6bnkHZggg86xqJnrsE8WkOH6dfgAKuKU0uqPbnhgOvGLv7YMwm5KpKduqESunHsHOjFJ7JQWSJjpn6v6-icmdtEZkkSzJOO0j_j-taATZ3IUqV22sHPho8FC-0jdQmEpN9bZ7uVJLGuUxeIlGlY7BszvDTo4Ccr0xFDXClaHa2JIsBdSmHVEDOwf4oilZLLm8OWLFEf_aIllKtNlCxNhoDVsEtK45mdHoQFhYPzPrLUCMJu53IYdkw1SJAaZdiyJiTq45pI5tcSOQgEsbNz22rSZhJY77CahPP_S324DvfDdfgFh28jTfzYZUYAAAAASUVORK5CYII.png"
+        },
+        "languages": [
+          "en"
+        ],
+        "regions": [
+          "US"
+        ]
+      },
+      "about_page_link": "https://www.google.com/search?q=About+https://mrelectric.com/locations/texas/wylie/ev-chargers/&tbm=ilp",
+      "about_page_serpapi_link": "https://serpapi.com/search.json?engine=google_about_this_result&google_domain=google.com&q=About+https%3A%2F%2Fmrelectric.com%2Flocations%2Ftexas%2Fwylie%2Fev-chargers%2F",
+      "source": "Mr. Electric"
+    },
+    {
+      "position": 10,
+      "title": "Commission Ev Charger Jobs in Wylie, TX (NOW HIRING) Aug 26",
+      "link": "https://www.ziprecruiter.com/Jobs/Commission-Ev-Charger/-in-Wylie,TX",
+      "redirect_link": "https://www.google.com/url?sa=t&source=web&rct=j&opi=89978449&url=CAESfAHrOzAVmWpevMbaPyJHl6PMBlPr3nY7-KA6d_Rf1uYlvvKa7R_2_MxyO6DO6qtdtfqFSvlPkuEyHgAXYDm87BhANkNUCcfHclQP1_3sviWnWLksguFasd9dHegKamAV4AV5USmXHOtg5Py0_k0m9UzkMFiy0ZXLR-EarOE&ved=2ahUKEwiJ_IvXodmWAxURUfUHHYWDDusQFnoECDMQAQ&uoh=1",
+      "displayed_link": "https://www.ziprecruiter.com › Jobs › -in-Wylie,TX",
+      "favicon": "https://serpapi.com/images/i/iVBORw0KGgoAAAANSUhEUgAAABwAAAAcCAMAAABF0y-mAAAAPFBMVEVHcEwAIyUAIyUBIyUAIyUAISUAGiMCJSUbYzcgbztH4mNF22EAAh4AESEqi0Q1rFBAzVwtlkg6vVYZWzR6wT5nAAAAA3RSTlMATNwp31ooAAAAwklEQVR4Aa3TQRKDIAwFUEWJKAmEcP-7Vh3itEFd9a-cPP8iAwzD6KbbuHG3-THj4PTTQ4vXiRsmtSW0LKrThbBuLSvcYTzzX8QLA1qklGNLTvSL3nPRZmLwBiUoVvHPGKRvVsXaI4uisMGZhPnUjVmo2xMxcIwcEM2erV23rbaWQQ-EOSOB75EolMycSyCySGmfryJryZzIYkQiLAUJMaJB5Ap7fS9BZYsLwvHHMQe7ih64HnRDN3_raRr3eqlfn8MHhzkTceQ2NrIAAAAASUVORK5CYII.png",
+      "snippet": "Browse 6 WYLIE, TX COMMISSION EV CHARGER jobs from companies hiring now. New openings posted daily. Apply early, get seen first & 1-click apply!",
+      "snippet_highlighted_words": [
+        "Browse 6 WYLIE, TX COMMISSION EV CHARGER jobs"
+      ],
+      "about_this_result": {
+        "source": {
+          "description": "Browse 6 WYLIE, TX COMMISSION EV CHARGER jobs from companies hiring now. New openings posted daily. Apply early, get seen first & 1-click apply!",
+          "source_info_link": "https://www.ziprecruiter.com/Jobs/Commission-Ev-Charger/-in-Wylie,TX",
+          "icon": "https://serpapi.com/images/i/iVBORw0KGgoAAAANSUhEUgAAABwAAAAcCAMAAABF0y-mAAAAPFBMVEVHcEwAIyUAIyUBIyUAIyUAISUAGiMCJSUbYzcgbztH4mNF22EAAh4AESEqi0Q1rFBAzVwtlkg6vVYZWzR6wT5nAAAAA3RSTlMATNwp31ooAAAAwklEQVR4Aa3TQRKDIAwFUEWJKAmEcP-7Vh3itEFd9a-cPP8iAwzD6KbbuHG3-THj4PTTQ4vXiRsmtSW0LKrThbBuLSvcYTzzX8QLA1qklGNLTvSL3nPRZmLwBiUoVvHPGKRvVsXaI4uisMGZhPnUjVmo2xMxcIwcEM2erV23rbaWQQ-EOSOB75EolMycSyCySGmfryJryZzIYkQiLAUJMaJB5Ap7fS9BZYsLwvHHMQe7ih64HnRDN3_raRr3eqlfn8MHhzkTceQ2NrIAAAAASUVORK5CYII.png"
+        },
+        "languages": [
+          "en"
+        ],
+        "regions": [
+          "US"
+        ]
+      },
+      "about_page_link": "https://www.google.com/search?q=About+https://www.ziprecruiter.com/Jobs/Commission-Ev-Charger/-in-Wylie,TX&tbm=ilp",
+      "about_page_serpapi_link": "https://serpapi.com/search.json?engine=google_about_this_result&google_domain=google.com&q=About+https%3A%2F%2Fwww.ziprecruiter.com%2FJobs%2FCommission-Ev-Charger%2F-in-Wylie%2CTX",
+      "source": "ZipRecruiter"
+    }
+  ],
+  "related_searches": [
+    {
+      "block_position": 1,
+      "query": "Ev charger installation wylie cost",
+      "link": "https://www.google.com/search?sca_esv=38512c4207789a1a&gl=us&hl=en&q=Ev+charger+installation+wylie+cost&sa=X&ved=2ahUKEwiJ_IvXodmWAxURUfUHHYWDDusQ1QJ6BAgtEAE",
+      "serpapi_link": "https://serpapi.com/search.json?device=desktop&engine=google&gl=us&google_domain=google.com&hl=en&location=Dallas-Fort+Worth%2C+Texas%2C+United+States&q=Ev+charger+installation+wylie+cost"
+    },
+    {
+      "block_position": 1,
+      "query": "Best ev charger installation wylie",
+      "link": "https://www.google.com/search?sca_esv=38512c4207789a1a&gl=us&hl=en&q=Best+ev+charger+installation+wylie&sa=X&ved=2ahUKEwiJ_IvXodmWAxURUfUHHYWDDusQ1QJ6BAguEAE",
+      "serpapi_link": "https://serpapi.com/search.json?device=desktop&engine=google&gl=us&google_domain=google.com&hl=en&location=Dallas-Fort+Worth%2C+Texas%2C+United+States&q=Best+ev+charger+installation+wylie"
+    },
+    {
+      "block_position": 1,
+      "query": "Cheapest ev charger installation wylie",
+      "link": "https://www.google.com/search?sca_esv=38512c4207789a1a&gl=us&hl=en&q=Cheapest+ev+charger+installation+wylie&sa=X&ved=2ahUKEwiJ_IvXodmWAxURUfUHHYWDDusQ1QJ6BAgsEAE",
+      "serpapi_link": "https://serpapi.com/search.json?device=desktop&engine=google&gl=us&google_domain=google.com&hl=en&location=Dallas-Fort+Worth%2C+Texas%2C+United+States&q=Cheapest+ev+charger+installation+wylie"
+    }
+  ],
+  "pagination": {
+    "current": 1,
+    "next": "https://www.google.com/search?q=ev+charger+installation+Wylie+&sca_esv=38512c4207789a1a&gl=us&hl=en&ei=lf-casndDpGi1e8PhYe62A4&start=10&sa=N&sstk=AS6-VmI4WCSwZZtuM44sBdXUTSgdeMXe5tJ-yPDR6NCvXjKFssmfzlhuVNPoEPKN9sLruXFfITnpA-u-EfuPkimJqVwF0ysgj7X1cQ&ved=2ahUKEwiJ_IvXodmWAxURUfUHHYWDDusQ8NMDegQIJxAW",
+    "other_pages": {
+      "2": "https://www.google.com/search?q=ev+charger+installation+Wylie+&sca_esv=38512c4207789a1a&gl=us&hl=en&ei=lf-casndDpGi1e8PhYe62A4&start=10&sa=N&sstk=AS6-VmI4WCSwZZtuM44sBdXUTSgdeMXe5tJ-yPDR6NCvXjKFssmfzlhuVNPoEPKN9sLruXFfITnpA-u-EfuPkimJqVwF0ysgj7X1cQ&ved=2ahUKEwiJ_IvXodmWAxURUfUHHYWDDusQ8tMDegQIJxAE",
+      "3": "https://www.google.com/search?q=ev+charger+installation+Wylie+&sca_esv=38512c4207789a1a&gl=us&hl=en&ei=lf-casndDpGi1e8PhYe62A4&start=20&sa=N&sstk=AS6-VmI4WCSwZZtuM44sBdXUTSgdeMXe5tJ-yPDR6NCvXjKFssmfzlhuVNPoEPKN9sLruXFfITnpA-u-EfuPkimJqVwF0ysgj7X1cQ&ved=2ahUKEwiJ_IvXodmWAxURUfUHHYWDDusQ8tMDegQIJxAG",
+      "4": "https://www.google.com/search?q=ev+charger+installation+Wylie+&sca_esv=38512c4207789a1a&gl=us&hl=en&ei=lf-casndDpGi1e8PhYe62A4&start=30&sa=N&sstk=AS6-VmI4WCSwZZtuM44sBdXUTSgdeMXe5tJ-yPDR6NCvXjKFssmfzlhuVNPoEPKN9sLruXFfITnpA-u-EfuPkimJqVwF0ysgj7X1cQ&ved=2ahUKEwiJ_IvXodmWAxURUfUHHYWDDusQ8tMDegQIJxAI",
+      "5": "https://www.google.com/search?q=ev+charger+installation+Wylie+&sca_esv=38512c4207789a1a&gl=us&hl=en&ei=lf-casndDpGi1e8PhYe62A4&start=40&sa=N&sstk=AS6-VmI4WCSwZZtuM44sBdXUTSgdeMXe5tJ-yPDR6NCvXjKFssmfzlhuVNPoEPKN9sLruXFfITnpA-u-EfuPkimJqVwF0ysgj7X1cQ&ved=2ahUKEwiJ_IvXodmWAxURUfUHHYWDDusQ8tMDegQIJxAK",
+      "6": "https://www.google.com/search?q=ev+charger+installation+Wylie+&sca_esv=38512c4207789a1a&gl=us&hl=en&ei=lf-casndDpGi1e8PhYe62A4&start=50&sa=N&sstk=AS6-VmI4WCSwZZtuM44sBdXUTSgdeMXe5tJ-yPDR6NCvXjKFssmfzlhuVNPoEPKN9sLruXFfITnpA-u-EfuPkimJqVwF0ysgj7X1cQ&ved=2ahUKEwiJ_IvXodmWAxURUfUHHYWDDusQ8tMDegQIJxAM",
+      "7": "https://www.google.com/search?q=ev+charger+installation+Wylie+&sca_esv=38512c4207789a1a&gl=us&hl=en&ei=lf-casndDpGi1e8PhYe62A4&start=60&sa=N&sstk=AS6-VmI4WCSwZZtuM44sBdXUTSgdeMXe5tJ-yPDR6NCvXjKFssmfzlhuVNPoEPKN9sLruXFfITnpA-u-EfuPkimJqVwF0ysgj7X1cQ&ved=2ahUKEwiJ_IvXodmWAxURUfUHHYWDDusQ8tMDegQIJxAO",
+      "8": "https://www.google.com/search?q=ev+charger+installation+Wylie+&sca_esv=38512c4207789a1a&gl=us&hl=en&ei=lf-casndDpGi1e8PhYe62A4&start=70&sa=N&sstk=AS6-VmI4WCSwZZtuM44sBdXUTSgdeMXe5tJ-yPDR6NCvXjKFssmfzlhuVNPoEPKN9sLruXFfITnpA-u-EfuPkimJqVwF0ysgj7X1cQ&ved=2ahUKEwiJ_IvXodmWAxURUfUHHYWDDusQ8tMDegQIJxAQ",
+      "9": "https://www.google.com/search?q=ev+charger+installation+Wylie+&sca_esv=38512c4207789a1a&gl=us&hl=en&ei=lf-casndDpGi1e8PhYe62A4&start=80&sa=N&sstk=AS6-VmI4WCSwZZtuM44sBdXUTSgdeMXe5tJ-yPDR6NCvXjKFssmfzlhuVNPoEPKN9sLruXFfITnpA-u-EfuPkimJqVwF0ysgj7X1cQ&ved=2ahUKEwiJ_IvXodmWAxURUfUHHYWDDusQ8tMDegQIJxAS",
+      "10": "https://www.google.com/search?q=ev+charger+installation+Wylie+&sca_esv=38512c4207789a1a&gl=us&hl=en&ei=lf-casndDpGi1e8PhYe62A4&start=90&sa=N&sstk=AS6-VmI4WCSwZZtuM44sBdXUTSgdeMXe5tJ-yPDR6NCvXjKFssmfzlhuVNPoEPKN9sLruXFfITnpA-u-EfuPkimJqVwF0ysgj7X1cQ&ved=2ahUKEwiJ_IvXodmWAxURUfUHHYWDDusQ8tMDegQIJxAU"
+    }
+  },
+  "serpapi_pagination": {
+    "current": 1,
+    "next_link": "https://serpapi.com/search.json?device=desktop&engine=google&gl=us&google_domain=google.com&hl=en&location=Dallas-Fort+Worth%2C+Texas%2C+United+States&q=ev+charger+installation+Wylie+&start=10",
+    "next": "https://serpapi.com/search.json?device=desktop&engine=google&gl=us&google_domain=google.com&hl=en&location=Dallas-Fort+Worth%2C+Texas%2C+United+States&q=ev+charger+installation+Wylie+&start=10",
+    "other_pages": {
+      "2": "https://serpapi.com/search.json?device=desktop&engine=google&gl=us&google_domain=google.com&hl=en&location=Dallas-Fort+Worth%2C+Texas%2C+United+States&q=ev+charger+installation+Wylie+&start=10",
+      "3": "https://serpapi.com/search.json?device=desktop&engine=google&gl=us&google_domain=google.com&hl=en&location=Dallas-Fort+Worth%2C+Texas%2C+United+States&q=ev+charger+installation+Wylie+&start=20",
+      "4": "https://serpapi.com/search.json?device=desktop&engine=google&gl=us&google_domain=google.com&hl=en&location=Dallas-Fort+Worth%2C+Texas%2C+United+States&q=ev+charger+installation+Wylie+&start=30",
+      "5": "https://serpapi.com/search.json?device=desktop&engine=google&gl=us&google_domain=google.com&hl=en&location=Dallas-Fort+Worth%2C+Texas%2C+United+States&q=ev+charger+installation+Wylie+&start=40",
+      "6": "https://serpapi.com/search.json?device=desktop&engine=google&gl=us&google_domain=google.com&hl=en&location=Dallas-Fort+Worth%2C+Texas%2C+United+States&q=ev+charger+installation+Wylie+&start=50",
+      "7": "https://serpapi.com/search.json?device=desktop&engine=google&gl=us&google_domain=google.com&hl=en&location=Dallas-Fort+Worth%2C+Texas%2C+United+States&q=ev+charger+installation+Wylie+&start=60",
+      "8": "https://serpapi.com/search.json?device=desktop&engine=google&gl=us&google_domain=google.com&hl=en&location=Dallas-Fort+Worth%2C+Texas%2C+United+States&q=ev+charger+installation+Wylie+&start=70",
+      "9": "https://serpapi.com/search.json?device=desktop&engine=google&gl=us&google_domain=google.com&hl=en&location=Dallas-Fort+Worth%2C+Texas%2C+United+States&q=ev+charger+installation+Wylie+&start=80",
+      "10": "https://serpapi.com/search.json?device=desktop&engine=google&gl=us&google_domain=google.com&hl=en&location=Dallas-Fort+Worth%2C+Texas%2C+United+States&q=ev+charger+installation+Wylie+&start=90"
+    }
+  },
+  "_fetched_at": "2026-09-06T05:52:23.599Z",
+  "_query": "ev charger installation Wylie",
+  "_city": "Wylie",
+  "_template": "ev charger installation {city}"
+}

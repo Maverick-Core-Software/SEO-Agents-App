@@ -1,0 +1,181 @@
+{
+  "topic": {
+    "service_key": "panel_upgrade",
+    "service_label": "Electrical Panel Upgrade / Replacement",
+    "city": "Rockwall",
+    "query_family": ["electrical panel upgrade rockwall", "200 amp panel upgrade rockwall tx", "panel replacement cost rockwall"]
+  },
+  "gbp": [
+    {
+      "day": 1,
+      "service": "Electrical Panel Upgrade / Replacement",
+      "topic": "Signs a Rockwall panel is out of headroom",
+      "trend_tie": "Search demand for panel upgrades in Rockwall with Grizzly ranking on page 2",
+      "headline": "Is Your Rockwall Panel Running Out of Room?",
+      "body": "Tripping breakers, warm cover plates and a panel packed with tandem breakers usually mean a home has outgrown its service. We have been upgrading panels across Rockwall since 2021 and can tell you in one visit whether yours needs more than a breaker swap.",
+      "caption": "A finished 200-amp panel replacement in a Rockwall garage.",
+      "photo_file": "panel-upgrade-rockwall-200a.jpg",
+      "cta": "Request service",
+      "hashtags": ["#RockwallTX", "#PanelUpgrade", "#RockwallElectrician", "#GrizzlyElectrical"]
+    },
+    {
+      "day": 2,
+      "service": "EV Charger Installation",
+      "topic": "Level 2 charging at home in Garland",
+      "trend_tie": "evergreen",
+      "headline": "Level 2 Charging at Home in Garland",
+      "body": "A Level 2 charger turns an overnight plug-in into a full battery by morning. We run the dedicated circuit, mount the charger where the cable actually reaches, and confirm your panel has the capacity before we start. Garland homeowners, this is a one-day job.",
+      "caption": "A wall-mounted Level 2 charger installed in a Garland garage.",
+      "photo_file": "ev-charger-garage-garland.jpg",
+      "cta": "Book an appointment",
+      "hashtags": ["#GarlandTX", "#EVCharger", "#Level2Charger"]
+    },
+    {
+      "day": 3,
+      "service": "Electrical Troubleshooting & Repair",
+      "topic": "When a flickering light is more than a bulb",
+      "trend_tie": "evergreen",
+      "headline": "Flickering Lights in Rowlett? Here Is What We Check",
+      "body": "A flicker that follows the AC kicking on, or shows up in several rooms at once, is usually a loose neutral or a tired breaker, not the bulb. We trace it to the source instead of guessing. Rowlett is home base, so we are usually close by.",
+      "caption": "Suggested photo: a technician testing connections inside an open panel.",
+      "photo_file": null,
+      "cta": "Use the Call button",
+      "hashtags": ["#RowlettTX", "#ElectricalRepair", "#Troubleshooting"]
+    },
+    {
+      "day": 4,
+      "service": "Electrical Panel Upgrade / Replacement",
+      "topic": "What a panel upgrade actually includes",
+      "trend_tie": "Search demand for panel upgrades in Rockwall with Grizzly ranking on page 2",
+      "headline": "What a Panel Upgrade Includes in Rockwall",
+      "body": "New 200-amp panel, new breakers, a proper grounding and bonding check, permit and inspection, and labels you can actually read. That is the whole job, not a patch. We handle the utility coordination for Rockwall homes so you are not without power longer than needed.",
+      "caption": "An older panel opened up before replacement.",
+      "photo_file": "panel-open-before.jpg",
+      "cta": "Contact Grizzly",
+      "hashtags": ["#RockwallTX", "#PanelUpgrade", "#ElectricalPanel", "#DFWElectrician"]
+    },
+    {
+      "day": 5,
+      "service": "EV Charger Installation",
+      "topic": "Do you need a panel upgrade for an EV charger?",
+      "trend_tie": "DFW early fall: post-summer panel strain and EV charging capacity",
+      "headline": "EV Charger First, or Panel Upgrade First?",
+      "body": "Not every EV charger needs a bigger panel, but plenty do. We run a load calculation before quoting so Rockwall and Garland homeowners know up front whether a 100-amp panel can carry a charger or whether the panel comes first.",
+      "caption": "A Level 2 charger and the panel that feeds it.",
+      "photo_file": "ev-charger-install-2.jpg",
+      "cta": "Request service",
+      "hashtags": ["#EVCharger", "#RockwallTX", "#GarlandTX", "#PanelUpgrade"]
+    },
+    {
+      "day": 6,
+      "service": "Electrical Panel Upgrade / Replacement",
+      "topic": "Before and after: a Rockwall panel replacement",
+      "trend_tie": "evergreen",
+      "headline": "Before and After: A Rockwall Panel Replacement",
+      "body": "Left: a crowded panel with doubled-up breakers and scorching on one lug. Right: a clean 200-amp panel with room to grow. Same Rockwall garage, one working day. Licensed and insured, serving DFW since 2021.",
+      "caption": "Before and after of a panel replacement in Rockwall.",
+      "photo_file": "before-after-panel-rockwall.jpg",
+      "cta": "Book an appointment",
+      "hashtags": ["#RockwallTX", "#BeforeAndAfter", "#PanelUpgrade", "#GrizzlyElectrical"]
+    },
+    {
+      "day": 7,
+      "service": "Generator Inlet, Interlock & Installation",
+      "topic": "Generator inlet and interlock before winter",
+      "trend_tie": "DFW early fall: generator prep ahead of winter",
+      "headline": "Get the Generator Inlet Done Before the Cold",
+      "body": "An inlet box and interlock kit lets a portable generator feed your panel safely, no extension cords through windows. Fall is the right time to get it installed and tested, before the first ice storm has every electrician in DFW booked solid.",
+      "caption": "A generator inlet box mounted beside a meter base.",
+      "photo_file": "generator-inlet-install.jpg",
+      "cta": "Contact Grizzly",
+      "hashtags": ["#GeneratorInlet", "#RowlettTX", "#StormPrep", "#DFWElectrician"]
+    }
+  ],
+  "facebook": [
+    {
+      "day": 1,
+      "type": "slideshow",
+      "service": "Electrical Panel Upgrade / Replacement",
+      "post_goal": "education",
+      "format": "Educational/How-To",
+      "hook": "Your breaker panel has a way of telling you it is done. Most Rockwall homeowners miss it.",
+      "body": "It starts small. A breaker that trips when the dryer and the microwave run together. A cover plate that feels warm. A panel so full the last electrician doubled up breakers to make room. None of that is dangerous today, but it is the panel asking for help. We have replaced a lot of these across Rockwall since 2021, and the story is always the same: the house grew, the panel did not.",
+      "cta": "Save this for your next panel inspection",
+      "hashtags": ["#RockwallTX", "#PanelUpgrade"],
+      "photo_file": "panel-upgrade-rockwall-200a.jpg",
+      "on_screen_text": "[0:00-0:03] Your panel is talking. Are you listening? | [0:04-0:08] Warm covers, doubled breakers, random trips | [0:09-0:14] A 200-amp panel with room to grow | [0:15-0:18] Rockwall homes, done in a day",
+      "boost": { "decision": "YES", "daily_usd": 25, "days": 1 },
+      "boost_targeting": "15mi Rockwall, homeowners 28-65, home improvement interests"
+    },
+    {
+      "day": 3,
+      "type": "photo",
+      "service": "Electrical Troubleshooting & Repair",
+      "post_goal": "engagement",
+      "format": "Interactive/Question",
+      "hook": "Quick poll: which one of these has happened in your house this month?",
+      "body": "A: lights flicker when the AC kicks on. B: one outlet in the kitchen just quit. C: a breaker trips for no reason you can find. Every one of those has a real cause, and it is almost never the bulb. We trace it instead of guessing, from our home base in Rowlett to anywhere in DFW.",
+      "cta": "Drop A, B, or C in the comments",
+      "hashtags": ["#RowlettTX"],
+      "photo_file": null,
+      "on_screen_text": "",
+      "boost": { "decision": "MAYBE", "daily_usd": null, "days": null },
+      "boost_targeting": "15mi Rockwall, homeowners 28-65"
+    },
+    {
+      "day": 5,
+      "type": "carousel",
+      "service": "EV Charger Installation",
+      "post_goal": "social_proof",
+      "format": "Behind-the-Scenes",
+      "hook": "This is what a one-day EV charger install looks like from start to finish.",
+      "body": "Swipe through: the panel check first, because a Level 2 charger needs a dedicated circuit and the capacity to feed it. Then the conduit run, the charger mounted where the cable actually reaches the car, and the final test. Garland and Rockwall homeowners ask if it takes a week. It takes a day.",
+      "cta": "Tag a friend who just bought an EV",
+      "hashtags": ["#EVCharger", "#GarlandTX"],
+      "photo_file": "ev-charger-garage-garland.jpg",
+      "on_screen_text": "",
+      "boost": { "decision": "YES", "daily_usd": 25, "days": 1 },
+      "boost_targeting": "15mi Rockwall, EV owners and shoppers"
+    },
+    {
+      "day": 6,
+      "type": "text",
+      "service": "Electrical Panel Upgrade / Replacement",
+      "post_goal": "entertainment",
+      "format": "Humor/Personality",
+      "hook": "Things we have found inside DFW breaker panels, ranked.",
+      "body": "Number three: a wasp nest with opinions. Number two: a breaker labeled 'mystery, do not touch' in three different handwritings. Number one: a Rockwall panel from the seventies still running a house with two EVs and a hot tub. It was very tired. We gave it a well-earned retirement and a 200-amp replacement.",
+      "cta": "What is the weirdest thing an electrician found in your house? Tell us below",
+      "hashtags": [],
+      "photo_file": null,
+      "on_screen_text": "",
+      "boost": { "decision": "NO", "daily_usd": null, "days": null },
+      "boost_targeting": ""
+    }
+  ],
+  "website_actions": [
+    {
+      "type": "website_service_page_update",
+      "title": "Add a Rockwall section to the panel upgrades page",
+      "target": "/panel-upgrades/",
+      "priority": "medium",
+      "description": "Add a short section naming Rockwall and nearby Heath and Fate, covering the signs a panel needs replacement and what the upgrade includes. Keep tenure as since 2021 and quote no prices.",
+      "owner_gate": false,
+      "draft": null,
+      "source_ids": []
+    }
+  ],
+  "notes": {
+    "trend_signals": [
+      "Panel upgrade searches around Rockwall where Grizzly sits just off page one",
+      "Early-fall generator prep ahead of winter"
+    ],
+    "photo_gaps": [
+      "Day 3 (gbp): a technician testing connections inside an open panel",
+      "Day 3 (facebook): a flickering light or open junction box",
+      "Day 6 (facebook): text post, no photo needed"
+    ],
+    "degraded": false,
+    "degraded_reason": null
+  }
+}

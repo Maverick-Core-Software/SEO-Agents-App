@@ -1,0 +1,61 @@
+{
+  "weekly_posts": [
+    {
+      "platform": "gbp",
+      "day": null,
+      "post_date": "2026-08-28",
+      "type": null,
+      "service": "EV Charger Installation",
+      "hook": "Charging at home in Rowlett just got easier",
+      "body": "A Level 2 charger in your garage means every morning starts full. We install them across Rowlett and Rockwall.",
+      "hashtags": "#RowlettElectrician #EVCharger #GrizzlyElectrical",
+      "status": "posted",
+      "platform_post_id": "gbp-100",
+      "photo_file": "ev-charger-garage.jpg"
+    },
+    {
+      "platform": "facebook",
+      "day": 3,
+      "post_date": "2026-08-26",
+      "type": "photo",
+      "service": "Electrical Panel Upgrade / Replacement",
+      "hook": "Is your panel keeping up with your home?",
+      "body": "Older 100 amp panels struggle with modern loads. Serving homeowners in Garland and Sachse with 200 amp upgrades.",
+      "hashtags": null,
+      "status": "posted",
+      "platform_post_id": "fb-200",
+      "photo_file": "panel-200amp.jpg"
+    },
+    {
+      "platform": "facebook",
+      "day": 1,
+      "post_date": "2026-08-24T00:00:00",
+      "type": "video",
+      "service": "Generator Inlet, Interlock & Installation",
+      "hook": "",
+      "body": null,
+      "hashtags": null,
+      "status": "skipped",
+      "platform_post_id": null,
+      "photo_file": ""
+    },
+    {
+      "platform": "gbp",
+      "day": null,
+      "post_date": "2026-07-20",
+      "type": null,
+      "service": "Recessed Lighting Installation",
+      "hook": "Brighter kitchens in Fort Worth homes",
+      "body": "Our Rowlett-based crew installs recessed lighting with dimmers.",
+      "hashtags": "",
+      "status": "posted",
+      "platform_post_id": "gbp-90",
+      "photo_file": null
+    }
+  ],
+  "website_tasks": [
+    { "title": "Add EV charger FAQ section", "type": "blog_post", "status": "done", "updated_at": "2026-08-30T10:00:00+00:00" },
+    { "title": "Fix footer phone number", "type": "seo_fix", "status": "waiting_on_owner", "updated_at": "2026-07-01T10:00:00+00:00" },
+    { "title": null, "type": "alert", "status": "skipped", "updated_at": null }
+  ]
+}

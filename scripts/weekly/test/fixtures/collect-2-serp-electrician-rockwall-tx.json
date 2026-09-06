@@ -1,0 +1,511 @@
+{
+  "search_metadata": {
+    "id": "6a9cff4cd02d2aba1482f5e6",
+    "status": "Success",
+    "markdown_endpoint": "https://serpapi.com/searches/RilsmReZm3uk4ugena-9DhcccG4eBI5Huqpj14iqOu0/6a9cff4cd02d2aba1482f5e6.md",
+    "pixel_position_endpoint": "https://serpapi.com/searches/RilsmReZm3uk4ugena-9DhcccG4eBI5Huqpj14iqOu0/6a9cff4cd02d2aba1482f5e6.json_with_pixel_position",
+    "created_at": "2026-09-06 05:51:08 UTC",
+    "processed_at": "2026-09-06 05:51:08 UTC",
+    "google_url": "https://www.google.com/search?q=electrician+Rockwall+tx&oq=electrician+Rockwall+tx&uule=w+CAIQICIFRGFsbGFzIEZvcnQgV29ydGggSW50ZXJuYXRpb25hbCBBaXJwb3J0LFRleGFzLFVuaXRlZCBTdGF0ZXM&hl=en&gl=us&sourceid=chrome&ie=UTF-8",
+    "total_time_taken": 2.26
+  },
+  "search_parameters": {
+    "engine": "google",
+    "q": "electrician Rockwall tx",
+    "location_requested": "Dallas-Fort Worth, Texas, United States",
+    "location_used": "Dallas Fort Worth International Airport,Texas,United States",
+    "google_domain": "google.com",
+    "hl": "en",
+    "gl": "us",
+    "device": "desktop"
+  },
+  "search_information": {
+    "query_displayed": "electrician Rockwall tx",
+    "total_results": 19700,
+    "time_taken_displayed": 0.26,
+    "organic_results_state": "Results for exact spelling"
+  },
+  "local_map": {
+    "image": "https://www.google.com/maps/vt/data=xp8f1HNdkwdN34aYdl01in6nBIpp9FkeOMxBRSaXne3tKVCXPciDkkVjaF2A50FUnfg-qBUXAoMX5JlygnQ7QpS4tQBpHLHp9S0PON-fb-qbI_xtq7F7vFP7jR7k94EwfdfeCca9of-iYCanjKDJAKUSZipTgsMQyQKqzNV2k95z1ZtD57BIkbvL_C-4spk0R9UtVoZldZypr-EwkivbgMAcukjRDXTNlumPorJvhtruEQ4ILgaOx5UXN0sTv9Z4axoYn3eQlYgAXmxogn3YLuimwzIfgizbsOUKE2hq6MlDBo3wCZ7rL23RdVwQljw7xCKj3JLf2ZH28nLX1WEugWdVDfWh4cTUGDLX6-DMnG00JlOt4C8BU61i7XyC-h2XOVAFKXygRD7FgqZYHEL-5PmH-5CceoL6W9nYIWmIh6ZioOnW0dT7lJ-tpaJkRjGO-bH0BA_aozKmRDCrN0EUwNLTqswxKYJspvD3E_74aPW8GtqNHCPnwx6ZXF3c_NVhaI1Y7VrLD5dazEXS-Mjgd9It5MoGjUYoJLen_5ehPYS2N4TLPuF_jpKY1Z0UFYwIR5xDy4AZLaB1QIzjyTxfiwlg8xblO2FSzbE5j2ScSUI-BD35ir3-0yB-nWb-AXnQWuf3mjMQrlj_JqgkY0SK8VzVAOFq3Po6RA5JY3v0HQPEBcxAJFXf_LPIXP-5UllOrGTJGctRTRdr124tAW3719L6MERtgc2fK7FlFzgoiAbEqrFsvl867YZPdJNI89PrOhvaePtQZLPqcoLVFMzB_ZzKZe9UsA1uPoi7K2kZu7m-PfShhCkak0xlGTGqp-pWQ3vBiNPDyMNbNHER_MLpX_dJv3uiiJR50qeFtJ2PvL09WAX2uNA9qbxDT81ek_mSdJqa-7VCAkmgd_-f02cRrzQTCX4lvRtmEdjO-5aIGndmNfAxn-tnIDE_6JWIQ8AHKbDJTjJ0ZN2hm6u1ngNGSopCtNBVn7QLdrpy5Ie7v02P4Uf-_tusOWqM_1F3OXovASC-zJyzPHQxNsbo3pY3aQbxWrfMlSlFkbnLrjT6NsVdcPavnkVmxkNTvzheqOrx8_GHSsK1bKr03RWjzIqHNtTN3550JWyssAJLtVGwmqVxZ46F8SqrjBEUdqqabeTGZrg7ngslfLEPCJDHMGs8QGVfNkHcf1cpkpse9GOOlWrwH4HDzT2DSjyc1WRbsi258kRswEDp7tnwCLt68bkOqOd6jj5X1ziFCT9hH2WDvcQ",
+    "gps_coordinates": {
+      "latitude": 32.913603231028915,
+      "longitude": -96.3665771484375
+    }
+  },
+  "local_results": {
+    "places": [
+      {
+        "position": 1,
+        "rating": 5,
+        "reviews": 386,
+        "reviews_original": "(386)",
+        "description": "\"Trace and his crew did an excellent job replacing my electrical panel.\"",
+        "links": {
+          "website": "https://www.rockwallelectricheatingandair.com/",
+          "directions": "https://www.google.com/maps/dir//Rockwall+Electric+Heating+and+Air,+6107+I-30+Frontage+Rd,+Royse+City,+TX+75189/data=!4m6!4m5!1m1!4e2!1m2!1m1!1s0x8649556460a4c6dd:0x8cb1cd5d60057de2?sa=X&ved=2ahUKEwjbqOm0odmWAxU9ppUCHVM-Km0Q48ADegQIHRAA&hl=en&gl=us"
+        },
+        "place_id": "10138110037114322402",
+        "place_id_search": "https://serpapi.com/search.json?device=desktop&engine=google&gl=us&google_domain=google.com&hl=en&location=Dallas-Fort+Worth%2C+Texas%2C+United+States&ludocid=10138110037114322402&q=electrician+Rockwall+tx",
+        "provider_id": "/g/1tfh519g",
+        "gps_coordinates": {
+          "latitude": 32.985581,
+          "longitude": -96.261202
+        },
+        "title": "Rockwall Electric Heating and Air",
+        "type": "Electrician",
+        "years_in_business": "30+ years in business",
+        "address": "Royse City, TX",
+        "phone": "(972) 460-0058",
+        "hours": "Open 24 hours"
+      },
+      {
+        "position": 2,
+        "rating": 4.9,
+        "reviews": 1500,
+        "reviews_original": "(1.5K)",
+        "description": "\"The electrician was patient and got my door bell working in no time.\"",
+        "links": {
+          "website": "http://callmilestone.com/",
+          "directions": "https://www.google.com/maps/dir//Milestone+Electric,+A%2FC,+%26+Plumbing,+2800+Discovery+Blvd+Ste+100,+Rockwall,+TX+75032/data=!4m6!4m5!1m1!4e2!1m2!1m1!1s0x864c1d3916af037f:0xe74db6d3a7a1841f?sa=X&ved=2ahUKEwjbqOm0odmWAxU9ppUCHVM-Km0Q48ADegQIHhAA&hl=en&gl=us",
+          "schedule": "https://app.avoca.ai/simple-scheduler/landing/204?utm_source=google&utm_medium=rwg&apiKey=sk_b41104ffa806559e4fc94cbc8799cf0a9e71a2bef8d0919bfdec11c5985cbbfb&locationId=9260afe1-1ef8-45be-93a1-fe2ee267fe33&rwg_token=AE37R_hz85UIWNZIjCVYYC8tiinNHc6kWaWxEd5ocAu77j_naN0_tshwFmfKi3wkzWdAh-DzqzxvpRhsTc5R35F-ylv_nGXYDQ%3D%3D&source=cat"
+        },
+        "place_id": "16667178816134808607",
+        "place_id_search": "https://serpapi.com/search.json?device=desktop&engine=google&gl=us&google_domain=google.com&hl=en&location=Dallas-Fort+Worth%2C+Texas%2C+United+States&ludocid=16667178816134808607&q=electrician+Rockwall+tx",
+        "provider_id": "/g/11sz5pb7pz",
+        "gps_coordinates": {
+          "latitude": 32.910034,
+          "longitude": -96.420522
+        },
+        "title": "Milestone Electric, A/C, & Plumbing",
+        "type": "Electrician",
+        "years_in_business": "20+ years in business",
+        "address": "Rockwall, TX",
+        "phone": "(972) 616-4171",
+        "hours": "Open 24 hours"
+      },
+      {
+        "position": 3,
+        "rating": 5,
+        "reviews": 136,
+        "reviews_original": "(136)",
+        "description": "\"They came out promptly and fixed my issue!\"",
+        "links": {
+          "website": "http://revelationelectrical.com/",
+          "directions": "https://www.google.com/maps/dir//Revelation+Electrical+Services,+6+Canyon+Ridge+Dr,+Rockwall,+TX+75087/data=!4m6!4m5!1m1!4e2!1m2!1m1!1s0x864c01579053bbd9:0xee4592fd30cd8879?sa=X&ved=2ahUKEwjbqOm0odmWAxU9ppUCHVM-Km0Q48ADegQIHBAA&hl=en&gl=us"
+        },
+        "place_id": "17169290770563041401",
+        "place_id_search": "https://serpapi.com/search.json?device=desktop&engine=google&gl=us&google_domain=google.com&hl=en&location=Dallas-Fort+Worth%2C+Texas%2C+United+States&ludocid=17169290770563041401&q=electrician+Rockwall+tx",
+        "provider_id": "/g/11jgjyt8kk",
+        "gps_coordinates": {
+          "latitude": 32.954662,
+          "longitude": -96.41801
+        },
+        "title": "Revelation Electrical Services",
+        "type": "Electrician",
+        "years_in_business": "7+ years in business",
+        "address": "Rockwall, TX",
+        "phone": "(214) 771-1188",
+        "hours": "Open 24 hours"
+      }
+    ],
+    "more_locations_link": "https://www.google.com/search?q=electrician+Rockwall+tx&sca_esv=38512c4207789a1a&gl=us&hl=en&sxsrf=APpeQnv7hXeKy1u2ELijZQs2BRMjA0RTag:1788673869377&udm=1&lsack=Tf-capvOFr3M1sQP0_yo6QY&sa=X&ved=2ahUKEwjbqOm0odmWAxU9ppUCHVM-Km0QjGp6BAgmEAA"
+  },
+  "related_questions": [
+    {
+      "question": "What do electricians charge per hour in Texas?",
+      "type": "ai_overview",
+      "page_token": "a1wa3nicHdBdjqIwAADg7GV8HCmIG03MJoyU2GgNpX_wssFWBWmhi46Ab3OFOcOeak-zyXxH-D7_mrpt_v34qh4Pd1_P58MwvF277mrOb6qz8_I-tWquSmNOpWrWy59L8OuiNvFTRe-9ilLmHN8SL7PVgTCSM4YG6q2exTYSOihCCqoIy-hDJ8hJAO9UGEAgbvLWWf0qhr3ADvs64jc4cckWOg79nK_2JUC14lWft_hOfNwKqRMcg0spzJI1xjIfkQwS_2Sq-py4PyxZBGdpqjKIvWMSj6nfTRnFE-doOG41OYHdeEz4gtkRcRDdUrv6oCYdeVJ5Z0mkBGipKWyyCTRUappzLXijw1w4XEizY1tuMwu9DKA-rjQranDLZeRTr5gOnjcqANMDXIWnV0EE6eqUkZe6Gcth_igZtIVBjJhrUCZqoCzkNB571hLBucFpOruo5yaYfV9vfl_sY-367vof1z6Mhg",
+      "serpapi_ai_overview_link": "https://serpapi.com/search.json?engine=google_ai_overview&page_token=a1wa3nicHdBdjqIwAADg7GV8HCmIG03MJoyU2GgNpX_wssFWBWmhi46Ab3OFOcOeak-zyXxH-D7_mrpt_v34qh4Pd1_P58MwvF277mrOb6qz8_I-tWquSmNOpWrWy59L8OuiNvFTRe-9ilLmHN8SL7PVgTCSM4YG6q2exTYSOihCCqoIy-hDJ8hJAO9UGEAgbvLWWf0qhr3ADvs64jc4cckWOg79nK_2JUC14lWft_hOfNwKqRMcg0spzJI1xjIfkQwS_2Sq-py4PyxZBGdpqjKIvWMSj6nfTRnFE-doOG41OYHdeEz4gtkRcRDdUrv6oCYdeVJ5Z0mkBGipKWyyCTRUappzLXijw1w4XEizY1tuMwu9DKA-rjQranDLZeRTr5gOnjcqANMDXIWnV0EE6eqUkZe6Gcth_igZtIVBjJhrUCZqoCzkNB571hLBucFpOruo5yaYfV9vfl_sY-367vof1z6Mhg",
+      "next_page_token": "eyJvbnMiOiIxMDA0MSIsImZjIjoiRXFFQkNtSkJTbWxVTkhSS1JWaDVPR1J3ZG5KU1RVNXJOa3c0VUdnMmEwMHdSbXBCWlUxc1JsTTBkaTFSVDNsNGJtTjVPSE50TTNacE9GWlhNMUo1Tlc1UWFXWkRWR2w2VTNGR1pXRlZORTVGT0hCMVMyTlpWSFJqWjFnMWQyZFhaMHhVVm5seVp4SVhWR1l0WTJGd2RrOUdjak5OTVhOUlVEQmZlVzgyVVZrYUlrRkVjM0k1WmxGa2NsQmtPVVV3VDBocFNVVlRNVmRGWTNKeVEwMXdiVzVsTjNjIiwiZmN2IjoiMyIsImVpIjoiVGYtY2Fwdk9GcjNNMXNRUDBfeW82UVkiLCJxYyI6IkNoZGxiR1ZqZEhKcFkybGhiaUJ5YjJOcmQyRnNiQ0IwZUJBQWZlUTg0ejQiLCJxdWVzdGlvbiI6IldoYXQgZG8gZWxlY3RyaWNpYW5zIGNoYXJnZSBwZXIgaG91ciBpbiBUZXhhcz8iLCJsayI6IkdpMTNhR0YwSUdSdklHVnNaV04wY21samFXRnVjeUJqYUdGeVoyVWdjR1Z5SUdodmRYSWdhVzRnZEdWNFlYTSIsImJzIjoiYzVXUFBRdkNNQlJGY2MzazNPbE80dUFINmc5d2NISVZvYU04WWpUQk5FOWVVcUxfM2xhcTFFSFFfUjdPdVlyVXJMU1VjR1FZYjNRU3B4MkZDRzFKemdaWEk3QmNDMXpBM3R3b3JwZnpZcHBfSkZKTHFJTmFsWmJoSXBJMXFEZ21uS2ppT3JiYnlBRW40UW83MXBkTTNrOWVubkV4LXJhVmJ0c0puRnB1S0dEYlR5S1B6SEpCZzFSM2NBNXRWRFM5SDZ0aW9SdktfVWk5VmIwdnZuM2NKUFp3elNFSjZjVHlxY3BfVUVfVmNQQUEiLCJpZCI6ImZjX1RmLWNhcHZPRnIzTTFzUVAwX3lvNlFZXzYifQ==",
+      "serpapi_link": "https://serpapi.com/search.json?device=desktop&engine=google_related_questions&google_domain=google.com&next_page_token=eyJvbnMiOiIxMDA0MSIsImZjIjoiRXFFQkNtSkJTbWxVTkhSS1JWaDVPR1J3ZG5KU1RVNXJOa3c0VUdnMmEwMHdSbXBCWlUxc1JsTTBkaTFSVDNsNGJtTjVPSE50TTNacE9GWlhNMUo1Tlc1UWFXWkRWR2w2VTNGR1pXRlZORTVGT0hCMVMyTlpWSFJqWjFnMWQyZFhaMHhVVm5seVp4SVhWR1l0WTJGd2RrOUdjak5OTVhOUlVEQmZlVzgyVVZrYUlrRkVjM0k1WmxGa2NsQmtPVVV3VDBocFNVVlRNVmRGWTNKeVEwMXdiVzVsTjNjIiwiZmN2IjoiMyIsImVpIjoiVGYtY2Fwdk9GcjNNMXNRUDBfeW82UVkiLCJxYyI6IkNoZGxiR1ZqZEhKcFkybGhiaUJ5YjJOcmQyRnNiQ0IwZUJBQWZlUTg0ejQiLCJxdWVzdGlvbiI6IldoYXQgZG8gZWxlY3RyaWNpYW5zIGNoYXJnZSBwZXIgaG91ciBpbiBUZXhhcz8iLCJsayI6IkdpMTNhR0YwSUdSdklHVnNaV04wY21samFXRnVjeUJqYUdGeVoyVWdjR1Z5SUdodmRYSWdhVzRnZEdWNFlYTSIsImJzIjoiYzVXUFBRdkNNQlJGY2MzazNPbE80dUFINmc5d2NISVZvYU04WWpUQk5FOWVVcUxfM2xhcTFFSFFfUjdPdVlyVXJMU1VjR1FZYjNRU3B4MkZDRzFKemdaWEk3QmNDMXpBM3R3b3JwZnpZcHBfSkZKTHFJTmFsWmJoSXBJMXFEZ21uS2ppT3JiYnlBRW40UW83MXBkTTNrOWVubkV4LXJhVmJ0c0puRnB1S0dEYlR5S1B6SEpCZzFSM2NBNXRWRFM5SDZ0aW9SdktfVWk5VmIwdnZuM2NKUFp3elNFSjZjVHlxY3BfVUVfVmNQQUEiLCJpZCI6ImZjX1RmLWNhcHZPRnIzTTFzUVAwX3lvNlFZXzYifQ%3D%3D"
+    },
+    {
+      "question": "Who is the most famous person from Rockwall, Texas?",
+      "type": "ai_overview",
+      "page_token": "72uXenicHdBdjqIwAMDxzGXmcWxlZYOJ2QTkY3WpUvohfdloq1Qo0CiDytteYc4wp5rTjNkD_H8P_3-f5tzWXy8fuu_tdT6Z3G63t7LrSnN8k10z2V8frZzIvTGHvazn7k8X_jrJRThIP7hIP6PWsiUGec0ayld7aaLlhplBNf36ALQm0GNoiVwVe0EOfkwRoSNp_WoTm0zyEj7duGjuOh39dgdq55D44TFJH7yiN8GhPRJ0LTgaeKyrPL6vstHf4kg3GTDb3BEuMukd1cb-oSogdLbeJGitTLQlozgrIoBImMNDXFAuehTbdwmj3zTRF0k9gqOoIDFz8lgFIlmdMjBLZQ4HMuqeGq8jEKMdjFwZQMKNqgT1LrupYqFWVJxhVez8KQHikQJwf7pZGnmzwygwx905o3iUlWloa0M0lvBZh8eGpciEMIVqS431GcCE8rCn2etJDgvn9f_rxd9T08_tpSu_ARM_i-Q",
+      "serpapi_ai_overview_link": "https://serpapi.com/search.json?engine=google_ai_overview&page_token=72uXenicHdBdjqIwAMDxzGXmcWxlZYOJ2QTkY3WpUvohfdloq1Qo0CiDytteYc4wp5rTjNkD_H8P_3-f5tzWXy8fuu_tdT6Z3G63t7LrSnN8k10z2V8frZzIvTGHvazn7k8X_jrJRThIP7hIP6PWsiUGec0ayld7aaLlhplBNf36ALQm0GNoiVwVe0EOfkwRoSNp_WoTm0zyEj7duGjuOh39dgdq55D44TFJH7yiN8GhPRJ0LTgaeKyrPL6vstHf4kg3GTDb3BEuMukd1cb-oSogdLbeJGitTLQlozgrIoBImMNDXFAuehTbdwmj3zTRF0k9gqOoIDFz8lgFIlmdMjBLZQ4HMuqeGq8jEKMdjFwZQMKNqgT1LrupYqFWVJxhVez8KQHikQJwf7pZGnmzwygwx905o3iUlWloa0M0lvBZh8eGpciEMIVqS431GcCE8rCn2etJDgvn9f_rxd9T08_tpSu_ARM_i-Q",
+      "next_page_token": "eyJvbnMiOiIxMDA0MSIsImZjIjoiRXFFQkNtSkJTbWxVTkhSS1JWaDVPR1J3ZG5KU1RVNXJOa3c0VUdnMmEwMHdSbXBCWlUxc1JsTTBkaTFSVDNsNGJtTjVPSE50TTNacE9GWlhNMUo1Tlc1UWFXWkRWR2w2VTNGR1pXRlZORTVGT0hCMVMyTlpWSFJqWjFnMWQyZFhaMHhVVm5seVp4SVhWR1l0WTJGd2RrOUdjak5OTVhOUlVEQmZlVzgyVVZrYUlrRkVjM0k1WmxGa2NsQmtPVVV3VDBocFNVVlRNVmRGWTNKeVEwMXdiVzVsTjNjIiwiZmN2IjoiMyIsImVpIjoiVGYtY2Fwdk9GcjNNMXNRUDBfeW82UVkiLCJxYyI6IkNoZGxiR1ZqZEhKcFkybGhiaUJ5YjJOcmQyRnNiQ0IwZUJBQWZlUTg0ejQiLCJxdWVzdGlvbiI6IldobyBpcyB0aGUgbW9zdCBmYW1vdXMgcGVyc29uIGZyb20gUm9ja3dhbGwsIFRleGFzPyIsImxrIjoiR2ladGIzTjBJR1poYlc5MWN5QndaWEp6YjI0Z1puSnZiU0J5YjJOcmQyRnNiQ0IwWlhoaGN3IiwiYnMiOiJjNVdQUFF2Q01CUkZjYzNrM09sTzR1QUg2Zzl3Y0hJVm9hTThZalRCTkU5ZVVxTF8zbGFxMUVIUV9SN091WXJVckxTVWNHUVliM1FTcHgyRkNHMUp6Z1pYSTdCY0MxekEzdHdvcnBmellwcF9KRkpMcUlOYWxaYmhJcEkxcURnbW5LamlPcmJieUFFbjRRbzcxcGRNM2s5ZW5uRXgtcmFWYnRzSm5GcHVLR0RiVHlLUHpISkJnMVIzY0E1dFZEUzlINnRpb1J2S19VaTlWYjB2dm4zY0pQWnd6U0VKNmNUeXFjcF9VRV9WY1BBQSIsImlkIjoiZmNfVGYtY2Fwdk9GcjNNMXNRUDBfeW82UVlfNiJ9",
+      "serpapi_link": "https://serpapi.com/search.json?device=desktop&engine=google_related_questions&google_domain=google.com&next_page_token=eyJvbnMiOiIxMDA0MSIsImZjIjoiRXFFQkNtSkJTbWxVTkhSS1JWaDVPR1J3ZG5KU1RVNXJOa3c0VUdnMmEwMHdSbXBCWlUxc1JsTTBkaTFSVDNsNGJtTjVPSE50TTNacE9GWlhNMUo1Tlc1UWFXWkRWR2w2VTNGR1pXRlZORTVGT0hCMVMyTlpWSFJqWjFnMWQyZFhaMHhVVm5seVp4SVhWR1l0WTJGd2RrOUdjak5OTVhOUlVEQmZlVzgyVVZrYUlrRkVjM0k1WmxGa2NsQmtPVVV3VDBocFNVVlRNVmRGWTNKeVEwMXdiVzVsTjNjIiwiZmN2IjoiMyIsImVpIjoiVGYtY2Fwdk9GcjNNMXNRUDBfeW82UVkiLCJxYyI6IkNoZGxiR1ZqZEhKcFkybGhiaUJ5YjJOcmQyRnNiQ0IwZUJBQWZlUTg0ejQiLCJxdWVzdGlvbiI6IldobyBpcyB0aGUgbW9zdCBmYW1vdXMgcGVyc29uIGZyb20gUm9ja3dhbGwsIFRleGFzPyIsImxrIjoiR2ladGIzTjBJR1poYlc5MWN5QndaWEp6YjI0Z1puSnZiU0J5YjJOcmQyRnNiQ0IwWlhoaGN3IiwiYnMiOiJjNVdQUFF2Q01CUkZjYzNrM09sTzR1QUg2Zzl3Y0hJVm9hTThZalRCTkU5ZVVxTF8zbGFxMUVIUV9SN091WXJVckxTVWNHUVliM1FTcHgyRkNHMUp6Z1pYSTdCY0MxekEzdHdvcnBmellwcF9KRkpMcUlOYWxaYmhJcEkxcURnbW5LamlPcmJieUFFbjRRbzcxcGRNM2s5ZW5uRXgtcmFWYnRzSm5GcHVLR0RiVHlLUHpISkJnMVIzY0E1dFZEUzlINnRpb1J2S19VaTlWYjB2dm4zY0pQWnd6U0VKNmNUeXFjcF9VRV9WY1BBQSIsImlkIjoiZmNfVGYtY2Fwdk9GcjNNMXNRUDBfeW82UVlfNiJ9"
+    },
+    {
+      "question": "Can I do electrical work on my own house in Texas?",
+      "type": "ai_overview",
+      "page_token": "OnDAxnicHdBfbpswHABg7TJ9bGxHzZpI0aQ0eCxL0mHsX8Avk7ETHDDgUsq_t11hZ9ipdppJ-47w_frj7nX599Nv23X-fbNYDMPwmDdN7q6PuqkW6n2q9UIr5zKly83q8wp_uelt0OvdS6t3kfAe9gzFczRnwiQwyz6mNJbCBTI5PYlyIHCxJBPPHYTSnwt2liHwLBhXR4AJkFvqCldx4Ctepx0s6Som45sA90O6HDPkZnPHrUnyQQn3cQ0905S1qoLWUM9j58KEdL2mss2cfeEIRuP0xCmIqKTH1NnXVyFtinzEiHtLl1QBBWyI8Ueg3yN3rlSx6wU_IFYe9lnQnRX4SYn1yGtGDI66K31GUWHrGNsPRtZ9YI2Qd1ykyY5wJKcTQqPGNDrR9VM2S3ZhzT0SbNaFqwSCo9obz7_SIsbAsov7JskBC7ChrGxvapPI4eGm--3y4f_19uet6ja-bfJ_kbKPEQ",
+      "serpapi_ai_overview_link": "https://serpapi.com/search.json?engine=google_ai_overview&page_token=OnDAxnicHdBfbpswHABg7TJ9bGxHzZpI0aQ0eCxL0mHsX8Avk7ETHDDgUsq_t11hZ9ipdppJ-47w_frj7nX599Nv23X-fbNYDMPwmDdN7q6PuqkW6n2q9UIr5zKly83q8wp_uelt0OvdS6t3kfAe9gzFczRnwiQwyz6mNJbCBTI5PYlyIHCxJBPPHYTSnwt2liHwLBhXR4AJkFvqCldx4Ctepx0s6Som45sA90O6HDPkZnPHrUnyQQn3cQ0905S1qoLWUM9j58KEdL2mss2cfeEIRuP0xCmIqKTH1NnXVyFtinzEiHtLl1QBBWyI8Ueg3yN3rlSx6wU_IFYe9lnQnRX4SYn1yGtGDI66K31GUWHrGNsPRtZ9YI2Qd1ykyY5wJKcTQqPGNDrR9VM2S3ZhzT0SbNaFqwSCo9obz7_SIsbAsov7JskBC7ChrGxvapPI4eGm--3y4f_19uet6ja-bfJ_kbKPEQ",
+      "next_page_token": "eyJvbnMiOiIxMDA0MSIsImZjIjoiRXFFQkNtSkJTbWxVTkhSS1JWaDVPR1J3ZG5KU1RVNXJOa3c0VUdnMmEwMHdSbXBCWlUxc1JsTTBkaTFSVDNsNGJtTjVPSE50TTNacE9GWlhNMUo1Tlc1UWFXWkRWR2w2VTNGR1pXRlZORTVGT0hCMVMyTlpWSFJqWjFnMWQyZFhaMHhVVm5seVp4SVhWR1l0WTJGd2RrOUdjak5OTVhOUlVEQmZlVzgyVVZrYUlrRkVjM0k1WmxGa2NsQmtPVVV3VDBocFNVVlRNVmRGWTNKeVEwMXdiVzVsTjNjIiwiZmN2IjoiMyIsImVpIjoiVGYtY2Fwdk9GcjNNMXNRUDBfeW82UVkiLCJxYyI6IkNoZGxiR1ZqZEhKcFkybGhiaUJ5YjJOcmQyRnNiQ0IwZUJBQWZlUTg0ejQiLCJxdWVzdGlvbiI6IkNhbiBJIGRvIGVsZWN0cmljYWwgd29yayBvbiBteSBvd24gaG91c2UgaW4gVGV4YXM/IiwibGsiOiJHakZqWVc0Z2FTQmtieUJsYkdWamRISnBZMkZzSUhkdmNtc2diMjRnYlhrZ2IzZHVJR2h2ZFhObElHbHVJSFJsZUdGeiIsImJzIjoiYzVXUFBRdkNNQlJGY2MzazNPbE80dUFINmc5d2NISVZvYU04WWpUQk5FOWVVcUxfM2xhcTFFSFFfUjdPdVlyVXJMU1VjR1FZYjNRU3B4MkZDRzFKemdaWEk3QmNDMXpBM3R3b3JwZnpZcHBfSkZKTHFJTmFsWmJoSXBJMXFEZ21uS2ppT3JiYnlBRW40UW83MXBkTTNrOWVubkV4LXJhVmJ0c0puRnB1S0dEYlR5S1B6SEpCZzFSM2NBNXRWRFM5SDZ0aW9SdktfVWk5VmIwdnZuM2NKUFp3elNFSjZjVHlxY3BfVUVfVmNQQUEiLCJpZCI6ImZjX1RmLWNhcHZPRnIzTTFzUVAwX3lvNlFZXzYifQ==",
+      "serpapi_link": "https://serpapi.com/search.json?device=desktop&engine=google_related_questions&google_domain=google.com&next_page_token=eyJvbnMiOiIxMDA0MSIsImZjIjoiRXFFQkNtSkJTbWxVTkhSS1JWaDVPR1J3ZG5KU1RVNXJOa3c0VUdnMmEwMHdSbXBCWlUxc1JsTTBkaTFSVDNsNGJtTjVPSE50TTNacE9GWlhNMUo1Tlc1UWFXWkRWR2w2VTNGR1pXRlZORTVGT0hCMVMyTlpWSFJqWjFnMWQyZFhaMHhVVm5seVp4SVhWR1l0WTJGd2RrOUdjak5OTVhOUlVEQmZlVzgyVVZrYUlrRkVjM0k1WmxGa2NsQmtPVVV3VDBocFNVVlRNVmRGWTNKeVEwMXdiVzVsTjNjIiwiZmN2IjoiMyIsImVpIjoiVGYtY2Fwdk9GcjNNMXNRUDBfeW82UVkiLCJxYyI6IkNoZGxiR1ZqZEhKcFkybGhiaUJ5YjJOcmQyRnNiQ0IwZUJBQWZlUTg0ejQiLCJxdWVzdGlvbiI6IkNhbiBJIGRvIGVsZWN0cmljYWwgd29yayBvbiBteSBvd24gaG91c2UgaW4gVGV4YXM%2FIiwibGsiOiJHakZqWVc0Z2FTQmtieUJsYkdWamRISnBZMkZzSUhkdmNtc2diMjRnYlhrZ2IzZHVJR2h2ZFhObElHbHVJSFJsZUdGeiIsImJzIjoiYzVXUFBRdkNNQlJGY2MzazNPbE80dUFINmc5d2NISVZvYU04WWpUQk5FOWVVcUxfM2xhcTFFSFFfUjdPdVlyVXJMU1VjR1FZYjNRU3B4MkZDRzFKemdaWEk3QmNDMXpBM3R3b3JwZnpZcHBfSkZKTHFJTmFsWmJoSXBJMXFEZ21uS2ppT3JiYnlBRW40UW83MXBkTTNrOWVubkV4LXJhVmJ0c0puRnB1S0dEYlR5S1B6SEpCZzFSM2NBNXRWRFM5SDZ0aW9SdktfVWk5VmIwdnZuM2NKUFp3elNFSjZjVHlxY3BfVUVfVmNQQUEiLCJpZCI6ImZjX1RmLWNhcHZPRnIzTTFzUVAwX3lvNlFZXzYifQ%3D%3D"
+    },
+    {
+      "question": "Who is the largest electrical contractor in Texas?",
+      "type": "ai_overview",
+      "page_token": "Qk0tLHicHdBdbpswAABg7TJ9bGySdGukaBIFIljJ4l_AL5N_mjixAS9BhfDWK-wMO9VOs2kH-F6-j9_-3Lk_n37ZYQi3zWIxjuPjqe9P_u1R9-1C3u6dXmjpvZLabZ4-P8GvR71N33X8ctUxYiHwBAPC8F0nnOKuhKrLrqxaAdbChtYG6ZpD4bKZsi8rMeNRJWKnoswqICSFlrK6eDVJMe5pGUm2flXQDHSXr7W3MXbNSrsCfN-FnJ9hryo7SWeTGoRYUk5QzeU-86X0-ModXDcuxJUXjEcDwtxMGhQH01kiYXj55_cynQJJBVSJkaIdiKDZoensT9WZnFx8XoL9TUeTMy4s3_jzXINJ6LRA3BcWz_6IAJ5Ta5g4w0tTxxEF4l4CMGmYoTJ7XqtZ4Ar3Z8TwrC--ZVRPTeUj1AVEWpMrtwLElUuSxAfZZd9EKihCD0f9vl0-_L_e_ji2wyZc-9NffbaNUg",
+      "serpapi_ai_overview_link": "https://serpapi.com/search.json?engine=google_ai_overview&page_token=Qk0tLHicHdBdbpswAABg7TJ9bGySdGukaBIFIljJ4l_AL5N_mjixAS9BhfDWK-wMO9VOs2kH-F6-j9_-3Lk_n37ZYQi3zWIxjuPjqe9P_u1R9-1C3u6dXmjpvZLabZ4-P8GvR71N33X8ctUxYiHwBAPC8F0nnOKuhKrLrqxaAdbChtYG6ZpD4bKZsi8rMeNRJWKnoswqICSFlrK6eDVJMe5pGUm2flXQDHSXr7W3MXbNSrsCfN-FnJ9hryo7SWeTGoRYUk5QzeU-86X0-ModXDcuxJUXjEcDwtxMGhQH01kiYXj55_cynQJJBVSJkaIdiKDZoensT9WZnFx8XoL9TUeTMy4s3_jzXINJ6LRA3BcWz_6IAJ5Ta5g4w0tTxxEF4l4CMGmYoTJ7XqtZ4Ar3Z8TwrC--ZVRPTeUj1AVEWpMrtwLElUuSxAfZZd9EKihCD0f9vl0-_L_e_ji2wyZc-9NffbaNUg",
+      "next_page_token": "eyJvbnMiOiIxMDA0MSIsImZjIjoiRXFFQkNtSkJTbWxVTkhSS1JWaDVPR1J3ZG5KU1RVNXJOa3c0VUdnMmEwMHdSbXBCWlUxc1JsTTBkaTFSVDNsNGJtTjVPSE50TTNacE9GWlhNMUo1Tlc1UWFXWkRWR2w2VTNGR1pXRlZORTVGT0hCMVMyTlpWSFJqWjFnMWQyZFhaMHhVVm5seVp4SVhWR1l0WTJGd2RrOUdjak5OTVhOUlVEQmZlVzgyVVZrYUlrRkVjM0k1WmxGa2NsQmtPVVV3VDBocFNVVlRNVmRGWTNKeVEwMXdiVzVsTjNjIiwiZmN2IjoiMyIsImVpIjoiVGYtY2Fwdk9GcjNNMXNRUDBfeW82UVkiLCJxYyI6IkNoZGxiR1ZqZEhKcFkybGhiaUJ5YjJOcmQyRnNiQ0IwZUJBQWZlUTg0ejQiLCJxdWVzdGlvbiI6IldobyBpcyB0aGUgbGFyZ2VzdCBlbGVjdHJpY2FsIGNvbnRyYWN0b3IgaW4gVGV4YXM/IiwibGsiOiJHakYzYUc4Z2FYTWdkR2hsSUd4aGNtZGxjM1FnWld4bFkzUnlhV05oYkNCamIyNTBjbUZqZEc5eUlHbHVJSFJsZUdGeiIsImJzIjoiYzVXUFBRdkNNQlJGY2MzazNPbE80dUFINmc5d2NISVZvYU04WWpUQk5FOWVVcUxfM2xhcTFFSFFfUjdPdVlyVXJMU1VjR1FZYjNRU3B4MkZDRzFKemdaWEk3QmNDMXpBM3R3b3JwZnpZcHBfSkZKTHFJTmFsWmJoSXBJMXFEZ21uS2ppT3JiYnlBRW40UW83MXBkTTNrOWVubkV4LXJhVmJ0c0puRnB1S0dEYlR5S1B6SEpCZzFSM2NBNXRWRFM5SDZ0aW9SdktfVWk5VmIwdnZuM2NKUFp3elNFSjZjVHlxY3BfVUVfVmNQQUEiLCJpZCI6ImZjX1RmLWNhcHZPRnIzTTFzUVAwX3lvNlFZXzYifQ==",
+      "serpapi_link": "https://serpapi.com/search.json?device=desktop&engine=google_related_questions&google_domain=google.com&next_page_token=eyJvbnMiOiIxMDA0MSIsImZjIjoiRXFFQkNtSkJTbWxVTkhSS1JWaDVPR1J3ZG5KU1RVNXJOa3c0VUdnMmEwMHdSbXBCWlUxc1JsTTBkaTFSVDNsNGJtTjVPSE50TTNacE9GWlhNMUo1Tlc1UWFXWkRWR2w2VTNGR1pXRlZORTVGT0hCMVMyTlpWSFJqWjFnMWQyZFhaMHhVVm5seVp4SVhWR1l0WTJGd2RrOUdjak5OTVhOUlVEQmZlVzgyVVZrYUlrRkVjM0k1WmxGa2NsQmtPVVV3VDBocFNVVlRNVmRGWTNKeVEwMXdiVzVsTjNjIiwiZmN2IjoiMyIsImVpIjoiVGYtY2Fwdk9GcjNNMXNRUDBfeW82UVkiLCJxYyI6IkNoZGxiR1ZqZEhKcFkybGhiaUJ5YjJOcmQyRnNiQ0IwZUJBQWZlUTg0ejQiLCJxdWVzdGlvbiI6IldobyBpcyB0aGUgbGFyZ2VzdCBlbGVjdHJpY2FsIGNvbnRyYWN0b3IgaW4gVGV4YXM%2FIiwibGsiOiJHakYzYUc4Z2FYTWdkR2hsSUd4aGNtZGxjM1FnWld4bFkzUnlhV05oYkNCamIyNTBjbUZqZEc5eUlHbHVJSFJsZUdGeiIsImJzIjoiYzVXUFBRdkNNQlJGY2MzazNPbE80dUFINmc5d2NISVZvYU04WWpUQk5FOWVVcUxfM2xhcTFFSFFfUjdPdVlyVXJMU1VjR1FZYjNRU3B4MkZDRzFKemdaWEk3QmNDMXpBM3R3b3JwZnpZcHBfSkZKTHFJTmFsWmJoSXBJMXFEZ21uS2ppT3JiYnlBRW40UW83MXBkTTNrOWVubkV4LXJhVmJ0c0puRnB1S0dEYlR5S1B6SEpCZzFSM2NBNXRWRFM5SDZ0aW9SdktfVWk5VmIwdnZuM2NKUFp3elNFSjZjVHlxY3BfVUVfVmNQQUEiLCJpZCI6ImZjX1RmLWNhcHZPRnIzTTFzUVAwX3lvNlFZXzYifQ%3D%3D"
+    }
+  ],
+  "organic_results": [
+    {
+      "position": 1,
+      "title": "Electrician near Rockwall, TX",
+      "link": "https://www.bbb.org/us/tx/rockwall/category/electrician",
+      "redirect_link": "https://www.google.com/url?sa=t&source=web&rct=j&opi=89978449&url=CAESbwHrOzAVu7ZvKQrr8oamFL78wk4OZ3bcmWi_zLCL22ZkEpqOKmPTPNVRfNy3wrpsUekDIy0VIrfrRHUgnqqQTM5Oyqg9LapMBdfaI7ugB2R-zglZMlYZGn6DXXJEa0-yuGqgeobfOjV3UHMQzkpzfA&ved=2ahUKEwjbqOm0odmWAxU9ppUCHVM-Km0QFnoECEEQAQ&uoh=1",
+      "displayed_link": "https://www.bbb.org › tx › rockwall › category › electri...",
+      "favicon": "https://serpapi.com/images/i/iVBORw0KGgoAAAANSUhEUgAAABwAAAAbCAMAAABY1h8eAAAAe1BMVEX____09PbP0dmytcOkp7e4u8dLU3oAAEkAAE8AAFIAB1QTJV8AF1gLIFx_hJ0AGlkLG1deZYYKKmYITY4LGVV3fZcLFlMDcbsJQX8LHlrBw84GX6QAe8gLFFIAElcAgM8KNXKsr74HV5oKMGwAfsw3QW4FabEJRIMEbbZuuHicAAABL0lEQVR4AY2SB3bDIAxAvTcNseWhAPEiae9_wsqI7vmz8x9oBm-EUZwkcRR8Q5rlRVlVZZFn6ScV1UUjPE1Rfzj-kJ_EgWR9yh_e3LkQjrYDwRTnF9eXghnGCQVT9uwuufCA0kZ4nV-cvCKbluS8yIWvxuvh1pLdtgujbQfTNvDFK8mbSxQXa-RkbSdhXtClfKO-cMThTuG0JmHmO3DUMIgKltbWWuvRYDtrw-VEQcwh5awJuyNsdvZB45d8jHOLREGfxmf0chKUJQcoRm0V-JMvMSmU3Y9zVs8t-picLSEf_Z3zJMVLtlwnAphhqF1cA4BcJ3cIJ3WgiSdFTOjy4d6Cmi3hMiZmBa63PBXZjR_oJE-F5ymHD0ie54dNYHgTvu4Qwzv08_b9e2-ZLxv_DMyGKIkXkcE-AAAAAElFTkSuQmCC.png",
+      "snippet": "BBB Directory of Electrician near Rockwall, TX. Your guide to trusted BBB Ratings, customer reviews and BBB Accredited businesses.",
+      "snippet_highlighted_words": [
+        "BBB Directory of Electrician near Rockwall, TX"
+      ],
+      "about_this_result": {
+        "source": {
+          "description": "BBB Directory of Electrician near Rockwall, TX. Your guide to trusted BBB Ratings, customer reviews and BBB Accredited businesses.",
+          "source_info_link": "https://www.bbb.org/us/tx/rockwall/category/electrician",
+          "icon": "https://serpapi.com/images/i/iVBORw0KGgoAAAANSUhEUgAAABwAAAAbCAMAAABY1h8eAAAAe1BMVEX____09PbP0dmytcOkp7e4u8dLU3oAAEkAAE8AAFIAB1QTJV8AF1gLIFx_hJ0AGlkLG1deZYYKKmYITY4LGVV3fZcLFlMDcbsJQX8LHlrBw84GX6QAe8gLFFIAElcAgM8KNXKsr74HV5oKMGwAfsw3QW4FabEJRIMEbbZuuHicAAABL0lEQVR4AY2SB3bDIAxAvTcNseWhAPEiae9_wsqI7vmz8x9oBm-EUZwkcRR8Q5rlRVlVZZFn6ScV1UUjPE1Rfzj-kJ_EgWR9yh_e3LkQjrYDwRTnF9eXghnGCQVT9uwuufCA0kZ4nV-cvCKbluS8yIWvxuvh1pLdtgujbQfTNvDFK8mbSxQXa-RkbSdhXtClfKO-cMThTuG0JmHmO3DUMIgKltbWWuvRYDtrw-VEQcwh5awJuyNsdvZB45d8jHOLREGfxmf0chKUJQcoRm0V-JMvMSmU3Y9zVs8t-picLSEf_Z3zJMVLtlwnAphhqF1cA4BcJ3cIJ3WgiSdFTOjy4d6Cmi3hMiZmBa63PBXZjR_oJE-F5ymHD0ie54dNYHgTvu4Qwzv08_b9e2-ZLxv_DMyGKIkXkcE-AAAAAElFTkSuQmCC.png"
+        },
+        "languages": [
+          "en"
+        ],
+        "regions": [
+          "US"
+        ]
+      },
+      "about_page_link": "https://www.google.com/search?q=About+https://www.bbb.org/us/tx/rockwall/category/electrician&tbm=ilp",
+      "about_page_serpapi_link": "https://serpapi.com/search.json?engine=google_about_this_result&google_domain=google.com&q=About+https%3A%2F%2Fwww.bbb.org%2Fus%2Ftx%2Frockwall%2Fcategory%2Felectrician",
+      "source": "Better Business Bureau"
+    },
+    {
+      "position": 2,
+      "title": "Powering Rockwall, TX with Excellence and Reliability",
+      "link": "https://www.hargroveelectric.com/service-area/rockwall/",
+      "redirect_link": "https://www.google.com/url?sa=t&source=web&rct=j&opi=89978449&url=CAESbwHrOzAVD9nNNaEFz9lzbiOSyCVj9E7bppgyECu_ZlAWhX7GdiEBeYB4uVfHyVz573wZhhz6tXG3DSlTniEIBS3oDWmLXQAw4e41fG84rZQiR3rfpuXlfU-biaAWcZZ3-HxkjJtO3Bc_gWZNEgdScQ&ved=2ahUKEwjbqOm0odmWAxU9ppUCHVM-Km0QFnoECD4QAQ&uoh=1",
+      "displayed_link": "https://www.hargroveelectric.com › service-area › rock...",
+      "favicon": "https://serpapi.com/images/i/iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAMAAABEpIrGAAAAS1BMVEVHcEy8Hxp-Hx05ICPkHxrUHxrZHxriHxrdHxrfHxrhHxrfHxrcHxrDHxrgHxo5IB_RHxopICAjICAjICAiICAiICAjICAkICAkICCtEgmVAAAAGXRSTlMADQcB_zdI8naT3KxaGscNJxFHaZt6UTgfy_1YXwAAANhJREFUeAHszEd2BCEMBNBSIxhy6Hz_k1qEnVdee34HBR6Ff4OINvmrjSasqjBtzKxhGB8erOEJS58B5yE1mBjJSpNIFotjzlDeadmbrRRkZjm0EYvMnbGzjiQHKIVFZqsjq35Ra52qLCLIKEw9WSF-5kXRk0j-WGxPRQhpJGmNwPypNQcseVzkaHmQpMliSSlt8leUBsKsdcNftFYKlY6IWpGpNCmtF3RtP47zuK7ruO5rl-e8nvvYcV77Snj3-7mf_RH73sv9SpXt_qJ7myit-9Xh62dUAgCv2wzg34kgQAAAAABJRU5ErkJggg.png",
+      "snippet": "Hargrove Electric is your trusted electrician in Rockwall. call us at (214) 742-8665 to schedule a consultation.",
+      "snippet_highlighted_words": [
+        "Hargrove Electric is your trusted electrician in Rockwall"
+      ],
+      "about_this_result": {
+        "source": {
+          "description": "Hargrove Electric is your trusted electrician in Rockwall. call us at (214) 742-8665 to schedule a consultation.",
+          "source_info_link": "https://www.hargroveelectric.com/service-area/rockwall/",
+          "icon": "https://serpapi.com/images/i/iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAMAAABEpIrGAAAAS1BMVEVHcEy8Hxp-Hx05ICPkHxrUHxrZHxriHxrdHxrfHxrhHxrfHxrcHxrDHxrgHxo5IB_RHxopICAjICAjICAiICAiICAjICAkICAkICCtEgmVAAAAGXRSTlMADQcB_zdI8naT3KxaGscNJxFHaZt6UTgfy_1YXwAAANhJREFUeAHszEd2BCEMBNBSIxhy6Hz_k1qEnVdee34HBR6Ff4OINvmrjSasqjBtzKxhGB8erOEJS58B5yE1mBjJSpNIFotjzlDeadmbrRRkZjm0EYvMnbGzjiQHKIVFZqsjq35Ra52qLCLIKEw9WSF-5kXRk0j-WGxPRQhpJGmNwPypNQcseVzkaHmQpMliSSlt8leUBsKsdcNftFYKlY6IWpGpNCmtF3RtP47zuK7ruO5rl-e8nvvYcV77Snj3-7mf_RH73sv9SpXt_qJ7myit-9Xh62dUAgCv2wzg34kgQAAAAABJRU5ErkJggg.png"
+        },
+        "languages": [
+          "en"
+        ],
+        "regions": [
+          "US"
+        ]
+      },
+      "about_page_link": "https://www.google.com/search?q=About+https://www.hargroveelectric.com/service-area/rockwall/&tbm=ilp",
+      "about_page_serpapi_link": "https://serpapi.com/search.json?engine=google_about_this_result&google_domain=google.com&q=About+https%3A%2F%2Fwww.hargroveelectric.com%2Fservice-area%2Frockwall%2F",
+      "source": "Hargrove Electric"
+    },
+    {
+      "position": 3,
+      "title": "Your Electrician Lavon, TX",
+      "link": "https://www.rockwallelectricheatingandair.com/electrician-lavon-tx",
+      "redirect_link": "https://www.google.com/url?sa=t&source=web&rct=j&opi=89978449&url=CAESegHrOzAVG8moyv-tpc-dsYOP0pvy57opMUcljcxJmVEAFAd8MSwyMt9fkPGT50b_2RfFmejXNCyVoSPR7yOszKRaeQcVCD9krjadAIfKV3trN3Zha4G29PejQZpdynp6oWQWafbB_KeqaT2I-4VvpLqhydCpDljUrZ3T&ved=2ahUKEwjbqOm0odmWAxU9ppUCHVM-Km0QFnoECEAQAQ&uoh=1",
+      "displayed_link": "https://www.rockwallelectricheatingandair.com › electri...",
+      "favicon": "https://serpapi.com/images/i/iVBORw0KGgoAAAANSUhEUgAAABwAAAAcCAMAAABF0y-mAAAAq1BMVEX____9___6___7___k5eTNysjAvbrV09HNzMm9u7na3NsiQlEkf6Umh7ESZopiZWclibRWX2IANkoHfagGhrQZreipp6MxS1kQd6AsXnZ0cXAAn9j09vY6WGdNVFYbl8qJhoR1cm8WXHoaqOAWPFDx8e_8__-VkY0XSmEAdKBGTVJFUll-fXoRksUlVG02ibAvcpMAVnUAXIFkYmExQ00APlcAZo6bmpdwdXc5OhZiAAABKUlEQVR4AXXQBZLDQAxE0dbI7A3HEGY5zHT_iy0ZQ79w6hkbIMVvU_RnhDRiTg8xKNL0JMMELNuIsx1SYLhfSaVyBW61lFQDg1FvJDW9ph-Eaf9Ipp3kt7y2pltxukaM4je0O20Uvw6chW7PaxfOBSSY_cFg-BahjcaTyXQmr0gSzQfeYumAn1FJt9_0wpVNSOfKkbHeTAKbIIrMeJ6upCiy9YIZmBXD3f2195EhHbw-4mvri7-OOTIqk8bwX8n5X0jvco7G2GuciFQ2l-TI8OeTzar4IwVkmOfBZGrgLQpmp4Z3sMEfto3K3mUmb1EYUbNp4y0yk3ntRMh7ROvauflRmk0MVbxzctt20mpgUKak1S_Gapx0uEMAyVS6M3RnafFYxJkKSxYBP_PBITRGVTaYAAAAAElFTkSuQmCC.png",
+      "snippet": "For the most qualified Lavon Electrician, call (972) 771-5390 today and a friendly representative will call you to schedule an appointment or schedule your ...",
+      "snippet_highlighted_words": [
+        "972) 771-5390"
+      ],
+      "about_this_result": {
+        "source": {
+          "description": "For the most qualified Lavon Electrician, call (972) 771-5390 today and a friendly representative will call you to schedule an appointment or schedule your ...",
+          "source_info_link": "https://www.rockwallelectricheatingandair.com/electrician-lavon-tx",
+          "icon": "https://serpapi.com/images/i/iVBORw0KGgoAAAANSUhEUgAAABwAAAAcCAMAAABF0y-mAAAAq1BMVEX____9___6___7___k5eTNysjAvbrV09HNzMm9u7na3NsiQlEkf6Umh7ESZopiZWclibRWX2IANkoHfagGhrQZreipp6MxS1kQd6AsXnZ0cXAAn9j09vY6WGdNVFYbl8qJhoR1cm8WXHoaqOAWPFDx8e_8__-VkY0XSmEAdKBGTVJFUll-fXoRksUlVG02ibAvcpMAVnUAXIFkYmExQ00APlcAZo6bmpdwdXc5OhZiAAABKUlEQVR4AXXQBZLDQAxE0dbI7A3HEGY5zHT_iy0ZQ79w6hkbIMVvU_RnhDRiTg8xKNL0JMMELNuIsx1SYLhfSaVyBW61lFQDg1FvJDW9ph-Eaf9Ipp3kt7y2pltxukaM4je0O20Uvw6chW7PaxfOBSSY_cFg-BahjcaTyXQmr0gSzQfeYumAn1FJt9_0wpVNSOfKkbHeTAKbIIrMeJ6upCiy9YIZmBXD3f2195EhHbw-4mvri7-OOTIqk8bwX8n5X0jvco7G2GuciFQ2l-TI8OeTzar4IwVkmOfBZGrgLQpmp4Z3sMEfto3K3mUmb1EYUbNp4y0yk3ntRMh7ROvauflRmk0MVbxzctt20mpgUKak1S_Gapx0uEMAyVS6M3RnafFYxJkKSxYBP_PBITRGVTaYAAAAAElFTkSuQmCC.png"
+        },
+        "languages": [
+          "en"
+        ],
+        "regions": [
+          "US"
+        ]
+      },
+      "about_page_link": "https://www.google.com/search?q=About+https://www.rockwallelectricheatingandair.com/electrician-lavon-tx&tbm=ilp",
+      "about_page_serpapi_link": "https://serpapi.com/search.json?engine=google_about_this_result&google_domain=google.com&q=About+https%3A%2F%2Fwww.rockwallelectricheatingandair.com%2Felectrician-lavon-tx",
+      "source": "Rockwall Electric",
+      "read_more_link": "https://www.rockwallelectricheatingandair.com/electrician-lavon-tx#:~:text=For%20the%20most%20qualified%20Lavon,electrical%20repair%20service%20request%20online."
+    },
+    {
+      "position": 4,
+      "title": "Electrical Repair Heath Texas",
+      "link": "https://barneyselectric.com/heath-electrician-electricalrepair.htm",
+      "redirect_link": "https://www.google.com/url?sa=t&source=web&rct=j&opi=89978449&url=CAESegHrOzAVEpuGs7qQFDZC26xjs42Do8JahhOzwXpGzbROrkRnt6VbuE2caS5223XPTP0LT5vnpOX0E0FqSeotKSWS834eWCBLzOHjvsNUg5x8vXZ2ZUENtDEn8-pb_BqxjQvYM6bCb0R8LGz9szyGMVfX5evl4H46QuNw&ved=2ahUKEwjbqOm0odmWAxU9ppUCHVM-Km0QFnoECEIQAQ&uoh=1",
+      "displayed_link": "https://barneyselectric.com › heath-electrician-electricalre...",
+      "snippet": "If you are looking for an electrician in the Heath area, please call Barney's Electric today at 972-771-9464. Monday - Friday: 7:00 a.m.",
+      "snippet_highlighted_words": [
+        "electrician"
+      ],
+      "about_this_result": {
+        "source": {
+          "description": "If you are looking for an electrician in the Heath area, please call Barney's Electric today at 972-771-9464. Monday - Friday: 7:00 a.m.",
+          "source_info_link": "https://barneyselectric.com/heath-electrician-electricalrepair.htm"
+        },
+        "languages": [
+          "en"
+        ],
+        "regions": [
+          "US"
+        ]
+      },
+      "about_page_link": "https://www.google.com/search?q=About+https://barneyselectric.com/heath-electrician-electricalrepair.htm&tbm=ilp",
+      "about_page_serpapi_link": "https://serpapi.com/search.json?engine=google_about_this_result&google_domain=google.com&q=About+https%3A%2F%2Fbarneyselectric.com%2Fheath-electrician-electricalrepair.htm",
+      "source": "Barney's Electric"
+    },
+    {
+      "position": 5,
+      "title": "Electrical Contractors near Rockwall, TX",
+      "link": "https://www.bbb.org/us/tx/rockwall/category/electrical-contractors",
+      "redirect_link": "https://www.google.com/url?sa=t&source=web&rct=j&opi=89978449&url=CAESegHrOzAVOb_OKW2UHKx6kXz5Nwi6Kg1x2F_cpNvueFi-CUkg37hVlI8qwXk75RNvGoaDZN23_gV-X6OknjlyuGeQ-RHFPWk4-Nwj65V3KRRitRvBHBR_gh79HPA0_SnZBWjtQHBVk-wfR_bCCLisyVN6Kzt_hjxp2VH3&ved=2ahUKEwjbqOm0odmWAxU9ppUCHVM-Km0QFnoECD0QAQ&uoh=1",
+      "displayed_link": "https://www.bbb.org › tx › rockwall › category › electri...",
+      "favicon": "https://serpapi.com/images/i/iVBORw0KGgoAAAANSUhEUgAAABwAAAAbCAMAAABY1h8eAAAAe1BMVEX____09PbP0dmytcOkp7e4u8dLU3oAAEkAAE8AAFIAB1QTJV8AF1gLIFx_hJ0AGlkLG1deZYYKKmYITY4LGVV3fZcLFlMDcbsJQX8LHlrBw84GX6QAe8gLFFIAElcAgM8KNXKsr74HV5oKMGwAfsw3QW4FabEJRIMEbbZuuHicAAABL0lEQVR4AY2SB3bDIAxAvTcNseWhAPEiae9_wsqI7vmz8x9oBm-EUZwkcRR8Q5rlRVlVZZFn6ScV1UUjPE1Rfzj-kJ_EgWR9yh_e3LkQjrYDwRTnF9eXghnGCQVT9uwuufCA0kZ4nV-cvCKbluS8yIWvxuvh1pLdtgujbQfTNvDFK8mbSxQXa-RkbSdhXtClfKO-cMThTuG0JmHmO3DUMIgKltbWWuvRYDtrw-VEQcwh5awJuyNsdvZB45d8jHOLREGfxmf0chKUJQcoRm0V-JMvMSmU3Y9zVs8t-picLSEf_Z3zJMVLtlwnAphhqF1cA4BcJ3cIJ3WgiSdFTOjy4d6Cmi3hMiZmBa63PBXZjR_oJE-F5ymHD0ie54dNYHgTvu4Qwzv08_b9e2-ZLxv_DMyGKIkXkcE-AAAAAElFTkSuQmCC.png",
+      "snippet": "BBB Directory of Electrical Contractors near Rockwall, TX. (469) 638-4998 2055 Kristy Ln, Rockwall, TX 75032-6242 (214) 394-6578 (214) 404-1449 (903) 259-0385",
+      "snippet_highlighted_words": [
+        "469) 638-4998"
+      ],
+      "about_this_result": {
+        "source": {
+          "description": "BBB Directory of Electrical Contractors near Rockwall, TX. (469) 638-4998 2055 Kristy Ln, Rockwall, TX 75032-6242 (214) 394-6578 (214) 404-1449 (903) 259-0385",
+          "source_info_link": "https://www.bbb.org/us/tx/rockwall/category/electrical-contractors",
+          "icon": "https://serpapi.com/images/i/iVBORw0KGgoAAAANSUhEUgAAABwAAAAbCAMAAABY1h8eAAAAe1BMVEX____09PbP0dmytcOkp7e4u8dLU3oAAEkAAE8AAFIAB1QTJV8AF1gLIFx_hJ0AGlkLG1deZYYKKmYITY4LGVV3fZcLFlMDcbsJQX8LHlrBw84GX6QAe8gLFFIAElcAgM8KNXKsr74HV5oKMGwAfsw3QW4FabEJRIMEbbZuuHicAAABL0lEQVR4AY2SB3bDIAxAvTcNseWhAPEiae9_wsqI7vmz8x9oBm-EUZwkcRR8Q5rlRVlVZZFn6ScV1UUjPE1Rfzj-kJ_EgWR9yh_e3LkQjrYDwRTnF9eXghnGCQVT9uwuufCA0kZ4nV-cvCKbluS8yIWvxuvh1pLdtgujbQfTNvDFK8mbSxQXa-RkbSdhXtClfKO-cMThTuG0JmHmO3DUMIgKltbWWuvRYDtrw-VEQcwh5awJuyNsdvZB45d8jHOLREGfxmf0chKUJQcoRm0V-JMvMSmU3Y9zVs8t-picLSEf_Z3zJMVLtlwnAphhqF1cA4BcJ3cIJ3WgiSdFTOjy4d6Cmi3hMiZmBa63PBXZjR_oJE-F5ymHD0ie54dNYHgTvu4Qwzv08_b9e2-ZLxv_DMyGKIkXkcE-AAAAAElFTkSuQmCC.png"
+        },
+        "languages": [
+          "en"
+        ],
+        "regions": [
+          "US"
+        ]
+      },
+      "about_page_link": "https://www.google.com/search?q=About+https://www.bbb.org/us/tx/rockwall/category/electrical-contractors&tbm=ilp",
+      "about_page_serpapi_link": "https://serpapi.com/search.json?engine=google_about_this_result&google_domain=google.com&q=About+https%3A%2F%2Fwww.bbb.org%2Fus%2Ftx%2Frockwall%2Fcategory%2Felectrical-contractors",
+      "source": "Better Business Bureau"
+    },
+    {
+      "position": 6,
+      "title": "Dooley Electrical - Rockwall Electricians - Homeyou",
+      "link": "https://www.homeyou.com/dooley-electrical-rockwall-tx",
+      "redirect_link": "https://www.google.com/url?sa=t&source=web&rct=j&opi=89978449&url=CAESbQHrOzAVUpZ916AsicxAdvMKJxg1oO7eXumPtNjivMtF360yiUMTGNyDqyRBHrVw1j-wuF2n5W7wXtTojdEkF_vEIi4RybLK0Gp0SQjIDmJAZ9OR7J4tNPHd4_E7VffSK6RXHCUIuXiUC8CdQ2c&ved=2ahUKEwjbqOm0odmWAxU9ppUCHVM-Km0QFnoECGAQAQ&uoh=1",
+      "displayed_link": "https://www.homeyou.com › ... › TX › Rockwall",
+      "favicon": "https://serpapi.com/images/i/iVBORw0KGgoAAAANSUhEUgAAABwAAAAcCAMAAABF0y-mAAAASFBMVEX____81tvzS2b-6-70aX7wADLxGkP_-_z2i5rxFkHxIkj4qrTwDT77zNPyLVDwADn1fY3wACbzV2_83-PyPFv-9ffxIkr6t8DIsiRuAAAAa0lEQVR4Ae2MRRLAIAwAcZcq_P-ldffe2Qskm1nwhwRECN4oTChjlOALxQWVqkNSwY9OG9Ob3hujd8o6320ZzTLKuo93dnUwZ70qSgDKotcsh2vTd9eVnSpVP63lWtEQ11AMVNVgZa0cxkQL3O4D_w37DGwAAAAASUVORK5CYII.png",
+      "snippet": "825 Nash, Rockwall, TX. Detailed Information. Business Categories. Electrical in Rockwall, TX. Services Offered. Electrical. EV Charging Installation, Home ...",
+      "snippet_highlighted_words": [
+        "825 Nash, Rockwall, TX"
+      ],
+      "about_this_result": {
+        "source": {
+          "description": "825 Nash, Rockwall, TX. Detailed Information. Business Categories. Electrical in Rockwall, TX. Services Offered. Electrical. EV Charging Installation, Home ...",
+          "source_info_link": "https://www.homeyou.com/dooley-electrical-rockwall-tx",
+          "icon": "https://serpapi.com/images/i/iVBORw0KGgoAAAANSUhEUgAAABwAAAAcCAMAAABF0y-mAAAASFBMVEX____81tvzS2b-6-70aX7wADLxGkP_-_z2i5rxFkHxIkj4qrTwDT77zNPyLVDwADn1fY3wACbzV2_83-PyPFv-9ffxIkr6t8DIsiRuAAAAa0lEQVR4Ae2MRRLAIAwAcZcq_P-ldffe2Qskm1nwhwRECN4oTChjlOALxQWVqkNSwY9OG9Ob3hujd8o6320ZzTLKuo93dnUwZ70qSgDKotcsh2vTd9eVnSpVP63lWtEQ11AMVNVgZa0cxkQL3O4D_w37DGwAAAAASUVORK5CYII.png"
+        },
+        "languages": [
+          "en"
+        ],
+        "regions": [
+          "US"
+        ]
+      },
+      "about_page_link": "https://www.google.com/search?q=About+https://www.homeyou.com/dooley-electrical-rockwall-tx&tbm=ilp",
+      "about_page_serpapi_link": "https://serpapi.com/search.json?engine=google_about_this_result&google_domain=google.com&q=About+https%3A%2F%2Fwww.homeyou.com%2Fdooley-electrical-rockwall-tx",
+      "source": "homeyou.com",
+      "read_more_link": "https://www.homeyou.com/dooley-electrical-rockwall-tx#:~:text=825%20Nash%2C%20Rockwall%2C%20TX,Energy%20Audit%2C%20Ceiling%20Fan%20Installation"
+    },
+    {
+      "position": 7,
+      "title": "Electrician Near State Highway 276",
+      "link": "https://www.mapquest.com/us/texas/electrician-near-state-highway-276-791517387",
+      "redirect_link": "https://www.google.com/url?sa=t&source=web&rct=j&opi=89978449&url=CAEShgEB6zswFV1YkvTNkCg9ZfuAxdKahuH6d4I0So91IXdIsSf2O-qx7hVVLoRXlXuWs1pRfjlAveQ_LgZeFzCBvCepmkeEqmvHD4OvbHGCe0nR7FnptFWLOZTFklYIYCU59zLn3VwIO1-ql5JWfhxhNNbe7PwOmtzGosRfsxsq7o2kkpS5kZJByA&ved=2ahUKEwjbqOm0odmWAxU9ppUCHVM-Km0QFnoECD8QAQ&uoh=1",
+      "displayed_link": "https://www.mapquest.com › ... › Rockwall",
+      "favicon": "https://serpapi.com/images/i/iVBORw0KGgoAAAANSUhEUgAAABwAAAAcCAMAAABF0y-mAAAAMFBMVEVHcEw_t2BAt2BAt2A_t2A_t2A_t2A_t2D___81tVlXwHP0-_Z-zZKP0qCt3rnZ8N9tpnraAAAAB3RSTlMAzBILbdbiJwbOygAAAL9JREFUKJF9k0kWhCAMRBnNwHT_2zYICChNLfkvlViJQgwZCSCN2EllVCTVf7aj2sIjq1_sgknXQofn11m_WKZ640lMtDirMQsFl7hSq9Z-RBQR0dPoKx_kvQ8u09j65sx63f1eFWut6YXkEV3WDUMzFt00oWPmgKMpQIfsylsZKEFn0GypQuAUpyT6QA0C0YCmfUqvXCJ8QvjCGn6NLzlemFVz8LwUjpXeK1uYnNZ9Wvb5TM4Hdj7N81GLze_wA989DvysJNO8AAAAAElFTkSuQmCC.png",
+      "snippet": "Electrician Near State Highway 276 in Rockwall, TX. 4480 State Highway 276, Rockwall, TX, 75032-9319",
+      "snippet_highlighted_words": [
+        "Electrician",
+        "Rockwall",
+        "TX",
+        "Rockwall",
+        "TX"
+      ],
+      "about_this_result": {
+        "source": {
+          "description": "Electrician Near State Highway 276 in Rockwall, TX. 4480 State Highway 276, Rockwall, TX, 75032-9319",
+          "source_info_link": "https://www.mapquest.com/us/texas/electrician-near-state-highway-276-791517387",
+          "icon": "https://serpapi.com/images/i/iVBORw0KGgoAAAANSUhEUgAAABwAAAAcCAMAAABF0y-mAAAAMFBMVEVHcEw_t2BAt2BAt2A_t2A_t2A_t2A_t2D___81tVlXwHP0-_Z-zZKP0qCt3rnZ8N9tpnraAAAAB3RSTlMAzBILbdbiJwbOygAAAL9JREFUKJF9k0kWhCAMRBnNwHT_2zYICChNLfkvlViJQgwZCSCN2EllVCTVf7aj2sIjq1_sgknXQofn11m_WKZ640lMtDirMQsFl7hSq9Z-RBQR0dPoKx_kvQ8u09j65sx63f1eFWut6YXkEV3WDUMzFt00oWPmgKMpQIfsylsZKEFn0GypQuAUpyT6QA0C0YCmfUqvXCJ8QvjCGn6NLzlemFVz8LwUjpXeK1uYnNZ9Wvb5TM4Hdj7N81GLze_wA989DvysJNO8AAAAAElFTkSuQmCC.png"
+        },
+        "languages": [
+          "en"
+        ],
+        "regions": [
+          "US"
+        ]
+      },
+      "about_page_link": "https://www.google.com/search?q=About+https://www.mapquest.com/us/texas/electrician-near-state-highway-276-791517387&tbm=ilp",
+      "about_page_serpapi_link": "https://serpapi.com/search.json?engine=google_about_this_result&google_domain=google.com&q=About+https%3A%2F%2Fwww.mapquest.com%2Fus%2Ftexas%2Felectrician-near-state-highway-276-791517387",
+      "source": "MapQuest"
+    },
+    {
+      "position": 8,
+      "title": "Electrical Repair Services in and near Rockwall, TX",
+      "link": "https://www.rockwallelectricheatingandair.com/post/electrical-repair-services",
+      "redirect_link": "https://www.google.com/url?sa=t&source=web&rct=j&opi=89978449&url=CAEShQEB6zswFYdPLYotIFTQTiRWWgbmaYuxOaf3Km7IsxburNdcMLG2Nu901tGkkNDvoIWb-InMLicX4oL_7ilkdKi3EN-MdzmgFjqZ-Tvvzb9ES_NQlbJP2MVFP8MAoIez118WilGqZHAdS2hCtFevq_tJKa5kX-lYFmVIq7lHU7NlyDXrLpMS&ved=2ahUKEwjbqOm0odmWAxU9ppUCHVM-Km0QFnoECEMQAQ&uoh=1",
+      "displayed_link": "https://www.rockwallelectricheatingandair.com › post",
+      "favicon": "https://serpapi.com/images/i/iVBORw0KGgoAAAANSUhEUgAAABwAAAAcCAMAAABF0y-mAAAAq1BMVEX____9___6___7___k5eTNysjAvbrV09HNzMm9u7na3NsiQlEkf6Umh7ESZopiZWclibRWX2IANkoHfagGhrQZreipp6MxS1kQd6AsXnZ0cXAAn9j09vY6WGdNVFYbl8qJhoR1cm8WXHoaqOAWPFDx8e_8__-VkY0XSmEAdKBGTVJFUll-fXoRksUlVG02ibAvcpMAVnUAXIFkYmExQ00APlcAZo6bmpdwdXc5OhZiAAABKUlEQVR4AXXQBZLDQAxE0dbI7A3HEGY5zHT_iy0ZQ79w6hkbIMVvU_RnhDRiTg8xKNL0JMMELNuIsx1SYLhfSaVyBW61lFQDg1FvJDW9ph-Eaf9Ipp3kt7y2pltxukaM4je0O20Uvw6chW7PaxfOBSSY_cFg-BahjcaTyXQmr0gSzQfeYumAn1FJt9_0wpVNSOfKkbHeTAKbIIrMeJ6upCiy9YIZmBXD3f2195EhHbw-4mvri7-OOTIqk8bwX8n5X0jvco7G2GuciFQ2l-TI8OeTzar4IwVkmOfBZGrgLQpmp4Z3sMEfto3K3mUmb1EYUbNp4y0yk3ntRMh7ROvauflRmk0MVbxzctt20mpgUKak1S_Gapx0uEMAyVS6M3RnafFYxJkKSxYBP_PBITRGVTaYAAAAAElFTkSuQmCC.png",
+      "date": "Jan 10, 2020",
+      "snippet": "Rockwall Electric Heating and Air Logo · 972.771.5390 · Schedule Now · Electrician Rockwall TX - Rockwall Electric Van. Family Owned & Operated ...",
+      "snippet_highlighted_words": [
+        "972.771.5390"
+      ],
+      "about_this_result": {
+        "source": {
+          "description": "Rockwall Electric Heating and Air Logo · 972.771.5390 · Schedule Now · Electrician Rockwall TX - Rockwall Electric Van. Family Owned & Operated ...",
+          "source_info_link": "https://www.rockwallelectricheatingandair.com/post/electrical-repair-services",
+          "icon": "https://serpapi.com/images/i/iVBORw0KGgoAAAANSUhEUgAAABwAAAAcCAMAAABF0y-mAAAAq1BMVEX____9___6___7___k5eTNysjAvbrV09HNzMm9u7na3NsiQlEkf6Umh7ESZopiZWclibRWX2IANkoHfagGhrQZreipp6MxS1kQd6AsXnZ0cXAAn9j09vY6WGdNVFYbl8qJhoR1cm8WXHoaqOAWPFDx8e_8__-VkY0XSmEAdKBGTVJFUll-fXoRksUlVG02ibAvcpMAVnUAXIFkYmExQ00APlcAZo6bmpdwdXc5OhZiAAABKUlEQVR4AXXQBZLDQAxE0dbI7A3HEGY5zHT_iy0ZQ79w6hkbIMVvU_RnhDRiTg8xKNL0JMMELNuIsx1SYLhfSaVyBW61lFQDg1FvJDW9ph-Eaf9Ipp3kt7y2pltxukaM4je0O20Uvw6chW7PaxfOBSSY_cFg-BahjcaTyXQmr0gSzQfeYumAn1FJt9_0wpVNSOfKkbHeTAKbIIrMeJ6upCiy9YIZmBXD3f2195EhHbw-4mvri7-OOTIqk8bwX8n5X0jvco7G2GuciFQ2l-TI8OeTzar4IwVkmOfBZGrgLQpmp4Z3sMEfto3K3mUmb1EYUbNp4y0yk3ntRMh7ROvauflRmk0MVbxzctt20mpgUKak1S_Gapx0uEMAyVS6M3RnafFYxJkKSxYBP_PBITRGVTaYAAAAAElFTkSuQmCC.png"
+        },
+        "languages": [
+          "en"
+        ],
+        "regions": [
+          "US"
+        ]
+      },
+      "about_page_link": "https://www.google.com/search?q=About+https://www.rockwallelectricheatingandair.com/post/electrical-repair-services&tbm=ilp",
+      "about_page_serpapi_link": "https://serpapi.com/search.json?engine=google_about_this_result&google_domain=google.com&q=About+https%3A%2F%2Fwww.rockwallelectricheatingandair.com%2Fpost%2Felectrical-repair-services",
+      "source": "Rockwall Electric",
+      "read_more_link": "https://www.rockwallelectricheatingandair.com/post/electrical-repair-services#:~:text=972.771.5390,Family%20Owned%20%26%20Operated!"
+    }
+  ],
+  "filters": [
+    {
+      "name": "Online estimates",
+      "parameters": {
+        "uds": "AJ5uw1_a2D0D09lxm8gpKKOTUn4rArQZh9LdCXQeDxiIcQzaVCiulHC74XFhdEH5u12AGwpOtHl-IG7HBE8QT08qbTf3eguoPrJ5DSuRn7Cidkgh-wWlI_nNrBTr58_XoMNAH_Tz0Da_Dk6QiGCf-0ivtlEG5w8zuo8yZvj4JQWmcGQPACn3TxuuJ29Mq3bwKh7RCwHOUnh28yPqZQ6RKz0EspccNuiao_yPt7I9T8Cuv1jaBIJrzc65Ha-8de-PC-HCrSdbKZmNnZK36S3xifDwgT9TrE3pLw",
+        "q": "online estimates electrician Rockwall tx"
+      },
+      "link": "https://www.google.com/search?sca_esv=38512c4207789a1a&gl=us&hl=en&sxsrf=APpeQnv7hXeKy1u2ELijZQs2BRMjA0RTag:1788673869377&q=online+estimates+electrician+Rockwall+tx&uds=AJ5uw1_a2D0D09lxm8gpKKOTUn4rArQZh9LdCXQeDxiIcQzaVCiulHC74XFhdEH5u12AGwpOtHl-IG7HBE8QT08qbTf3eguoPrJ5DSuRn7Cidkgh-wWlI_nNrBTr58_XoMNAH_Tz0Da_Dk6QiGCf-0ivtlEG5w8zuo8yZvj4JQWmcGQPACn3TxuuJ29Mq3bwKh7RCwHOUnh28yPqZQ6RKz0EspccNuiao_yPt7I9T8Cuv1jaBIJrzc65Ha-8de-PC-HCrSdbKZmNnZK36S3xifDwgT9TrE3pLw&sa=X&ved=2ahUKEwjbqOm0odmWAxU9ppUCHVM-Km0QxKsJKAB6BAgZEAE&ictx=0",
+      "serpapi_link": "https://serpapi.com/search.json?device=desktop&engine=google&gl=us&google_domain=google.com&hl=en&location=Dallas-Fort+Worth%2C+Texas%2C+United+States&q=online+estimates+electrician+Rockwall+tx&uds=AJ5uw1_a2D0D09lxm8gpKKOTUn4rArQZh9LdCXQeDxiIcQzaVCiulHC74XFhdEH5u12AGwpOtHl-IG7HBE8QT08qbTf3eguoPrJ5DSuRn7Cidkgh-wWlI_nNrBTr58_XoMNAH_Tz0Da_Dk6QiGCf-0ivtlEG5w8zuo8yZvj4JQWmcGQPACn3TxuuJ29Mq3bwKh7RCwHOUnh28yPqZQ6RKz0EspccNuiao_yPt7I9T8Cuv1jaBIJrzc65Ha-8de-PC-HCrSdbKZmNnZK36S3xifDwgT9TrE3pLw"
+    },
+    {
+      "name": "Open now",
+      "parameters": {
+        "uds": "AJ5uw1_a2D0D09lxm8gpKKOTUn4rtJmt1p3ZIICiJ5ya1pQo9rg8Qxj5MxnIABPorp2F06IcTh3u1aFVoeVnnzhXF7b5VV0DlKxtvnMc1xS61pfvqANWWBHND-LHjnIkVuOzb5X5qfnfRHl1WLG40i_ZhHuMIwJs2kSMKUEB6UOJ_ejjFgPLlDfDeHJIUED8mqc9EdGORdRE2rW-bPu0KP639m1do_K29Q",
+        "q": "electrician Rockwall tx open now"
+      },
+      "link": "https://www.google.com/search?sca_esv=38512c4207789a1a&gl=us&hl=en&sxsrf=APpeQnv7hXeKy1u2ELijZQs2BRMjA0RTag:1788673869377&q=electrician+Rockwall+tx+open+now&uds=AJ5uw1_a2D0D09lxm8gpKKOTUn4rtJmt1p3ZIICiJ5ya1pQo9rg8Qxj5MxnIABPorp2F06IcTh3u1aFVoeVnnzhXF7b5VV0DlKxtvnMc1xS61pfvqANWWBHND-LHjnIkVuOzb5X5qfnfRHl1WLG40i_ZhHuMIwJs2kSMKUEB6UOJ_ejjFgPLlDfDeHJIUED8mqc9EdGORdRE2rW-bPu0KP639m1do_K29Q&sa=X&ved=2ahUKEwjbqOm0odmWAxU9ppUCHVM-Km0QxKsJKAF6BAgYEAE&ictx=0",
+      "serpapi_link": "https://serpapi.com/search.json?device=desktop&engine=google&gl=us&google_domain=google.com&hl=en&location=Dallas-Fort+Worth%2C+Texas%2C+United+States&q=electrician+Rockwall+tx+open+now&uds=AJ5uw1_a2D0D09lxm8gpKKOTUn4rtJmt1p3ZIICiJ5ya1pQo9rg8Qxj5MxnIABPorp2F06IcTh3u1aFVoeVnnzhXF7b5VV0DlKxtvnMc1xS61pfvqANWWBHND-LHjnIkVuOzb5X5qfnfRHl1WLG40i_ZhHuMIwJs2kSMKUEB6UOJ_ejjFgPLlDfDeHJIUED8mqc9EdGORdRE2rW-bPu0KP639m1do_K29Q"
+    },
+    {
+      "name": "Top rated",
+      "parameters": {
+        "uds": "AJ5uw1_a2D0D09lxm8gpKKOTUn4rUD4sMjdVSgEAGJs5RXi27_vmp7kTT_fbPpqt2orhs7NvK2X3a3kIq_d3P1Y8szLzeloCqLyK4OpbLDnuPWiXSYakfg7GsSxZOXIi54EUQyjv02o31yWD-wYjgZ6P2xKFIMBGFm3fE_yNtg3tKOVQuCvBzF9Mb74GX_shEZvmnwCDVp5H6OhJSwj3WjnVbY_2yzb3Fg",
+        "q": "top rated electrician Rockwall tx"
+      },
+      "link": "https://www.google.com/search?sca_esv=38512c4207789a1a&gl=us&hl=en&sxsrf=APpeQnv7hXeKy1u2ELijZQs2BRMjA0RTag:1788673869377&q=top+rated+electrician+Rockwall+tx&uds=AJ5uw1_a2D0D09lxm8gpKKOTUn4rUD4sMjdVSgEAGJs5RXi27_vmp7kTT_fbPpqt2orhs7NvK2X3a3kIq_d3P1Y8szLzeloCqLyK4OpbLDnuPWiXSYakfg7GsSxZOXIi54EUQyjv02o31yWD-wYjgZ6P2xKFIMBGFm3fE_yNtg3tKOVQuCvBzF9Mb74GX_shEZvmnwCDVp5H6OhJSwj3WjnVbY_2yzb3Fg&sa=X&ved=2ahUKEwjbqOm0odmWAxU9ppUCHVM-Km0QxKsJKAJ6BAgaEAE&ictx=0",
+      "serpapi_link": "https://serpapi.com/search.json?device=desktop&engine=google&gl=us&google_domain=google.com&hl=en&location=Dallas-Fort+Worth%2C+Texas%2C+United+States&q=top+rated+electrician+Rockwall+tx&uds=AJ5uw1_a2D0D09lxm8gpKKOTUn4rUD4sMjdVSgEAGJs5RXi27_vmp7kTT_fbPpqt2orhs7NvK2X3a3kIq_d3P1Y8szLzeloCqLyK4OpbLDnuPWiXSYakfg7GsSxZOXIi54EUQyjv02o31yWD-wYjgZ6P2xKFIMBGFm3fE_yNtg3tKOVQuCvBzF9Mb74GX_shEZvmnwCDVp5H6OhJSwj3WjnVbY_2yzb3Fg"
+    }
+  ],
+  "related_searches": [
+    {
+      "block_position": 1,
+      "query": "Residential electrician rockwall tx",
+      "link": "https://www.google.com/search?sca_esv=38512c4207789a1a&gl=us&hl=en&sxsrf=APpeQnv7hXeKy1u2ELijZQs2BRMjA0RTag:1788673869377&q=Residential+electrician+rockwall+tx&sa=X&ved=2ahUKEwjbqOm0odmWAxU9ppUCHVM-Km0Q1QJ6BAhfEAE",
+      "serpapi_link": "https://serpapi.com/search.json?device=desktop&engine=google&gl=us&google_domain=google.com&hl=en&location=Dallas-Fort+Worth%2C+Texas%2C+United+States&q=Residential+electrician+rockwall+tx"
+    },
+    {
+      "block_position": 1,
+      "query": "24 hour electrician rockwall tx",
+      "link": "https://www.google.com/search?sca_esv=38512c4207789a1a&gl=us&hl=en&sxsrf=APpeQnv7hXeKy1u2ELijZQs2BRMjA0RTag:1788673869377&q=24+hour+electrician+rockwall+tx&sa=X&ved=2ahUKEwjbqOm0odmWAxU9ppUCHVM-Km0Q1QJ6BAheEAE",
+      "serpapi_link": "https://serpapi.com/search.json?device=desktop&engine=google&gl=us&google_domain=google.com&hl=en&location=Dallas-Fort+Worth%2C+Texas%2C+United+States&q=24+hour+electrician+rockwall+tx"
+    }
+  ],
+  "discussions_and_forums": [
+    {
+      "title": "Who is a good licensed electrician in Rockwall, TX?",
+      "link": "https://www.facebook.com/groups/1819789084912413/posts/4990623951162228/",
+      "date": "1 year ago",
+      "extensions": [
+        "Rockwall, TX",
+        "80+ comments"
+      ],
+      "source": "Facebook",
+      "answers": [
+        {
+          "link": "https://www.facebook.com/groups/1819789084912413/posts/4990623951162228/",
+          "extensions": [
+            "Top answer",
+            "4 votes",
+            "a year ago"
+          ]
+        },
+        {
+          "link": "https://www.facebook.com/groups/1819789084912413/posts/4990623951162228/",
+          "extensions": [
+            "3 votes",
+            "a year ago"
+          ]
+        },
+        {
+          "link": "https://www.facebook.com/groups/1819789084912413/posts/4990623951162228/",
+          "extensions": [
+            "3 votes",
+            "a year ago"
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Recommended Electrician in Rockwall, TX",
+      "link": "https://www.facebook.com/groups/1819789084912413/posts/4761592877398671/",
+      "date": "1 year ago",
+      "extensions": [
+        "Rockwall, TX",
+        "7 comments"
+      ],
+      "source": "Facebook",
+      "answers": [
+        {
+          "link": "https://www.facebook.com/groups/1819789084912413/posts/4761592877398671/",
+          "extensions": [
+            "Top answer",
+            "3 votes",
+            "a year ago"
+          ]
+        },
+        {
+          "link": "https://www.facebook.com/groups/1819789084912413/posts/4761592877398671/",
+          "extensions": [
+            "3 votes",
+            "a year ago"
+          ]
+        },
+        {
+          "link": "https://www.facebook.com/groups/1819789084912413/posts/4761592877398671/",
+          "extensions": [
+            "2 votes",
+            "a year ago"
+          ]
+        }
+      ]
+    }
+  ],
+  "pagination": {
+    "current": 1,
+    "next": "https://www.google.com/search?q=electrician+Rockwall+tx&sca_esv=38512c4207789a1a&gl=us&hl=en&sxsrf=APpeQnv7hXeKy1u2ELijZQs2BRMjA0RTag:1788673869377&ei=Tf-capvOFr3M1sQP0_yo6QY&start=10&sa=N&sstk=AS6-VmLn6_MUUHfwf7DOR24i6UoeKD8Uc4Fo8LSNityBy5Op8Dn4iJ_e6e-ZNHEueyMNJOvW5ovnAPTlN__2xUVzr7b055WeOsUEQg&ved=2ahUKEwjbqOm0odmWAxU9ppUCHVM-Km0Q8NMDegQIWhAG",
+    "other_pages": {
+      "2": "https://www.google.com/search?q=electrician+Rockwall+tx&sca_esv=38512c4207789a1a&gl=us&hl=en&sxsrf=APpeQnv7hXeKy1u2ELijZQs2BRMjA0RTag:1788673869377&ei=Tf-capvOFr3M1sQP0_yo6QY&start=10&sa=N&sstk=AS6-VmLn6_MUUHfwf7DOR24i6UoeKD8Uc4Fo8LSNityBy5Op8Dn4iJ_e6e-ZNHEueyMNJOvW5ovnAPTlN__2xUVzr7b055WeOsUEQg&ved=2ahUKEwjbqOm0odmWAxU9ppUCHVM-Km0Q8tMDegQIWhAE"
+    }
+  },
+  "serpapi_pagination": {
+    "current": 1,
+    "next_link": "https://serpapi.com/search.json?device=desktop&engine=google&gl=us&google_domain=google.com&hl=en&location=Dallas-Fort+Worth%2C+Texas%2C+United+States&q=electrician+Rockwall+tx&start=10",
+    "next": "https://serpapi.com/search.json?device=desktop&engine=google&gl=us&google_domain=google.com&hl=en&location=Dallas-Fort+Worth%2C+Texas%2C+United+States&q=electrician+Rockwall+tx&start=10",
+    "other_pages": {
+      "2": "https://serpapi.com/search.json?device=desktop&engine=google&gl=us&google_domain=google.com&hl=en&location=Dallas-Fort+Worth%2C+Texas%2C+United+States&q=electrician+Rockwall+tx&start=10"
+    }
+  },
+  "_fetched_at": "2026-09-06T05:51:12.133Z",
+  "_query": "electrician Rockwall tx",
+  "_city": "Rockwall",
+  "_template": "electrician {city} tx"
+}
