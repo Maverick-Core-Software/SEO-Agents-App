@@ -1,0 +1,281 @@
+{
+  "attempt_id": "att_render_fixture",
+  "week_of": "2026-09-07",
+  "topic": {
+    "service_key": "panel_upgrade",
+    "service_label": "Electrical Panel Upgrade / Replacement",
+    "city": "Rockwall",
+    "query_family": [
+      "electrical panel upgrade rockwall",
+      "200 amp panel upgrade rockwall tx",
+      "panel replacement cost rockwall"
+    ]
+  },
+  "gbp": [
+    {
+      "day": 1,
+      "date": "2026-09-04",
+      "service": "Electrical Panel Upgrade / Replacement",
+      "topic": "Signs a panel is at capacity",
+      "trend_tie": "Fall appliance loads",
+      "headline": "Is Your Rockwall Panel Ready for Fall?",
+      "body": "If your breakers trip when the oven and the dryer run together, your panel may be at its limit. Grizzly Electrical Solutions upgrades panels across Rockwall and the rest of DFW, sizing the new service for EV chargers, generators and future additions. Text a photo of your panel to (469) 896-3862 for a free quote.",
+      "caption": "Panel upgrade in progress in Rockwall",
+      "photo_file": "panel-rockwall.jpg",
+      "cta": "Text us a photo for a free quote",
+      "hashtags": [
+        "#RockwallElectrician",
+        "#PanelUpgrade",
+        "#DFWElectrician"
+      ],
+      "status": "Needs approval"
+    },
+    {
+      "day": 2,
+      "date": "2026-09-05",
+      "service": "EV Charger Installation",
+      "topic": "Level 2 charging at home",
+      "trend_tie": "EV deliveries rising in DFW",
+      "headline": "Level 2 EV Charging at Home in Rockwall",
+      "body": "A Level 2 charger adds about 25 miles of range per hour, so most drivers wake up to a full battery. We install dedicated circuits and chargers for every major EV brand across Rockwall, Heath and Rowlett, and we check the panel first so the new load is safe. Call (469) 863-9804 to schedule.",
+      "caption": "Level 2 charger install in a Rockwall garage",
+      "photo_file": "ev-charger.jpg",
+      "cta": "Call us to schedule",
+      "hashtags": [
+        "#EVCharger",
+        "#RockwallTX",
+        "#GrizzlyElectrical"
+      ],
+      "status": "Needs approval"
+    },
+    {
+      "day": 3,
+      "date": "2026-09-06",
+      "service": "Electrical Panel Upgrade / Replacement",
+      "topic": "Recalled panel brands",
+      "trend_tie": "Home inspection season",
+      "headline": "Federal Pacific or Zinsco Panel? Read This",
+      "body": "Certain older panel brands have a documented history of breakers that fail to trip. If your home was built before 1990 and still has the original panel, an inspection is worth an afternoon. Our licensed electricians have served Rockwall, Rowlett and Garland since 2021. Text a photo of the label to (469) 896-3862.",
+      "caption": "Old panel label check",
+      "photo_file": "IMG_2329.JPG",
+      "cta": "Text us a photo of your panel label",
+      "hashtags": [
+        "#ElectricalSafety",
+        "#RockwallHomes",
+        "#DFW"
+      ],
+      "status": "Needs approval"
+    },
+    {
+      "day": 4,
+      "date": "2026-09-07",
+      "service": "Generator Inlet, Interlock & Installation",
+      "topic": "Generator inlet with interlock",
+      "trend_tie": "Storm season prep",
+      "headline": "Storm-Ready: Generator Inlets Done Right",
+      "body": "A generator inlet with an interlock kit lets you power your essentials from a portable generator without running cords through a window. It is a one-day install for most homes. We handle permits and the inspection across DFW, from Rowlett to Rockwall. Ask us which circuits to prioritize before the next outage.",
+      "caption": "Generator inlet and interlock kit installed",
+      "photo_file": "generator-inlet.jpg",
+      "cta": "Ask us which circuits to prioritize",
+      "hashtags": [
+        "#GeneratorInstall",
+        "#StormPrep",
+        "#RowlettTX"
+      ],
+      "status": "Needs approval"
+    },
+    {
+      "day": 5,
+      "date": "2026-09-08",
+      "service": "Electrical Panel Upgrade / Replacement",
+      "topic": "Panel capacity for additions",
+      "trend_tie": "Hot tub and workshop projects",
+      "headline": "Adding a Hot Tub or Workshop? Check the Panel",
+      "body": "Big additions like hot tubs, workshops and pool equipment need dedicated circuits, and many older 100 amp panels have no room left. A 200 amp upgrade gives you space for today and for the EV you might buy next year. We serve Rockwall and the surrounding cities. Text a photo of your panel for a free quote.",
+      "caption": "New 200 amp panel ready for a workshop circuit",
+      "photo_file": "panel-rockwall.jpg",
+      "cta": "Text us a photo for a free quote",
+      "hashtags": [
+        "#PanelUpgrade",
+        "#RockwallElectrician",
+        "#HomeImprovement"
+      ],
+      "status": "Needs approval"
+    },
+    {
+      "day": 6,
+      "date": "2026-09-09",
+      "service": "Whole-Home Surge Protection",
+      "topic": "Whole-home surge protection",
+      "trend_tie": "Late-summer lightning",
+      "headline": "One Surge Can Take Out Every Screen You Own",
+      "body": "Whole-home surge protection mounts at the panel and shields every circuit in the house from lightning and utility surges, not just the devices on a power strip. Installation usually takes under two hours. Grizzly Electrical Solutions installs and tests surge protectors across Rowlett, Rockwall and Wylie. Call (469) 863-9804 today.",
+      "caption": "Whole-home surge protector mounted beside the panel",
+      "photo_file": "surge-protector.jpg",
+      "cta": "Call us today",
+      "hashtags": [
+        "#SurgeProtection",
+        "#DFWElectrician",
+        "#RockwallTX"
+      ],
+      "status": "Needs approval"
+    },
+    {
+      "day": 7,
+      "date": "2026-09-10",
+      "service": "Recessed Lighting Installation",
+      "topic": "Kitchen lighting layout",
+      "trend_tie": "Fall remodel planning",
+      "headline": "Brighter Kitchens Start With a Lighting Plan",
+      "body": "Recessed lighting done well is about spacing, beam angle and dimming, not just adding more cans. We lay out the ceiling before we cut a single hole so the kitchen island, the counters and the walkway each get the light they need. Serving Garland, Rowlett and the greater DFW area. Text us a photo of your ceiling.",
+      "caption": "Recessed lighting layout in a remodeled kitchen",
+      "photo_file": null,
+      "cta": "Text us a photo of your ceiling",
+      "hashtags": [
+        "#RecessedLighting",
+        "KitchenRemodel",
+        "#DFW"
+      ],
+      "status": "Needs approval"
+    }
+  ],
+  "facebook": [
+    {
+      "day": 1,
+      "date": "2026-09-07",
+      "type": "slideshow",
+      "service": "Electrical Panel Upgrade / Replacement",
+      "post_goal": "education",
+      "format": "slideshow, 5 slides",
+      "hook": "Your breaker panel is quietly telling you something.",
+      "body": "Flickering lights, warm breakers and a panel that hums are early warnings, not quirks. Swipe through five signs that a Rockwall home is ready for a 200 amp upgrade, and what happens on install day. Comment the age of your home and we will tell you what to look for.",
+      "cta": "Comment the age of your home",
+      "hashtags": [
+        "#RockwallTX",
+        "#PanelUpgrade"
+      ],
+      "contact": "Text a photo for a free quote: (469) 896-3862",
+      "photo_file": "panel-rockwall.jpg",
+      "video_prompt": "",
+      "on_screen_text": "- **[0:00–0:03]** \"Your breaker panel is quietly telling you something.\"\n- **[0:04–0:08]** \"Warm breakers and flickering lights are early warnings.\"\n- **[0:09–0:14]** \"A 200 amp upgrade sizes the panel for EVs and generators.\"\n- **[0:15–0:18]** \"Grizzly Electrical Solutions — Rockwall and DFW.\"",
+      "boost": {
+        "decision": "YES",
+        "daily_usd": 10,
+        "days": 3
+      },
+      "boost_targeting": "Homeowners 30-65 within 15 miles of Rockwall"
+    },
+    {
+      "day": 3,
+      "date": "2026-09-09",
+      "type": "photo",
+      "service": "EV Charger Installation",
+      "post_goal": "social_proof",
+      "format": "single photo, before and after",
+      "hook": "Charging at home beats the gas station every time.",
+      "body": "This Heath driveway now has a Level 2 charger on its own circuit, tucked next to the garage door. The whole install took one afternoon, panel check included.\n\nIf you just brought an EV home, tell us the model below and we will say which charger fits it.",
+      "cta": "Tell us your EV model",
+      "hashtags": [
+        "#EVCharger",
+        "DFW"
+      ],
+      "contact": "Text a photo for a free quote: (469) 896-3862",
+      "photo_file": "ev-charger.jpg",
+      "video_prompt": "",
+      "on_screen_text": "Level 2 charger, one afternoon",
+      "boost": {
+        "decision": "MAYBE",
+        "daily_usd": null,
+        "days": null
+      },
+      "boost_targeting": ""
+    },
+    {
+      "day": 5,
+      "date": "2026-09-11",
+      "type": "carousel",
+      "service": "Generator Inlet, Interlock & Installation",
+      "post_goal": "engagement",
+      "format": "carousel, 4 cards",
+      "hook": "When the power goes out, what do you need to keep running?",
+      "body": "Fridge, wifi, a fan, the garage door. A generator inlet with an interlock kit lets a portable generator feed those circuits safely through your panel. Swipe to see how it works and vote in the comments: fridge first, or the air conditioning?",
+      "cta": "Vote in the comments",
+      "hashtags": [
+        "#StormPrep",
+        "#RowlettTX",
+        "#GeneratorInstall"
+      ],
+      "contact": "Text a photo for a free quote: (469) 896-3862",
+      "photo_file": "generator-inlet.jpg",
+      "video_prompt": "",
+      "on_screen_text": "Fridge or AC first?",
+      "boost": {
+        "decision": "YES",
+        "daily_usd": 10,
+        "days": 2
+      },
+      "boost_targeting": "Homeowners within 20 miles of Rowlett"
+    },
+    {
+      "day": 6,
+      "date": "2026-09-12",
+      "type": "text",
+      "service": "Electrical Troubleshooting & Repair",
+      "post_goal": "entertainment",
+      "format": "text post",
+      "hook": "Electrician confession: the most common call we get is not what you think.",
+      "body": "It is the outlet that stopped working because a GFCI tripped somewhere else in the house. Before you call, press the reset button on every outlet in the bathrooms, kitchen and garage. Still dead? Send us a photo and we will take a look. Guess our second most common call below.",
+      "cta": "Guess our second most common call",
+      "hashtags": [],
+      "contact": "Text a photo for a free quote: (469) 896-3862",
+      "photo_file": null,
+      "video_prompt": "",
+      "on_screen_text": "",
+      "boost": {
+        "decision": "NO",
+        "daily_usd": null,
+        "days": null
+      },
+      "boost_targeting": ""
+    }
+  ],
+  "website_actions": [
+    {
+      "type": "website_faq_update",
+      "title": "Add a panel upgrade FAQ to /panel-upgrades/",
+      "target": "/panel-upgrades/",
+      "priority": "medium",
+      "description": "Add three questions about permits, timeline and EV readiness.",
+      "owner_gate": false,
+      "draft": {
+        "title": "Panel upgrade FAQ",
+        "meta_description": "Answers about panel upgrades in Rockwall and DFW from Grizzly Electrical Solutions.",
+        "html": "<h2>Panel upgrade FAQ</h2><p>Do I need a permit? Yes, and we pull it. See <a href=\"https://www.grizzlyelectricaltx.com/panel-upgrades/\">our panel upgrade page</a>.</p>"
+      },
+      "source_ids": [
+        "obs-1"
+      ]
+    },
+    {
+      "type": "website_hours_update",
+      "title": "Confirm holiday hours on the contact page",
+      "target": "/contact/",
+      "priority": "low",
+      "description": "Owner to confirm whether the office closes on Labor Day.",
+      "owner_gate": true,
+      "draft": null,
+      "source_ids": []
+    }
+  ],
+  "notes": {
+    "trend_signals": [
+      "Search Console: panel upgrade queries up in Rockwall over 28 days",
+      "SerpApi: People Also Ask shows panel cost questions for Rockwall"
+    ],
+    "photo_gaps": [
+      "GBP day 7 recessed lighting needs a photo"
+    ],
+    "degraded": false,
+    "degraded_reason": null
+  }
+}

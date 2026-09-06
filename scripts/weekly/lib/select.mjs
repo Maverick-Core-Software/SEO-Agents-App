@@ -22,8 +22,15 @@
  * Family membership: a Search Console or SerpApi query belongs to a service
  * when it contains at least half of the tokens of one of that service's query
  * templates (or its label), generic words removed; the most specific service
- * wins. A query that names no city counts for every city of the service; a
- * query that names a city counts only for that city.
+ * wins (tokens shared by several services, like "electrical", weigh less than
+ * tokens unique to one). A query that names no city counts for every city of
+ * the service; a query that names a city counts only for that city. City
+ * detection follows the collectors' rule: earliest mention wins.
+ *
+ * History weeks: a post belongs to a week by its own platform's calendar —
+ * GBP weeks start on run_friday, Facebook weeks on week_of (the Monday), so
+ * last week's Friday and Saturday Facebook posts, dated on or after this
+ * run_friday, still count as last week's.
  */
 
 /** Score keys in the order they appear in CandidateSchema. */
@@ -57,7 +64,12 @@ export const DEFAULT_THRESHOLDS = Object.freeze({
   performance_unknown: 0.5,
   degraded_fallback: 0.5,
   exclusion_weeks: 2,
-  exclusion_min_posts: 2,
+  // A week's "winner" is inferred only when one service clearly dominates it:
+  // at least this many posts and no other service tied. Legacy weeks rotate
+  // seven GBP services and reuse up to four of them on Facebook, so any
+  // service tops out at 2 there; the new pipeline puts the topic on ≥ 3 GBP
+  // days plus most Facebook posts.
+  exclusion_min_posts: 3,
   short_window_max_days: 35,
   default_window_days: 28,
   ctr_min_impressions: 10,
@@ -133,22 +145,32 @@ function cityNames(cities) {
   return (cities || []).map((c) => (typeof c === 'string' ? c : c && c.name)).filter(Boolean);
 }
 
-/** First policy city named in `text` (whole words, longest name first) or null. */
+/**
+ * First policy city named in `text` (whole words; punctuation counts as a
+ * space) or null. Earliest mention wins, ties go to the longer name — the same
+ * rule as `findCity` in the collectors, so a city inferred here agrees with
+ * the `geography` a collector would have tagged.
+ */
 export function detectCity(text, cities = []) {
   const hay = ` ${tokens(text).join(' ')} `;
-  const names = cityNames(cities).sort((a, b) => b.length - a.length);
-  for (const name of names) {
+  let best = null;
+  for (const name of cityNames(cities)) {
     const needle = ` ${tokens(name).join(' ')} `;
-    if (needle.trim() && hay.includes(needle)) return name;
+    if (!needle.trim()) continue;
+    const idx = hay.indexOf(needle);
+    if (idx === -1) continue;
+    if (!best || idx < best.idx || (idx === best.idx && needle.length > best.needle.length)) best = { idx, needle, name };
   }
-  return null;
+  return best ? best.name : null;
 }
 
 /**
  * Map free text (a search query, a history post's service label, a hook) to a
  * policy service key. Each service owns a set of token "cores" built from its
  * label and query templates; the core with the most matched tokens wins, ties
- * broken by match ratio then policy order.
+ * broken by token specificity (a token found in the cores of n services
+ * weighs 1/n, so "commercial" outranks "electrical"), then match ratio, then
+ * policy order.
  */
 export function createServiceMatcher(policy = {}, thresholds = DEFAULT_THRESHOLDS) {
   const cityTokens = new Set(cityNames(policy.cities).flatMap(tokens));
@@ -166,6 +188,11 @@ export function createServiceMatcher(policy = {}, thresholds = DEFAULT_THRESHOLD
     return { key: s.key, cores };
   });
   const keys = new Set(services.map((s) => s.key));
+  const serviceCount = new Map(); // token → number of services whose cores use it
+  for (const s of services) {
+    for (const t of new Set(s.cores.flat())) serviceCount.set(t, (serviceCount.get(t) || 0) + 1);
+  }
+  const specificity = (t) => 1 / (serviceCount.get(t) || 1);
 
   function match(text) {
     const present = new Set(tokens(text).filter((t) => !cityTokens.has(t) && !GENERIC_TERMS.has(t)));
@@ -173,11 +200,14 @@ export function createServiceMatcher(policy = {}, thresholds = DEFAULT_THRESHOLD
     let best = null;
     for (const s of services) {
       for (const core of s.cores) {
-        const hits = core.filter((t) => present.has(t)).length;
+        const matched = core.filter((t) => present.has(t));
+        const hits = matched.length;
         const ratio = hits / core.length;
         if (!hits || ratio < minRatio) continue;
-        if (!best || hits > best.hits || (hits === best.hits && ratio > best.ratio)) {
-          best = { key: s.key, hits, ratio };
+        const weight = matched.reduce((acc, t) => acc + specificity(t), 0);
+        if (!best || hits > best.hits
+          || (hits === best.hits && (weight > best.weight || (weight === best.weight && ratio > best.ratio)))) {
+          best = { key: s.key, hits, weight, ratio };
         }
       }
     }
@@ -268,11 +298,11 @@ function indexObservations(observations, policy, matcher, thresholds) {
   for (const obs of observations || []) {
     if (!obs || typeof obs !== 'object' || !(obs.source in sources)) continue;
     if (obs.status !== 'ok') continue;
-    sources[obs.source] = true;
     const value = obs.value && typeof obs.value === 'object' ? obs.value : {};
 
     if (obs.source === 'search_console') {
       if (obs.metric && obs.metric !== 'search_analytics') continue;
+      sources.search_console = true;
       const query = typeof value.query === 'string' ? value.query : obs.scope;
       if (!query || /^https?:\/\//i.test(query)) continue; // page-dimension rows
       const service = matcher.match(query);
@@ -289,6 +319,7 @@ function indexObservations(observations, policy, matcher, thresholds) {
       (value.page ? scPage : scPure).push(row);
     } else if (obs.source === 'serpapi') {
       if (obs.metric && obs.metric !== 'serp') continue;
+      sources.serpapi = true;
       const query = typeof value.query === 'string' ? value.query : obs.scope;
       const service = typeof value.service_key === 'string' && matcher.isKey(value.service_key)
         ? value.service_key
@@ -301,6 +332,7 @@ function indexObservations(observations, policy, matcher, thresholds) {
         && !(Array.isArray(value.local_pack) && value.local_pack.length === 0);
       serp.push({ query, service, city, paa, packLacksGrizzly });
     } else if (obs.source === 'facebook') {
+      sources.facebook = true;
       if (obs.scope) facebook.set(String(obs.scope), value);
     }
   }
@@ -313,14 +345,21 @@ function indexObservations(observations, policy, matcher, thresholds) {
   return { sources, sc, demandRows, windowDays, serp, facebook };
 }
 
-function indexHistory(history, policy, matcher, runFridayMs) {
+/**
+ * Published history posts with `daysBefore` counted back from the start of
+ * this week's slots on the post's own platform: Facebook weeks start on
+ * `week_of` (Monday), everything else on `run_friday` (GBP day 1). A post on
+ * or after that start belongs to this week (or a re-run of it) and is ignored.
+ */
+function indexHistory(history, policy, matcher, { runFridayMs, weekOfMs }) {
   const posts = [];
   for (const post of (history && history.posts) || []) {
     if (!post || typeof post !== 'object') continue;
     if (UNPUBLISHED_STATUS.test(String(post.status || ''))) continue;
     const dayMs = parseDay(post.post_date);
     if (dayMs == null) continue;
-    const daysBefore = daysBetween(dayMs, runFridayMs);
+    const platform = String(post.platform || '').toLowerCase();
+    const daysBefore = daysBetween(dayMs, platform === 'facebook' ? weekOfMs : runFridayMs);
     if (daysBefore <= 0) continue; // this week's own slots or later
     const service = typeof post.service_key === 'string' && matcher.isKey(post.service_key)
       ? post.service_key
@@ -333,7 +372,7 @@ function indexHistory(history, policy, matcher, runFridayMs) {
       city,
       daysBefore,
       post_date: String(post.post_date).slice(0, 10),
-      platform: String(post.platform || '').toLowerCase(),
+      platform,
       platform_post_id: post.platform_post_id ? String(post.platform_post_id) : null,
     });
   }
@@ -341,12 +380,14 @@ function indexHistory(history, policy, matcher, runFridayMs) {
 }
 
 /**
- * Services that "won" one of the last `exclusion_weeks` weeks: the modal
- * service of that week's posts when it has at least `exclusion_min_posts`
- * (legacy weeks rotate one service per day and infer nothing), plus any
- * explicit `history.winners: [{ week_of, service_key }]` in the window.
+ * Services that "won" one of the last `exclusion_weeks` weeks: the single
+ * most-posted service of that week when it has at least
+ * `exclusion_min_posts` and no other service ties it (a legacy week rotates
+ * seven GBP services and reuses some on Facebook, so it infers nothing), plus
+ * any explicit `history.winners: [{ week_of, service_key }]` in the window
+ * (`service_key` may also be a service label).
  */
-function recentWinners(posts, history, weekSpec, thresholds) {
+function recentWinners(posts, history, weekSpec, matcher, thresholds) {
   const winners = new Map(); // service → evidence text
   const weeks = thresholds.exclusion_weeks;
   const byWeek = new Map();
@@ -361,18 +402,21 @@ function recentWinners(posts, history, weekSpec, thresholds) {
     counts.set(p.service, entry);
   }
   for (const counts of byWeek.values()) {
-    const max = Math.max(...[...counts.values()].map((e) => e.n));
-    if (max < thresholds.exclusion_min_posts) continue;
-    for (const [service, entry] of counts) {
-      if (entry.n === max && !winners.has(service)) winners.set(service, `${entry.n} posts, last ${entry.latest}`);
-    }
+    const ranked = [...counts.entries()].sort((a, b) => b[1].n - a[1].n);
+    const [service, top] = ranked[0];
+    if (top.n < thresholds.exclusion_min_posts) continue;
+    if (ranked[1] && ranked[1][1].n === top.n) continue; // no single topic that week
+    if (!winners.has(service)) winners.set(service, `${top.n} posts, last ${top.latest}`);
   }
   const weekOfMs = parseDay(weekSpec.week_of);
   for (const w of (history && history.winners) || []) {
-    const ms = parseDay(w && w.week_of);
-    if (ms == null || !w.service_key) continue;
+    if (!w || typeof w !== 'object') continue;
+    const ms = parseDay(w.week_of);
+    const raw = typeof w.service_key === 'string' ? w.service_key : '';
+    const service = matcher.isKey(raw) ? raw : matcher.match(raw);
+    if (ms == null || !service) continue;
     const d = daysBetween(ms, weekOfMs);
-    if (d > 0 && d <= weeks * 7 && !winners.has(w.service_key)) winners.set(w.service_key, `selected for week of ${w.week_of}`);
+    if (d > 0 && d <= weeks * 7 && !winners.has(service)) winners.set(service, `selected for week of ${w.week_of}`);
   }
   return winners;
 }
@@ -475,7 +519,7 @@ function scoreCandidate(candidate, ctx) {
     why.demand.push(impressions > 0
       ? `${index.windowDays}d impressions ${impressions} (${base.toFixed(2)} of max)`
       : 'no Search Console impressions for the family');
-    if (paaRow) why.demand.push(`+${T.paa_bonus} People Also Ask on "${paaRow.query}"`);
+    if (paaRow) why.demand.push(`+${T.paa_bonus} People Also Ask on "${paaRow.query || 'the family'}"`);
 
     const posRows = weightedPosition(famRows) ? famRows : index.sc.filter(inFamily);
     const pos = weightedPosition(posRows);
@@ -588,10 +632,10 @@ export function rankCandidates({ policy, observations = [], history = null, fact
   const { weights, thresholds: T } = selectionConstants(policy);
   const matcher = createServiceMatcher(policy, T);
   const index = indexObservations(observations, policy, matcher, T);
-  const posts = indexHistory(history, policy, matcher, runFridayMs);
+  const posts = indexHistory(history, policy, matcher, { runFridayMs, weekOfMs });
   const degraded = !index.sources.search_console && !index.sources.serpapi;
   const perf = performanceByService(posts, index, T);
-  const winners = recentWinners(posts, history, weekSpec, T);
+  const winners = recentWinners(posts, history, weekSpec, matcher, T);
   const month = Number(String(weekSpec.week_of).slice(5, 7));
   const serviceByKey = new Map(policy.services.map((s) => [s.key, s]));
   const cityWeights = new Map(policy.cities.map((c) => [c.name, Number.isFinite(Number(c.weight)) ? Number(c.weight) : 1]));
