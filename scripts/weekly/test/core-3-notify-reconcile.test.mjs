@@ -93,8 +93,8 @@ describe('reconcile', () => {
       plan_items: { data: [{ id: 'item-9', projected_ref: 'wp2' }], error: null },
       performance_observations: (chain) => (chain.ops[0][0] === 'select'
         ? { data: [
-          { platform_post_id: '108_b', page_url: null, metric: 'fb_interactions', window_days: 7, availability: 'ok' },          // 108_b@7d already recorded
-          { platform_post_id: '108_a', page_url: null, metric: 'fb_interactions', window_days: 7, availability: 'unavailable' }, // must NOT block a retry
+          { platform_post_id: '108_b', page_url: null, metric: 'fb_interactions', window_days: 7, availability: 'ok', measured_at: '2026-09-15T00:00:00Z' },          // 108_b@7d already recorded
+          { platform_post_id: '108_a', page_url: null, metric: 'fb_interactions', window_days: 7, availability: 'unavailable', measured_at: '2026-09-01T00:00:00Z' }, // stale unavailable: retried
         ], error: null }
         : { data: null, error: null }),
     });
@@ -123,10 +123,41 @@ describe('reconcile', () => {
     assert.equal(r.inserted, 6);
   });
 
+  it('a fresh unavailable row is not retried until it is a week old', async () => {
+    const supabase = fakeSupabase({
+      weekly_posts: { data: [{ id: 'wp1', platform: 'facebook', post_date: '2026-08-01', status: 'posted', platform_post_id: '108_r' }], error: null },
+      performance_observations: (chain) => (chain.ops[0][0] === 'select'
+        ? { data: [{ platform_post_id: '108_r', page_url: null, metric: 'fb_interactions', window_days: 7, availability: 'unavailable', measured_at: '2026-09-19T00:00:00Z' }], error: null }
+        : { data: null, error: null }),
+    });
+    let calls = 0;
+    const fbClient = { postPerformance: async () => { calls += 1; throw new Error('x'); } };
+    const r = await reconcilePerformance({ supabase, fbClient, now: NOW, windows: [7] });
+    assert.equal(calls, 0);
+    assert.equal(r.skipped, 1);
+    assert.equal(r.inserted, 0);
+  });
+
+  it('uses the video fallback for Reels and records views only', async () => {
+    const supabase = fakeSupabase({
+      weekly_posts: { data: [{ id: 'wp1', platform: 'facebook', post_date: '2026-08-01', status: 'posted', platform_post_id: '2573468229782472' }], error: null },
+    });
+    const fbClient = { postPerformance: async () => { throw new Error('Meta Graph API request to /2573468229782472 failed (#100): (#100) Tried accessing nonexisting field (message)'); } };
+    const videoFallback = async ({ postId }) => ({ media_views: postId === '2573468229782472' ? 412 : 0 });
+    const r = await reconcilePerformance({ supabase, fbClient, now: NOW, windows: [7], videoFallback });
+    assert.equal(r.videos, 1);
+    assert.equal(r.unavailable, 0);
+    const rows = supabase.calls.find((c) => c.table === 'performance_observations' && c.ops[0][0] === 'insert').ops[0][1];
+    const views = rows.find((x) => x.metric === 'fb_media_views');
+    assert.equal(views.value, 412);
+    assert.equal(views.availability, 'ok');
+    assert.equal(rows.find((x) => x.metric === 'fb_reactions').availability, 'unavailable');
+  });
+
   it('recordPageMetrics writes four metrics per page and skips seen ones', async () => {
     const supabase = fakeSupabase({
       performance_observations: (chain) => (chain.ops[0][0] === 'select'
-        ? { data: [{ platform_post_id: null, page_url: 'https://x/a', metric: 'sc_clicks', window_days: 7 }], error: null }
+        ? { data: [{ platform_post_id: null, page_url: 'https://x/a', metric: 'sc_clicks', window_days: 7, availability: 'ok', measured_at: '2026-09-20T01:00:00Z' }], error: null }
         : { data: null, error: null }),
     });
     const r = await recordPageMetrics({ supabase, rows: [{ page: 'https://x/a', clicks: 1, impressions: 20, ctr: 0.05, position: 7.1 }], windowDays: 7, now: NOW });

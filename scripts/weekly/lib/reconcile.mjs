@@ -52,17 +52,32 @@ export function metricRowsForPost({ post, perf, windowDays, now, planItemId = nu
   return rows;
 }
 
-async function existingKeys(supabase, { since }) {
+export const RETRY_UNAVAILABLE_AFTER_DAYS = 7;
+
+async function existingKeys(supabase, { since, now = new Date(), retryAfterDays = RETRY_UNAVAILABLE_AFTER_DAYS }) {
   const data = must(await supabase.from('performance_observations')
-    .select('platform_post_id, page_url, metric, window_days, availability')
+    .select('platform_post_id, page_url, metric, window_days, availability, measured_at')
     .gte('measured_at', since)
     .limit(5000), 'performance_observations select');
-  // Only rows that actually carried a value count as "done". An `unavailable`
-  // row (Reels reject the `message` field on 2026-09-06) is retried on the next
-  // pass so a fixed client can backfill instead of being blocked forever.
-  return new Set((data || [])
-    .filter((r) => r.availability !== 'unavailable')
-    .map((r) => `${r.platform_post_id || ''}|${r.page_url || ''}|${r.metric}|${r.window_days}`));
+  // A key is "done" when a row carried a value, or when an `unavailable` row is
+  // younger than retryAfterDays. Older unavailable rows are retried so a fixed
+  // client can backfill, without re-inserting an unavailable row every day.
+  const cutoff = now.getTime() - retryAfterDays * DAY_MS;
+  const done = new Set();
+  for (const r of data || []) {
+    const key = `${r.platform_post_id || ''}|${r.page_url || ''}|${r.metric}|${r.window_days}`;
+    if (r.availability !== 'unavailable') { done.add(key); continue; }
+    const at = Date.parse(r.measured_at || '');
+    if (Number.isFinite(at) && at > cutoff) done.add(key);
+  }
+  return done;
+}
+
+const VIDEO_NODE_RE = /nonexisting field \(message\)|Unsupported get request|does not exist, cannot be loaded/i;
+
+/** True when a Graph error means "this id is a video/Reel node, not a post". */
+export function looksLikeVideoNode(err) {
+  return VIDEO_NODE_RE.test(String((err && err.message) || err || ''));
 }
 
 async function insertRows(supabase, rows) {
@@ -82,8 +97,11 @@ async function insertRows(supabase, rows) {
  * @param {Date}   [opts.now]
  * @param {number[]} [opts.windows=[7, 28]]
  * @param {number} [opts.lookbackDays=42]
+ * @param {function} [opts.videoFallback]  async ({ postId }) => ({ media_views }) for Reels/videos,
+ *   whose nodes reject the post field set (video_insights needs read_insights, which the
+ *   page token lacks as of 2026-09-06, but the plain `views` field works)
  */
-export async function reconcilePerformance({ supabase, fbClient, now = new Date(), windows = [7, 28], lookbackDays = 42, log = () => {} }) {
+export async function reconcilePerformance({ supabase, fbClient, now = new Date(), windows = [7, 28], lookbackDays = 42, videoFallback = null, retryAfterDays = RETRY_UNAVAILABLE_AFTER_DAYS, log = () => {} }) {
   const since = isoDate(now.getTime() - lookbackDays * DAY_MS);
   const posts = must(await supabase.from('weekly_posts')
     .select('id, platform, post_date, status, platform_post_id')
@@ -99,26 +117,40 @@ export async function reconcilePerformance({ supabase, fbClient, now = new Date(
     .limit(2000), 'plan_items select') || [];
   const itemByRef = new Map(items.map((i) => [i.projected_ref, i.id]));
 
-  const seen = await existingKeys(supabase, { since: `${since}T00:00:00Z` });
+  const seen = await existingKeys(supabase, { since: `${since}T00:00:00Z`, now, retryAfterDays });
   const rows = [];
   let unavailable = 0;
   let skipped = 0;
+  let videos = 0;
   for (const post of published) {
     for (const windowDays of windows) {
       if (!windowMatured(post.post_date, windowDays, now)) { skipped += 1; continue; }
-      if (seen.has(`${post.platform_post_id}||fb_interactions|${windowDays}`)) { skipped += 1; continue; }
+      // A post-window is done when any of its metrics carried a value (Reels
+      // only ever carry media_views) or an unavailable row is still fresh.
+      if (seen.has(`${post.platform_post_id}||fb_interactions|${windowDays}`)
+        || seen.has(`${post.platform_post_id}||fb_media_views|${windowDays}`)) { skipped += 1; continue; }
       let perf = null;
       try {
         perf = await fbClient.postPerformance({ postId: post.platform_post_id });
       } catch (e) {
-        unavailable += 1;
-        log(`facebook insights unavailable for ${post.platform_post_id}: ${e.message || e}`);
+        if (videoFallback && looksLikeVideoNode(e)) {
+          try {
+            perf = await videoFallback({ postId: post.platform_post_id });
+            videos += 1;
+          } catch (e2) {
+            unavailable += 1;
+            log(`video fallback failed for ${post.platform_post_id}: ${e2.message || e2}`);
+          }
+        } else {
+          unavailable += 1;
+          log(`facebook insights unavailable for ${post.platform_post_id}: ${e.message || e}`);
+        }
       }
       rows.push(...metricRowsForPost({ post, perf, windowDays, now, planItemId: itemByRef.get(post.id) || null }));
     }
   }
   const inserted = rows.length ? await insertRows(supabase, rows) : 0;
-  return { posts: published.length, inserted, skipped, unavailable };
+  return { posts: published.length, inserted, skipped, unavailable, videos };
 }
 
 /**
@@ -127,8 +159,10 @@ export async function reconcilePerformance({ supabase, fbClient, now = new Date(
  */
 export async function recordPageMetrics({ supabase, rows, windowDays, now = new Date() }) {
   if (!rows || !rows.length) return { inserted: 0, skipped: 0 };
-  const since = isoDate(now.getTime() - 2 * DAY_MS);
-  const seen = await existingKeys(supabase, { since: `${since}T00:00:00Z` });
+  // Page metrics are a daily time series: at most one row per page, metric,
+  // and window per calendar day.
+  const since = isoDate(now.getTime());
+  const seen = await existingKeys(supabase, { since: `${since}T00:00:00Z`, now });
   const measuredAt = now.toISOString();
   const out = [];
   let skipped = 0;

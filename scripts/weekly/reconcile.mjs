@@ -17,6 +17,9 @@ import { copyPublishStatus, reconcilePerformance, recordPageMetrics } from './li
 loadEnv();
 const argv = process.argv.slice(2);
 const dryRun = argv.includes('--dry-run');
+// --retry-unavailable: re-attempt post-windows recorded as unavailable now
+// instead of waiting the usual week (e.g. after a client fix).
+const retryAfterDays = argv.includes('--retry-unavailable') ? 0 : undefined;
 const lb = argv.indexOf('--lookback-days');
 const lookbackDays = lb !== -1 ? parseInt(argv[lb + 1], 10) || 42 : 42;
 
@@ -36,6 +39,23 @@ async function facebookClient() {
   if (!pageId || !accessToken) return null;
   const { createFacebookClient } = await import('../lib/facebook-insights.mjs');
   return createFacebookClient({ pageId, accessToken, apiVersion: process.env.FB_GRAPH_API_VERSION || 'v22.0' });
+}
+
+/**
+ * Reels/videos reject the post field set and video_insights needs read_insights
+ * (missing on the page token), but the plain `views` field is readable.
+ */
+async function videoFallback({ postId }) {
+  const token = process.env.FB_PAGE_ACCESS_TOKEN || process.env.FB_ACCESS_TOKEN;
+  const v = process.env.FB_GRAPH_API_VERSION || 'v22.0';
+  const u = new URL(`https://graph.facebook.com/${v}/${postId}`);
+  u.searchParams.set('fields', 'id,views,created_time');
+  u.searchParams.set('access_token', token);
+  const res = await fetch(u);
+  const json = await res.json();
+  if (!res.ok || json.error) throw new Error(`video fields failed (${res.status}): ${json.error?.message || 'unknown'}`);
+  const views = Number(json.views);
+  return { media_views: Number.isFinite(views) ? views : undefined };
 }
 
 async function searchConsolePages(days) {
@@ -67,8 +87,8 @@ async function main() {
   }
   const fb = await facebookClient();
   if (fb) {
-    const r = await reconcilePerformance({ supabase, fbClient: fb, now, lookbackDays, log });
-    log(`facebook: posts=${r.posts} inserted=${r.inserted} skipped=${r.skipped} unavailable=${r.unavailable}`);
+    const r = await reconcilePerformance({ supabase, fbClient: fb, now, lookbackDays, videoFallback, retryAfterDays, log });
+    log(`facebook: posts=${r.posts} inserted=${r.inserted} skipped=${r.skipped} unavailable=${r.unavailable} videos=${r.videos}`);
   } else {
     log('facebook: FB_PAGE_ID / FB_PAGE_ACCESS_TOKEN missing, skipped');
   }
