@@ -644,6 +644,20 @@ def _filter_executable_tasks() -> list[dict[str, Any]]:
     return tasks
 
 
+def task_graph_tasks() -> list[dict[str, Any]] | None:
+    """Every task in task_graph.json, or None when the file is absent or
+    unreadable (a legacy run that never built a task graph)."""
+    from seo_agents.evidence import TASK_GRAPH_PATH
+
+    if not TASK_GRAPH_PATH.exists():
+        return None
+    try:
+        data = json.loads(TASK_GRAPH_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return list(data.get("tasks", []))
+
+
 # ---------------------------------------------------------------------------
 # Executor Crew  (seo-agents execute)
 # ---------------------------------------------------------------------------
@@ -689,9 +703,15 @@ def build_executor_crew() -> Crew:
             for t in _task_graph_filter
         ]
         queue_text = "\n".join(lines)
-    else:
-        # No filtered tasks — legacy run without a task graph; use raw queue
+    elif task_graph_tasks() is None:
+        # Legacy run that never built a task graph: the raw queue is all we have.
         queue_text = execution_queue
+    else:
+        # A task graph exists and nothing in it is executable. main.py skips the
+        # crew in this case (executor_skip_reason); if it is built anyway, the
+        # agents must not see the blocked tasks. On 2026-09-04 the raw-queue
+        # fallback fed four owner-blocked tasks to six agents for 30 minutes.
+        queue_text = "(No executable tasks — every queued task is blocked or waiting on the owner.)"
 
     queue_context = (
         "You are reading the execution queue plus the live website structure reference. "

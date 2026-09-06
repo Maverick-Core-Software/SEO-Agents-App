@@ -80,6 +80,11 @@ class RunContext:
     """Timestamped archive sub-directory for this run."""
     lock_file: Path
     """Path to the exclusive lock file."""
+    explicit_run_id: str = ""
+    """Run ID handed in by the caller (main.py builds it once with build_run_id).
+    When set it is authoritative, so every artifact of one attempt carries the
+    same ID. Before 2026-09-05 this value was accepted and dropped, and the
+    evidence/claim artifacts used a Z-less timestamp the manifest did not."""
 
     @property
     def topic_fingerprint(self) -> str:
@@ -90,15 +95,20 @@ class RunContext:
 
     @property
     def run_id(self) -> str:
-        """Deterministic run ID from topic + site_url (same semantics as build_run_id)."""
+        """The caller's run ID when given, else the same shape build_run_id makes."""
+        if self.explicit_run_id:
+            return self.explicit_run_id
         from seo_agents.crew import _slugify as _crew_slugify
-        ts = self.started_at[:19]  # truncate to seconds
+        # started_at is second-precision UTC ending in Z; keep the Z so this
+        # matches build_run_id's "%Y-%m-%dT%H:%M:%SZ" exactly.
+        ts = self.started_at
         slug = _crew_slugify(self.topic or "untitled")
         return f"{ts}_{slug}"
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "invocation_id": self.invocation_id,
+            "run_id": self.run_id,
             "topic": self.topic,
             "site_url": self.site_url,
             "audience": self.audience,
@@ -249,6 +259,7 @@ def build_run_context(
         output_dir=output_dir,
         archive_dir=run_archive,
         lock_file=lock_path,
+        explicit_run_id=run_id,
     )
 
 

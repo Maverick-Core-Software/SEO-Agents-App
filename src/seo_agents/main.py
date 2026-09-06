@@ -383,7 +383,9 @@ def compact_baselines(dry_run: bool = False) -> dict:
     """
     from seo_agents.crew import BASELINE_DIR, read_text
 
-    source_files = sorted(BASELINE_DIR.glob("*.md"))
+    # The owner-reviewed facts file is never compacted: an LLM summary once
+    # replaced real knowledge with a stub claiming WordPress/CF7 (2026-08-28).
+    source_files = sorted(p for p in BASELINE_DIR.glob("*.md") if "business-facts" not in p.name)
     if not source_files:
         return {"status": "nothing_to_compact", "files": []}
 
@@ -556,6 +558,67 @@ def _count_day_headers(path: Path) -> int:
     return sum(1 for line in text.splitlines() if line.lstrip().startswith(("DAY:", "**DAY:")))
 
 
+def executor_skip_reason() -> str | None:
+    """Why the executor crew should not run this week, or None to run it.
+
+    Pure decision, no model calls. Legacy runs without a task graph keep the
+    old behaviour (None). A task graph with nothing executable means every
+    queued task is blocked or waiting on the owner; those tasks still reach
+    Supabase from grizzly_execution_queue.md, so nothing is lost by skipping.
+    """
+    from seo_agents.crew import _filter_executable_tasks, task_graph_tasks
+
+    tasks = task_graph_tasks()
+    if tasks is None:
+        return None
+    if not tasks:
+        return "task graph is empty (no tasks were queued this week)"
+    if _filter_executable_tasks():
+        return None
+    blocked = ", ".join(
+        f"{t.get('task_id') or t.get('action_id') or '?'} [{t.get('status') or '?'}]" for t in tasks
+    )
+    return f"0 of {len(tasks)} queued tasks are executable; all blocked or waiting on the owner: {blocked}"
+
+
+def write_executor_skip_outputs(reason: str) -> None:
+    """Overwrite the executor's output files with explicit skipped content.
+
+    outputs/ is shared across weeks, so without this last week's completion
+    reports would be read by status.py, actions.py, and supabase-sync.mjs as
+    if they were this week's. The files deliberately contain no '### Task',
+    '## Incomplete', or COMPLETION REPORT blocks, so the downstream parsers
+    extract zero tasks from them.
+    """
+    stamp = _now_iso()
+    summary = "Total Tasks Checked: 0\nVerified: 0\nPartial: 0\nIncomplete: 0\n"
+    (OUTPUT_DIR / "final_report.md").write_text(
+        "# Final Verified Report\n\n"
+        f"Executor crew skipped at {stamp}.\n\n"
+        f"Reason: {reason}\n\n"
+        "No executor agent ran, so this phase produced no completions, deliverables, or "
+        "owner sign-off items. Owner-gated tasks remain in grizzly_execution_queue.md and "
+        "are synced to Supabase as waiting_on_owner from there.\n\n"
+        "## Verification Summary\n\n" + summary,
+        encoding="utf-8",
+    )
+    (OUTPUT_DIR / "delegation_verification.md").write_text(
+        "# Delegation Verification\n\n"
+        f"Executor crew skipped at {stamp}: {reason}\n\n" + summary,
+        encoding="utf-8",
+    )
+    for stem in ("content_completion", "assets_completion", "technical_completion", "website_completion"):
+        (OUTPUT_DIR / f"{stem}.json").write_text(
+            json.dumps({"completions": [], "executor_skipped": True, "reason": reason, "at": stamp}, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        md = OUTPUT_DIR / f"{stem}.md"
+        if md.exists():
+            # actions._load_completions falls back to the markdown when the JSON
+            # has no completions; a stale markdown report must not win.
+            md.write_text(f"Executor crew skipped at {stamp}: {reason}\n", encoding="utf-8")
+
+
 def _require_fresh_schedule(path: Path, min_days: int, label: str) -> None:
     if not path.exists():
         print(f"❌ {label} schedule missing: {path}")
@@ -695,15 +758,12 @@ def parse_args() -> argparse.Namespace:
     website.add_argument("--section", default="", help="Target section key in index.html (see knowledge/website-structure.md).")
     website.add_argument("--live", action="store_true", help="Write into the site repo, commit, and push (deploys via Vercel). Default: preview only.")
 
-    # Legacy: allow `seo-agents <topic>` as shorthand for `seo-agents research <topic>`
-    parser.add_argument("topic", nargs="?", help=argparse.SUPPRESS)
-    parser.add_argument("--site-url", default="", help=argparse.SUPPRESS)
-    parser.add_argument("--audience", default="", help=argparse.SUPPRESS)
-    parser.add_argument("--region", default="", help=argparse.SUPPRESS)
-    parser.add_argument("--keywords", default="", help=argparse.SUPPRESS)
-    parser.add_argument("--dry-run", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--skip-execute", action="store_true", help=argparse.SUPPRESS)
-
+    # No root-level positional here, on purpose. A hidden root `topic`
+    # (nargs="?") used to live here for the legacy `seo-agents <topic>` form.
+    # argparse matched it with zero strings AFTER the research subparser had
+    # run and overwrote args.topic with None, so every scheduled run from
+    # June to 2026-09-04 researched a blank focus (run_meta.json topic "").
+    # The legacy form never worked with subparsers anyway (invalid choice).
     return parser.parse_args()
 
 
@@ -738,30 +798,44 @@ def _run_execute_pipeline() -> None:
         f"gbp_start={week.gbp_start}"
     )
 
-    crew = build_executor_crew()
     t0 = time.monotonic()
-    try:
-        result = crew.kickoff()
-        print(result)
-        final = OUTPUT_DIR / "final_report.md"
-        archived_path = ""
-        if final.exists():
-            stamp = date.today().isoformat()
-            archived_file = ARCHIVE_DIR / f"final_report_{stamp}.md"
-            archived_file.write_bytes(final.read_bytes())
-            archived_path = str(archived_file)
-            print(f"\n✅ Final report archived to: {archived_file}")
+    skip_reason = executor_skip_reason()
+    if skip_reason:
+        # Decide in code, before any model call. On 2026-09-04 the empty
+        # executable set fell back to the raw queue and six agents spent
+        # 1,789 s "executing" four owner-blocked tasks.
+        write_executor_skip_outputs(skip_reason)
+        print(f"\n⏭  Executor crew skipped — {skip_reason}")
         write_run_health("execute", "success", started_at=t0)
         write_workflow_status(
             phase="execute",
             phase_status="complete",
-            extra={"archived_final_report": archived_path, "week_of": week.week_of},
+            extra={"executor_skipped": True, "skip_reason": skip_reason, "week_of": week.week_of},
         )
-    except Exception as e:
-        write_run_health("execute", "failed", error=str(e), started_at=t0)
-        write_workflow_status(phase="execute", phase_status="failed", error=str(e))
-        print(f"\n❌ Executor crew failed: {e}")
-        sys.exit(1)
+    else:
+        crew = build_executor_crew()
+        try:
+            result = crew.kickoff()
+            print(result)
+            final = OUTPUT_DIR / "final_report.md"
+            archived_path = ""
+            if final.exists():
+                stamp = date.today().isoformat()
+                archived_file = ARCHIVE_DIR / f"final_report_{stamp}.md"
+                archived_file.write_bytes(final.read_bytes())
+                archived_path = str(archived_file)
+                print(f"\n✅ Final report archived to: {archived_file}")
+            write_run_health("execute", "success", started_at=t0)
+            write_workflow_status(
+                phase="execute",
+                phase_status="complete",
+                extra={"archived_final_report": archived_path, "week_of": week.week_of},
+            )
+        except Exception as e:
+            write_run_health("execute", "failed", error=str(e), started_at=t0)
+            write_workflow_status(phase="execute", phase_status="failed", error=str(e))
+            print(f"\n❌ Executor crew failed: {e}")
+            sys.exit(1)
 
     print(f"\n{'─'*60}")
     print(f"📅 Auto-running GBP post schedule (starting {start_date}, week_of {week.week_of})...")
@@ -818,15 +892,15 @@ def main() -> None:
     args = parse_args()
     ensure_dirs()
 
-    # Determine effective command
     command = args.command
 
-    # Legacy positional: `seo-agents <topic>`
-    if command is None and args.topic:
-        command = "research"
-
-    if command == "research" or (command is None and args.topic):
-        topic = getattr(args, "topic", "") or ""
+    if command == "research":
+        topic = (getattr(args, "topic", "") or "").strip()
+        if not topic:
+            # Fail closed: a blank focus silently produced generic reports for
+            # three months. The wrapper always passes a real topic.
+            print("❌ research requires a non-empty topic")
+            sys.exit(2)
         skip_execute = getattr(args, "skip_execute", False)
         run_args = {
             "topic": topic,

@@ -851,11 +851,14 @@ class TestOldPathGone:
     def test_old_empty_write_then_execute_path_removed(self):
         """The live research path no longer writes empty evidence/claim and immediately executes."""
         import seo_agents.main as main_mod
-        source = Path(main_mod.__file__).read_text()
+        source = Path(main_mod.__file__).read_text(encoding="utf-8")
 
         # Isolate the live research path by dropping everything after the dry-run return.
         research_block = source.split('elif command == "execute"')[0]
-        live_block = research_block.split("release_run_context(ctx)\n            return")[1]
+        # The live path starts at this comment; the old anchor (the dry-run
+        # branch's "release_run_context(ctx)\n return") vanished when lock
+        # release moved into a try/finally on 2026-09-04.
+        live_block = research_block.split("# Live mode")[1]
         # After the dry-run path, the live path must call finalize_run.
         assert "finalize_run(" in live_block
         # It must not write empty evidence and then immediately call _run_execute_pipeline.
@@ -867,10 +870,13 @@ class TestOldPathGone:
     def test_execution_only_after_gate_evaluation(self):
         """_run_execute_pipeline appears only after the hard gate check in the live path."""
         import seo_agents.main as main_mod
-        source = Path(main_mod.__file__).read_text()
+        source = Path(main_mod.__file__).read_text(encoding="utf-8")
 
         research_block = source.split('elif command == "execute"')[0]
-        live_block = research_block.split("release_run_context(ctx)\n            return")[1]
+        # The live path starts at this comment; the old anchor (the dry-run
+        # branch's "release_run_context(ctx)\n return") vanished when lock
+        # release moved into a try/finally on 2026-09-04.
+        live_block = research_block.split("# Live mode")[1]
         # The gate check text must precede the execute call.
         gate_check = "finalize_result[\"gate_result\"][\"hard_fail\"]"
         assert gate_check in live_block

@@ -34,6 +34,11 @@ RUNNER_LOG_FILE = OUTPUTS_DIR / f"weekly-runner-{date.today().isoformat()}.log"
 # Scheduler throws away, so a crash left no reason anywhere — that is how the 7/24
 # run died on an LLM 402 with nothing recorded but "crew exit 1".
 CREW_LOG_FILE = OUTPUTS_DIR / f"weekly-crew-{date.today().isoformat()}.log"
+# Hard ceiling on one crew attempt. A healthy run is ~40 min; the Task Scheduler
+# limit is 16 h, and until 2026-09-05 the child had no timeout at all, so a hung
+# crew sat at "started" until the watchdog's 90-minute rule happened to look.
+CREW_TIMEOUT_S = int(os.environ.get("SEO_CREW_TIMEOUT_MIN", "150")) * 60
+RUN_LOCK_FILE = OUTPUTS_DIR / "lock.lock.json"
 
 
 def _now_iso() -> str:
@@ -83,35 +88,27 @@ def tail_crew_log(lines: int = 40) -> list:
     return [ln.rstrip() for ln in text.splitlines() if ln.strip()][-lines:]
 
 
-def resolve_seo_agents_cmd() -> list:
-    """Resolve a working command to launch the crew.
-
-    The old code assumed ``sys.executable.parent / "Scripts" / "seo-agents.exe"``,
-    which is wrong under a venv (it doubles "Scripts") and is never exercised by a
-    manual dry run — so a broken path stayed invisible until the scheduled Friday
-    run. Try the console script in the likely locations, then fall back to invoking
-    the package as a module with whatever interpreter is available.
-    """
-    exe_candidates = [
-        Path(sys.executable).parent / "seo-agents.exe",              # interpreter dir (system or venv Scripts)
-        Path(sys.executable).parent / "Scripts" / "seo-agents.exe",  # legacy assumption
-        PROJECT_ROOT / ".venv" / "Scripts" / "seo-agents.exe",       # Windows venv
-        PROJECT_ROOT / ".venv" / "bin" / "seo-agents",               # POSIX venv
-    ]
-    for cand in exe_candidates:
+def _venv_python() -> Path:
+    """The interpreter that has the crew installed: the venv first, else this one."""
+    for cand in (
+        PROJECT_ROOT / ".venv" / "Scripts" / "python.exe",  # Windows venv
+        PROJECT_ROOT / ".venv" / "bin" / "python",           # POSIX venv
+    ):
         if cand.exists():
-            return [str(cand)]
+            return cand
+    return Path(sys.executable)
 
-    # Fallback: run as a module with the venv python if we can find it, else current python.
-    py_candidates = [
-        PROJECT_ROOT / ".venv" / "Scripts" / "python.exe",
-        PROJECT_ROOT / ".venv" / "bin" / "python",
-        Path(sys.executable),
-    ]
-    py = next((str(p) for p in py_candidates if Path(p).exists()), sys.executable)
-    log_line(f"[run-weekly-seo] seo-agents.exe not found in any known location — "
-             f"falling back to module invocation: {py} -m seo_agents.main")
-    return [py, "-m", "seo_agents.main"]
+
+def resolve_seo_agents_cmd() -> list:
+    """Launch the crew as ``python -m seo_agents.main`` with the venv interpreter.
+
+    Deliberately not the ``seo-agents.exe`` console script. That .exe is a
+    launcher that spawns a second python.exe, so a timeout kill from here would
+    orphan the real crew process, and its interpreter could differ from the one
+    preflight() just verified. One interpreter for preflight and launch makes a
+    passing preflight evidence about the actual run.
+    """
+    return [str(_venv_python()), "-m", "seo_agents.main"]
 
 # Candidate service topics — pytrends compares these and picks the hottest this week.
 # Keep phrases short (1–3 words); geo is scoped to Texas below.
@@ -163,6 +160,9 @@ def save_topic_history(history: list, topic: str) -> None:
 
 
 def pick_trending_topic() -> str:
+    """Choose this week's topic. Does NOT record it: main() appends to the
+    history only after the crew exits 0, so failed attempts no longer consume
+    a rotation slot (2026-09-04's seven launches pushed the same topic twice)."""
     history = load_topic_history()
     recent_topics = set(history[-TOPIC_HISTORY_WINDOW:])
 
@@ -197,7 +197,6 @@ def pick_trending_topic() -> str:
             print(f"[auto-topic] Trend scores (Texas, last 7d): {ranked}")
             print(f"[auto-topic] Winner: '{best}' ({scores[best]:.1f})")
             topic = TOPIC_MAP.get(best, f"{best} Dallas DFW")
-            save_topic_history(history, topic)
             return topic
 
     except Exception as e:
@@ -208,7 +207,6 @@ def pick_trending_topic() -> str:
     fallback_kw = fresh_keywords[week % len(fresh_keywords)]
     fallback_topic = TOPIC_MAP.get(fallback_kw, f"{fallback_kw} Dallas DFW")
     print(f"[auto-topic] Fallback (week {week}, {len(fresh_keywords)} fresh topics): '{fallback_topic}'")
-    save_topic_history(history, fallback_topic)
     return fallback_topic
 
 
@@ -218,23 +216,46 @@ def preflight() -> list[str]:
     Returns a list of fatal errors. Empty list = ok to launch.
     """
     errors: list[str] = []
-    py = Path(sys.executable)
+    py = _venv_python()
+    src_pkg = str(PROJECT_ROOT / "src" / "seo_agents").replace("\\", "/")
+    # Same interpreter and same env (no PYTHONPATH; editable install) as the
+    # launch below, so this exercises what Friday will actually run:
+    #   1. byte-compile the package   — a half-edited crew.py raised SyntaxError
+    #      mid-morning on 2026-09-04;
+    #   2. parse the real CLI shape   — a root `topic` positional silently
+    #      blanked the research topic for three months;
+    #   3. construct both LLM tiers   — the missing anthropic SDK died here.
+    # None of this touches the network, Supabase, or an LLM.
+    probe = "\n".join([
+        "import compileall, sys",
+        f"assert compileall.compile_dir(r'{src_pkg}', quiet=1), 'syntax error in seo_agents (see above)'",
+        "import pydantic_core",
+        "from seo_agents.main import parse_args",
+        "sys.argv = ['seo-agents', 'research', 'preflight probe topic', '--dry-run']",
+        "a = parse_args()",
+        "assert a.command == 'research' and a.topic == 'preflight probe topic', f'CLI dropped the topic: {vars(a)}'",
+        "from seo_agents.crew import build_research_llm, build_exec_llm",
+        "build_research_llm(); build_exec_llm()",
+        "print('preflight ok')",
+    ])
     try:
         r = subprocess.run(
-            [str(py), "-c", "import pydantic_core, seo_agents"],
+            [str(py), "-c", probe],
             cwd=str(PROJECT_ROOT),
             capture_output=True,
             text=True,
-            timeout=30,
-            env={**os.environ, "PYTHONPATH": str(PROJECT_ROOT / "src")},
+            timeout=180,
+            env={**os.environ, "PYTHONPATH": "", "PYTHONUNBUFFERED": "1"},
         )
         if r.returncode != 0:
-            errors.append(
-                f"interpreter cannot import pydantic_core/seo_agents: "
-                f"{(r.stderr or r.stdout or 'exit ' + str(r.returncode)).strip()[:400]}"
-            )
+            tail = (r.stderr or r.stdout or f"exit {r.returncode}").strip().splitlines()
+            errors.append("crew preflight failed: " + " | ".join(tail[-4:])[:600])
+        else:
+            log_line("[run-weekly-seo] preflight ok: compile, CLI parse, LLM construction")
+    except subprocess.TimeoutExpired:
+        errors.append("crew preflight timed out after 180s")
     except Exception as e:
-        errors.append(f"preflight import probe failed: {e}")
+        errors.append(f"crew preflight could not run: {e}")
 
     if not (os.environ.get("SUPABASE_URL") or "").strip() or not (
         os.environ.get("SUPABASE_SERVICE_KEY") or ""
@@ -302,15 +323,33 @@ def main() -> None:
             fh.write(f"\n=== {_now_iso()} launching: {cmd}\n")
             fh.flush()
             result = subprocess.run(cmd, cwd=str(PROJECT_ROOT), env=child_env,
-                                    stdout=fh, stderr=subprocess.STDOUT)
+                                    stdout=fh, stderr=subprocess.STDOUT,
+                                    timeout=CREW_TIMEOUT_S)
     except FileNotFoundError as e:
         log_line(f"[run-weekly-seo] ERROR: could not launch crew ({e}). "
                  f"Check that the .venv exists and `pip install -e .` has been run.")
         write_runner_health("failed", topic=topic, error=str(e))
         sys.exit(1)
+    except subprocess.TimeoutExpired:
+        # subprocess.run has already killed the child. Because the child is
+        # python.exe itself (not the .exe launcher) the kill reached the crew,
+        # so the run lock it held is stale by construction; clear it so the
+        # next attempt is not refused with "Another run is active".
+        msg = f"crew timed out after {CREW_TIMEOUT_S // 60} min and was killed (SEO_CREW_TIMEOUT_MIN)"
+        log_line(f"[run-weekly-seo] ERROR: {msg}")
+        try:
+            if RUN_LOCK_FILE.exists():
+                RUN_LOCK_FILE.unlink()
+                log_line(f"[run-weekly-seo] cleared stale run lock {RUN_LOCK_FILE}")
+        except OSError as e:
+            log_line(f"[run-weekly-seo] WARNING: could not clear run lock: {e}")
+        write_runner_health("failed", topic=topic, error=msg)
+        sys.exit(1)
 
     if result.returncode == 0:
         log_line(f"[run-weekly-seo] Research launch completed (exit 0).")
+        # Only a successful run occupies a slot in the 4-week topic rotation.
+        save_topic_history(load_topic_history(), topic)
         write_runner_health("success", topic=topic, returncode=0)
     else:
         log_line(f"[run-weekly-seo] Research crew exited non-zero: {result.returncode}")

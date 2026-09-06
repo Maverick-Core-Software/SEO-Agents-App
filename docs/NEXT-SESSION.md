@@ -1,3 +1,17 @@
+# Update 2026-09-06 — weekly-run audit applied; rebuild is next
+
+Read `docs/audits/2026-09-05-weekly-run-audit-report.md` and `docs/audits/2026-09-05-decisions.md`
+first. The pre-Friday fixes (blank research topic, executor skip, run-id, wrapper preflight and
+timeout, business-facts baseline) are applied and tested (`tests/test_friday_fixes.py`); verify
+the 2026-09-11 run picked up a real topic (`outputs/run_manifest.json` topic must not be empty).
+Owner to-dos: enable the Search Console API and run `node scripts/authorize-search-console.mjs`;
+reconcile website hours (site says Mon–Fri 8–6, Sat 8–2; owner says 8–5, weekends by request).
+Next engineering phase: the scripted replacement pipeline in shadow mode (report section 6,
+migration steps 4–9). Do not add work to the claims/gates/observability layer; it is frozen.
+The GBP poster items below are still open and unrelated to the audit fixes.
+
+---
+
 # Next session — GBP poster reliability, then the three website fixes
 
 **Date:** 2026-09-04 close (Friday run recovered and published)
