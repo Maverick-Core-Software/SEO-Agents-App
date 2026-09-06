@@ -1,3 +1,16 @@
+# Update 2026-09-06 (overnight) — rebuild built, first shadow run succeeded, shadow enabled for Friday
+
+Read `C:\Workspace\Active\brain\inbox\2026-09-06-weekly-pipeline-rebuild.md` first. Landed: `scripts/weekly/`
+(627 tests, lint clean; `scripts/weekly/README.md` for every mode), migration 003 applied, reconcile
+populating `performance_observations`, Search Console live, the DFW expansion strategy in
+`docs/strategy/` with its policy merged into `config/weekly-policy.json`. The first real shadow run
+(week of 2026-09-07) succeeded for $0.82: review `outputs/shadow/summary.md` and `compare.md`.
+`SEO_PIPELINE=shadow` is set in `.env`, so Friday 2026-09-11 runs legacy then shadow. Next: Carter's
+review of the shadow plan and the strategy's owner questions; second shadow week 09-18; cutover the week
+of 09-21. Register the daily reconcile task from an elevated shell (`scripts\setup-scheduled-tasks.ps1`).
+
+---
+
 # Update 2026-09-06 — weekly-run audit applied; rebuild is next
 
 Read `docs/audits/2026-09-05-weekly-run-audit-report.md` and `docs/audits/2026-09-05-decisions.md`
