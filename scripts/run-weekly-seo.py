@@ -279,6 +279,50 @@ def preflight() -> list[str]:
     return errors
 
 
+def run_shadow_pipeline() -> None:
+    """Run the rebuilt pipeline (scripts/weekly) in shadow mode after a successful
+    legacy run, when SEO_PIPELINE=shadow. Shadow mode writes only to the new
+    Supabase tables and outputs/shadow/; it never touches weekly_posts,
+    website_tasks, or the legacy outputs, so a failure here is logged and
+    reported but never changes this wrapper's exit code or health status.
+    See docs/rebuild/2026-09-06-weekly-pipeline-rebuild-plan.md."""
+    mode = (os.environ.get("SEO_PIPELINE") or "legacy").strip().lower()
+    if mode != "shadow":
+        return
+    runner = PROJECT_ROOT / "scripts" / "weekly" / "run.mjs"
+    if not runner.exists():
+        log_line(f"[run-weekly-seo] SEO_PIPELINE=shadow but {runner} is missing; skipping shadow run")
+        return
+    cmd = ["node", str(runner), "--mode", "shadow"]
+    week_spec = OUTPUTS_DIR / "week_spec.json"
+    try:
+        week_of = json.loads(week_spec.read_text(encoding="utf-8")).get("week_of")
+        if week_of:
+            cmd += ["--week-of", week_of]
+    except Exception:
+        pass  # run.mjs computes the same WeekSpec itself
+    shadow_log = OUTPUTS_DIR / f"weekly-shadow-{date.today().isoformat()}.log"
+    log_line(f"[run-weekly-seo] Shadow pipeline -> {shadow_log}")
+    try:
+        with shadow_log.open("a", encoding="utf-8") as fh:
+            fh.write(f"\n=== {_now_iso()} launching: {cmd}\n")
+            fh.flush()
+            r = subprocess.run(cmd, cwd=str(PROJECT_ROOT), env=os.environ.copy(),
+                               stdout=fh, stderr=subprocess.STDOUT, timeout=30 * 60)
+        status = "success" if r.returncode == 0 else f"failed (exit {r.returncode})"
+    except subprocess.TimeoutExpired:
+        status = "failed (timeout 30 min)"
+    except Exception as e:  # never let the shadow run break the legacy result
+        status = f"failed ({e})"
+    log_line(f"[run-weekly-seo] Shadow pipeline {status}")
+    try:
+        payload = json.loads(RUNNER_HEALTH_FILE.read_text(encoding="utf-8"))
+        payload["shadow"] = {"status": status, "at": _now_iso(), "log_file": str(shadow_log)}
+        RUNNER_HEALTH_FILE.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
 def main() -> None:
     # Mark "started" immediately so the monitor can tell a real run from a no-show,
     # even if topic selection or the crew launch fails below.
@@ -351,6 +395,7 @@ def main() -> None:
         # Only a successful run occupies a slot in the 4-week topic rotation.
         save_topic_history(load_topic_history(), topic)
         write_runner_health("success", topic=topic, returncode=0)
+        run_shadow_pipeline()
     else:
         log_line(f"[run-weekly-seo] Research crew exited non-zero: {result.returncode}")
         tail = tail_crew_log()

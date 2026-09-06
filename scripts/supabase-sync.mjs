@@ -130,7 +130,7 @@ function normalizePostDate(raw) {
   return m ? m[1] : s;
 }
 
-function parseFacebookSchedule(text) {
+export function parseFacebookSchedule(text) {
   if (!text) return [];
   // Strip leading ```markdown code fence the LLM sometimes adds
   text = stripCodeFence(text);
@@ -158,7 +158,7 @@ function parseFacebookSchedule(text) {
 // Parse gbp_posting_schedule.md
 // ─────────────────────────────────────────────
 
-function parseGbpSchedule(text) {
+export function parseGbpSchedule(text) {
   if (!text) return [];
   const blocks = splitDayBlocks(text);
   return blocks.map(block => {
