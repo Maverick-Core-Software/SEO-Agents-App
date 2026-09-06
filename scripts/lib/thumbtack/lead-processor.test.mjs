@@ -49,20 +49,26 @@ function makeMessageFixture() {
 test('auto-sends a new-lead first-touch when outbound is enabled', async () => {
   const { eventsFile, automationFile, record } = makeNewLeadFixture();
   const sent = [];
+  const rooms = [];
   const processor = createThumbtackLeadProcessor({
     eventsFile, automationFile, outboundEnabled: true,
     generateReply: async () => ({ success: true, reply: 'What amperage charger are you planning for?' }),
     sendMessage: async (negotiationID, text) => { sent.push({ negotiationID, text }); },
     notify: async () => {},
+    notifyRoom: async payload => { rooms.push(payload); },
   });
   const result = await processor.process(record);
   assert.equal(result.action, 'auto-sent');
   assert.deepEqual(sent, [{ negotiationID: 'neg-1', text: 'What amperage charger are you planning for?' }]);
+  assert.equal(rooms.length, 1);
+  assert.match(rooms[0].concern, /EV charger/);
+  assert.match(rooms[0].reply, /amperage/);
 });
 
 test('auto-sends a customer follow-up when Mav returns a safe reply', async () => {
   const { eventsFile, automationFile, record } = makeMessageFixture();
   const sent = [];
+  const rooms = [];
   const processor = createThumbtackLeadProcessor({
     eventsFile, automationFile, outboundEnabled: true,
     generateReply: async input => {
@@ -71,10 +77,27 @@ test('auto-sends a customer follow-up when Mav returns a safe reply', async () =
     },
     sendMessage: async (negotiationID, text) => { sent.push({ negotiationID, text }); },
     notify: async () => {},
+    notifyRoom: async payload => { rooms.push(payload); },
   });
   const result = await processor.process(record);
   assert.equal(result.action, 'auto-sent');
   assert.deepEqual(sent, [{ negotiationID: 'neg-1', text: 'Is this a new charger circuit?' }]);
+  assert.equal(rooms.length, 1);
+});
+
+test('does not post a second Mav-Room notice on a follow-up auto-send', async () => {
+  const { eventsFile, automationFile, record } = makeMessageFixture();
+  fs.appendFileSync(automationFile, `${JSON.stringify({ id: 'e'.repeat(64), negotiationID: 'neg-1', action: 'auto-sent' })}\n`);
+  const rooms = [];
+  const processor = createThumbtackLeadProcessor({
+    eventsFile, automationFile, outboundEnabled: true,
+    generateReply: async () => ({ success: true, reply: 'Got it — send the photo when you can.' }),
+    sendMessage: async () => {},
+    notify: async () => {},
+    notifyRoom: async payload => { rooms.push(payload); },
+  });
+  await processor.process(record);
+  assert.deepEqual(rooms, []);
 });
 
 test('does not auto-send when outbound is disabled', async () => {

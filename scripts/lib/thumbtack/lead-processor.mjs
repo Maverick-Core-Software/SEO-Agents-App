@@ -9,6 +9,7 @@ import {
 import { createThumbtackApiClient } from './api.mjs';
 import { extractCustomerLeadEvent, splitThumbtackAgentReply } from './lead-state.mjs';
 import { generateMaverickReply } from './mav-reply.mjs';
+import { notifyMavRoomLead } from './mav-room-notify.mjs';
 import { notifyThumbtackOps } from './notify.mjs';
 import { getThumbtackAutomationStatus, sanitizeCustomerMessage } from './policy.mjs';
 
@@ -16,6 +17,16 @@ let defaultApiClient = null;
 function defaultSendMessage(negotiationID, text) {
   defaultApiClient ??= createThumbtackApiClient({ environment: 'production', allowWrites: true });
   return defaultApiClient.sendMessage(negotiationID, text);
+}
+
+function hasAutoSentRecord(automationFile, negotiationID) {
+  if (!fs.existsSync(automationFile)) return false;
+  return fs.readFileSync(automationFile, 'utf8').split(/\r?\n/).some(line => {
+    try {
+      const row = JSON.parse(line);
+      return row.action === 'auto-sent' && row.negotiationID === negotiationID;
+    } catch { return false; }
+  });
 }
 
 function hasAutoSentThisEvent(automationFile, recordId) {
@@ -57,6 +68,7 @@ export function createThumbtackLeadProcessor({
   generateReply = generateMaverickReply,
   sendMessage = defaultSendMessage,
   notify = notifyThumbtackOps,
+  notifyRoom = notifyMavRoomLead,
   outboundEnabled = getThumbtackAutomationStatus({
     autoReplyEnabled: thumbtackAutoReplyEnabled,
     nativeAutoReplyDisabled: thumbtackNativeAutoReplyDisabled,
@@ -95,10 +107,16 @@ export function createThumbtackLeadProcessor({
         return { action, reply: visible.text };
       }
 
+      const firstReply = !hasAutoSentRecord(automationFile, lead.negotiationID);
       sendsInFlight.add(lead.negotiationID);
       try {
         await sendMessage(lead.negotiationID, visible.text);
         append({ id: record.id, operationId: lead.operationId, negotiationID: lead.negotiationID, action: 'auto-sent', reply: visible.text });
+        if (firstReply) {
+          try {
+            await notifyRoom({ concern: lead.text, reply: visible.text });
+          } catch { /* room notify is best-effort */ }
+        }
         return { action: 'auto-sent', reply: visible.text };
       } catch (error) {
         append({ id: record.id, operationId: lead.operationId, negotiationID: lead.negotiationID, action: 'send-failed', error: error?.message || 'unknown' });
