@@ -103,6 +103,25 @@ Register-ScheduledTask -TaskName 'Grizzly SEO Watchdog' -Action $wdAction -Trigg
     -Principal $wdPrincipal -Settings $wdSettings -Force | Out-Null
 Write-Host "Registered 'Grizzly SEO Watchdog' -> $NodeExe seo-watchdog.mjs  (Daily $WatchdogTime)"
 
+# 4) Reconcile — DAILY, ten minutes after the watchdog. Records 7- and 28-day
+#    Facebook metrics per published post and page-level Search Console metrics
+#    into Supabase performance_observations (the rebuilt pipeline's memory), and
+#    copies publish status back to plan items. Writes only the new tables.
+#    See scripts/weekly/reconcile.mjs and docs/rebuild/.
+$ReconcileTime = '10:10'
+$atReconcile = [datetime]::ParseExact($ReconcileTime, 'HH:mm', $null)
+$rcAction   = New-ScheduledTaskAction -Execute $NodeExe `
+    -Argument ('"{0}\scripts\weekly\reconcile.mjs"' -f $ProjectRoot) -WorkingDirectory $ProjectRoot
+$rcTrigger  = New-ScheduledTaskTrigger -Daily -At $atReconcile
+$rcPrincipal = New-ScheduledTaskPrincipal -UserId $RunAsUser -LogonType S4U -RunLevel Highest
+$rcSettings  = New-ScheduledTaskSettingsSet `
+    -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+    -StartWhenAvailable `
+    -ExecutionTimeLimit (New-TimeSpan -Minutes 15)
+Register-ScheduledTask -TaskName 'Grizzly SEO Reconcile' -Action $rcAction -Trigger $rcTrigger `
+    -Principal $rcPrincipal -Settings $rcSettings -Force | Out-Null
+Write-Host "Registered 'Grizzly SEO Reconcile' -> $NodeExe scripts\weekly\reconcile.mjs  (Daily $ReconcileTime)"
+
 Write-Host ""
 Write-Host "Done. Verify:"
 Write-Host "  Get-ScheduledTaskInfo -TaskName 'Grizzly SEO Photo Sync'"

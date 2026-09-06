@@ -92,7 +92,10 @@ describe('reconcile', () => {
       ], error: null },
       plan_items: { data: [{ id: 'item-9', projected_ref: 'wp2' }], error: null },
       performance_observations: (chain) => (chain.ops[0][0] === 'select'
-        ? { data: [{ platform_post_id: '108_b', page_url: null, metric: 'fb_interactions', window_days: 7 }], error: null } // 108_b@7d already recorded
+        ? { data: [
+          { platform_post_id: '108_b', page_url: null, metric: 'fb_interactions', window_days: 7, availability: 'ok' },          // 108_b@7d already recorded
+          { platform_post_id: '108_a', page_url: null, metric: 'fb_interactions', window_days: 7, availability: 'unavailable' }, // must NOT block a retry
+        ], error: null }
         : { data: null, error: null }),
     });
     const perfCalls = [];

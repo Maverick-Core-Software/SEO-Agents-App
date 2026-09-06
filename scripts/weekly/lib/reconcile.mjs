@@ -54,10 +54,15 @@ export function metricRowsForPost({ post, perf, windowDays, now, planItemId = nu
 
 async function existingKeys(supabase, { since }) {
   const data = must(await supabase.from('performance_observations')
-    .select('platform_post_id, page_url, metric, window_days')
+    .select('platform_post_id, page_url, metric, window_days, availability')
     .gte('measured_at', since)
     .limit(5000), 'performance_observations select');
-  return new Set((data || []).map((r) => `${r.platform_post_id || ''}|${r.page_url || ''}|${r.metric}|${r.window_days}`));
+  // Only rows that actually carried a value count as "done". An `unavailable`
+  // row (Reels reject the `message` field on 2026-09-06) is retried on the next
+  // pass so a fixed client can backfill instead of being blocked forever.
+  return new Set((data || [])
+    .filter((r) => r.availability !== 'unavailable')
+    .map((r) => `${r.platform_post_id || ''}|${r.page_url || ''}|${r.metric}|${r.window_days}`));
 }
 
 async function insertRows(supabase, rows) {

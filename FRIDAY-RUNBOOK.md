@@ -71,6 +71,26 @@ Interpretation:
 `SEO_AUTO_APPROVE` lives in `.env` for `supabase-sync.mjs`, **not** in the watchdog. Default in `.env.example` is `0`. Saturday approve shifting GBP dates is fixed by `WeekSpec` (most recent Friday), not by the flag.
 
 
+## Rebuilt pipeline (scripts/weekly) — shadow mode
+
+The replacement for the CrewAI chain lives in `scripts/weekly/` (contract: `scripts/weekly/DESIGN.md`,
+plan: `docs/rebuild/2026-09-06-weekly-pipeline-rebuild-plan.md`). Until cutover it runs in **shadow
+mode**: same week, real collectors and one DeepSeek generation, but it writes only to the new Supabase
+tables from migration 003 (`seo_attempts`, `research_observations`, `plan_revisions`, `plan_items`,
+`performance_observations`) and to `outputs/shadow/`. It never touches `weekly_posts`, `website_tasks`,
+or the legacy `outputs/*.md`, and it never publishes.
+
+| Switch / command | Effect |
+|---|---|
+| `SEO_PIPELINE=shadow` in `.env` | `run-weekly-seo.py` launches the shadow run after a successful legacy run; result lands in `outputs/weekly-runner-health.json` under `shadow` and in `outputs/weekly-shadow-<date>.log`. Default `legacy` = nothing new runs. |
+| `node scripts/weekly/run.mjs --mode shadow [--week-of YYYY-MM-DD]` | Manual shadow run for a week (Monday). Prints a one-screen summary; files under `outputs/shadow/`. |
+| `node scripts/weekly/run.mjs --mode offline` | No network; fixture inputs and a canned plan. This is the end-to-end test and the pre-Friday rehearsal. |
+| `node scripts/weekly/reconcile.mjs` | Daily memory pass: 7/28-day Facebook metrics per published post and page-level Search Console metrics into `performance_observations`; publish status copied to plan items. Idempotent. Registered as 'Grizzly SEO Reconcile' (daily 10:10) by `setup-scheduled-tasks.ps1`. |
+| `WEEKLY_MODEL`, `WEEKLY_BUDGET_USD` | Generation model id (default `deepseek-chat`) and per-attempt ceiling (default 20). An attempt refuses to start past the ceiling. |
+
+Compare a shadow week with the legacy output in `outputs/shadow/comparison.md` (topic, counts, dates,
+facts violations in the legacy copy, runtime, spend). Cutover criteria are in the rebuild plan section 5.
+
 ## What the monitor now catches
 
 `seo-monitor.mjs` (brand new, still growing toward self-healing) now also:
