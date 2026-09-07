@@ -30,6 +30,7 @@ import { getSlackConfig, approvalBlocks, sendSlackBlocks } from './lib/slack-ale
 import { approveAction, dismissAction } from './lib/slack-actions.mjs';
 import { makeRunPhase } from './lib/run-phase.mjs';
 import { runGbpForApprovedRun, runDailyGbp, centralDateHour } from './lib/gbp-runner.mjs';
+import { parseAfterTime, shouldRunFbBoostTick, decideBoostLaunch, summarizeBoostRun } from './lib/fb-boost-tick.mjs';
 import { fetchApprovedWebsiteTasks, executeNextWebsiteTask, sweepOrphanWebsiteTasks } from './lib/website-task-runner.mjs';
 import { liveRunStatus as deriveLiveRunStatus, countRunStatuses } from './lib/seo-run-status.mjs';
 import { MAX_JSON_BODY_BYTES, parseJsonBody } from './lib/http-json.mjs';
@@ -81,7 +82,11 @@ const WEBSITE_AUTO_EXEC = (process.env.MAV_WEBSITE_AUTO_EXEC || '1').toLowerCase
 // Marketing API boosts (ledger-gated). Off until FB_BOOST_API=1 + ad account configured.
 // Set MAV_BRIDGE_FB_BOOST=0 to disable the daily bridge call entirely.
 const FB_BOOST_BRIDGE_ON = (process.env.MAV_BRIDGE_FB_BOOST || '1').toLowerCase() !== '0';
+// Boost tick waits until this Central time (posts publish at 9:00:00 and the
+// Graph listing lags by seconds — a 9:00 attempt misses the post).
+const FB_BOOST_AFTER = parseAfterTime(process.env.MAV_BRIDGE_FB_BOOST_AFTER, '09:30');
 const FB_BOOST_API_PATH = path.join(PROJECT_ROOT, 'scripts', 'fb-boost-api.mjs');
+const FB_BOOST_LEDGER_PATH = path.join(PROJECT_ROOT, 'scripts', 'fb-boost-ledger.mjs');
 
 if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
   console.error('[mav-bridge] SUPABASE_URL or SUPABASE_SERVICE_KEY not set — exiting');
@@ -478,11 +483,69 @@ async function executeApprovedRunSafe(run) {
 }
 
 // ─────────────────────────────────────────────
+// Facebook boost tick
+// ─────────────────────────────────────────────
+
+// Ledger pre-gate first: `fb-boost-ledger.mjs eligible` is offline and cheap,
+// so days with nothing to boost never spawn the booster. Only an eligible pick
+// (or a human-review reason) launches the live run. Soft skips are normal —
+// do not use runPhase/hopError here.
+async function runFbBoostTick() {
+  let eligible;
+  try {
+    const { stdout } = await execFileAsync(process.execPath, [FB_BOOST_LEDGER_PATH, 'eligible'], {
+      cwd: PROJECT_ROOT,
+      timeout: 30_000,
+      encoding: 'utf8',
+      windowsHide: true,
+      env: process.env,
+    });
+    eligible = JSON.parse((stdout || '').trim());
+  } catch (e) {
+    console.error(`[mav-bridge][fb-boost] eligible check failed: ${e.message}`);
+    return;
+  }
+  const gate = decideBoostLaunch(eligible);
+  if (!gate.launch) {
+    console.log(`[mav-bridge][fb-boost] skip: ${gate.reason} (not eligible)`);
+    return;
+  }
+  let stdout = '';
+  let stderr = '';
+  let exitCode = 0;
+  let error = null;
+  try {
+    const r = await execFileAsync(process.execPath, [FB_BOOST_API_PATH, 'run'], {
+      cwd: PROJECT_ROOT,
+      timeout: 3 * 60 * 1000,
+      maxBuffer: 4 * 1024 * 1024,
+      encoding: 'utf8',
+      windowsHide: true,
+      env: process.env,
+    });
+    stdout = r.stdout;
+  } catch (e) {
+    // A non-zero exit does not mean the run failed — Node 24 on Windows can
+    // abort during exit after the result JSON was already printed. Keep the
+    // payload and let summarizeBoostRun judge by content.
+    stdout = e.stdout || '';
+    stderr = e.stderr || '';
+    exitCode = typeof e.code === 'number' ? e.code : 1;
+    error = e.message;
+  }
+  const s = summarizeBoostRun({ stdout, stderr, exitCode, error });
+  if (s.level === 'error') console.error(`[mav-bridge][fb-boost] ${s.line}`);
+  else console.log(`[mav-bridge][fb-boost] ${s.line}`);
+  if (stderr) console.log(`[mav-bridge][fb-boost] stderr: ${stderr.slice(0, 300)}`);
+}
+
+// ─────────────────────────────────────────────
 // Poll loop
 // ─────────────────────────────────────────────
 
 let busy = false;
 let lastDailyGbpDate = '';
+let lastFbBoostTickDate = '';
 
 async function poll() {
   if (busy) return;
@@ -668,36 +731,17 @@ async function poll() {
         }
       }
 
-      // ── Facebook boost via Marketing API (ledger-gated) ──
-      // Replaces the Claude Playwright Boost UI cron as the primary path.
-      // fb-boost-api.mjs enforces: eligible → live verify → reserve → Ads API → publish.
-      // Soft skips (not eligible / API disabled) exit 0 — do not use runPhase/hopError.
-      if (FB_BOOST_BRIDGE_ON) {
-        try {
-          const { stdout, stderr } = await execFileAsync(process.execPath, [FB_BOOST_API_PATH, 'run'], {
-            cwd: PROJECT_ROOT,
-            timeout: 3 * 60 * 1000,
-            maxBuffer: 4 * 1024 * 1024,
-            encoding: 'utf8',
-            windowsHide: true,
-            env: process.env,
-          });
-          // fb-boost-api.mjs pretty-prints its result, so parse the whole payload —
-          // taking the last line only ever yields the closing brace.
-          const raw = (stdout || '').trim();
-          let summary = (raw.split(/\r?\n/).filter(Boolean).pop() || '').slice(0, 400);
-          try {
-            const j = JSON.parse(raw);
-            summary = j.boost_applied
-              ? `applied ${j.pick?.key} ad=${j.created?.ad_id}`
-              : `skip: ${j.reason || j.stage}${j.eligible === false ? ' (not eligible)' : ''}`;
-          } catch { /* raw line ok */ }
-          console.log(`[mav-bridge][fb-boost] ${summary}`);
-          if (stderr) console.log(`[mav-bridge][fb-boost] stderr: ${stderr.slice(0, 300)}`);
-        } catch (e) {
-          const detail = [e.message, e.stdout, e.stderr].filter(Boolean).join(' | ').slice(0, 500);
-          console.error(`[mav-bridge][fb-boost] failed: ${detail}`);
-        }
+    }
+
+    // ── Facebook boost tick: once per Central day, after MAV_BRIDGE_FB_BOOST_AFTER ──
+    // Runs later than the 9 AM tick on purpose: posts publish at 9:00:00 and the
+    // Graph listing lags by seconds, so a 9:00 boost attempt misses the post.
+    // The ledger pre-gate keeps this offline and silent on days with nothing to boost.
+    if (FB_BOOST_BRIDGE_ON) {
+      const clock = centralDateHour(new Date());
+      if (shouldRunFbBoostTick({ ...clock, lastTickDate: lastFbBoostTickDate, after: FB_BOOST_AFTER })) {
+        lastFbBoostTickDate = clock.todayDate;
+        await runFbBoostTick();
       }
     }
 

@@ -199,13 +199,14 @@ export function gbpVerifyDisposition({ ok, exitCode, stdout, currentStatus, plat
 export function centralDateHour(nowUtc) {
   const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'America/Chicago', hour12: false,
-    year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit',
+    year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
   }).formatToParts(nowUtc);
   const get = (t) => parts.find((p) => p.type === t)?.value;
   const todayDate = `${get('year')}-${get('month')}-${get('day')}`;
   let cstHour = parseInt(get('hour'), 10);
   if (cstHour === 24) cstHour = 0; // some ICU builds emit 24 at midnight
-  return { todayDate, cstHour };
+  const cstMinute = parseInt(get('minute'), 10);
+  return { todayDate, cstHour, cstMinute };
 }
 
 // Retry wrapper for Excel file operations. Excel workbooks can be transiently

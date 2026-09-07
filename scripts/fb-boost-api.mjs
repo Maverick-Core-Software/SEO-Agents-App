@@ -12,6 +12,7 @@
  *
  * Flags:
  *   --dry-run              Never reserve, never create ads, never notify spend
+ *   --no-notify            Send no notification texts (dry run never texts either)
  *   --force-post ID        Skip Graph matching; use this post/reel id
  *   --week YYYY-MM-DD      Override schedule week
  *   --notify-human         SMS when eligible fails closed on human-review reasons
@@ -22,7 +23,9 @@
  *   FB_ADS_ACCESS_TOKEN (or page token with ads_management)
  *   FB_PAGE_ID
  *
- * Wire-in: mav-bridge daily tick after FB reconcile.
+ * Wire-in: mav-bridge boost tick, once per Central day after
+ * MAV_BRIDGE_FB_BOOST_AFTER (default 09:30), only when the ledger reports an
+ * eligible allocation.
  */
 
 import fs from 'node:fs';
@@ -64,6 +67,7 @@ function parseArgs(argv) {
   const args = { _: [] };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--dry-run') args['dry-run'] = true;
+    else if (argv[i] === '--no-notify') args['no-notify'] = true;
     else if (argv[i] === '--notify-human') args['notify-human'] = true;
     else if (argv[i].startsWith('--')) args[argv[i].slice(2)] = argv[++i];
     else args._.push(argv[i]);
@@ -90,6 +94,11 @@ async function ledger(cmd, extraArgs = []) {
     const stderr = (e.stderr || '').toString().trim();
     let json = null;
     try { json = stdout ? JSON.parse(stdout) : null; } catch { /* ignore */ }
+    // A ledger command that already wrote an ok:true result must not be
+    // mistaken for a refusal just because Node aborted during exit.
+    if (json && json.ok === true) {
+      return { ok: true, stdout, stderr, json, exitCode: typeof e.code === 'number' ? e.code : 1 };
+    }
     return {
       ok: false,
       stdout,
@@ -190,8 +199,16 @@ async function cmdResolvePost(args) {
 
 async function cmdRun(args) {
   const dryRun = Boolean(args['dry-run']);
+  const notify = !dryRun && !args['no-notify'];
   const cfg = readBoostConfig(process.env);
   const weekArgs = args.week ? ['--week', args.week] : [];
+
+  // Notifications never change the exit code or stop the pipeline.
+  async function text(out, message) {
+    if (!notify) { out.notified = false; out.notify_skipped = dryRun ? 'dry_run' : 'no_notify'; return; }
+    try { await sendHermesAlert(message.slice(0, 400)); out.notified = true; }
+    catch (e) { out.notified = false; out.notify_error = e.message; }
+  }
 
   const eligibleRes = await ledger('eligible', weekArgs);
   const eligible = eligibleRes.json;
@@ -228,6 +245,7 @@ async function cmdRun(args) {
 
   if (!cfg.token || !cfg.pageId) {
     const out = { ok: false, stage: 'config', reason: 'missing FB_PAGE_ID or access token', pick, week };
+    await text(out, `[FB Boost] Exit config ${pick.key}: ${out.reason}`);
     writeAudit(out);
     console.log(JSON.stringify(out, null, 2));
     return 1;
@@ -246,6 +264,7 @@ async function cmdRun(args) {
       config_ready: cfg.ready,
       missing: cfg.missing,
     };
+    await text(out, `[FB Boost] Exit config ${pick.key}: ${out.reason}`);
     writeAudit(out);
     console.log(JSON.stringify(out, null, 2));
     return 0;
@@ -259,10 +278,15 @@ async function cmdRun(args) {
       pick,
       week,
     };
+    await text(out, `[FB Boost] Exit config ${pick.key}: ${out.reason}`);
     writeAudit(out);
     console.log(JSON.stringify(out, null, 2));
     return 0;
   }
+
+  const startNotify = {};
+  await text(startNotify, `[FB Boost] Run started ${pick.key}: $${pick.daily}/day x ${pick.days}d = $${pick.total} (week ${week}, post date ${pick.date})`);
+  const startedNotified = startNotify.notified;
 
   const client = createGraphClient({ token: cfg.token, apiVersion: cfg.apiVersion });
   // Page reads use the Page token; campaign/ad-set/creative/ad writes use the ads token.
@@ -281,7 +305,8 @@ async function cmdRun(args) {
       forcePostId: args['force-post'] || null,
     });
   } catch (e) {
-    const out = { ok: false, stage: 'resolve', error: e.message, pick, week };
+    const out = { ok: false, stage: 'resolve', error: e.message, pick, week, started_notified: startedNotified };
+    await text(out, `[FB Boost] Exit resolve error ${pick.key}: ${e.message}`);
     writeAudit(out);
     console.log(JSON.stringify(out, null, 2));
     return 1;
@@ -300,15 +325,9 @@ async function cmdRun(args) {
       week,
       escalate: ageDays >= 1,
       candidates: resolved.candidates || [],
+      started_notified: startedNotified,
     };
-    if (out.escalate && !dryRun) {
-      try {
-        await sendHermesAlert(`[FB Boost] Eligible ${pick.key} but post not live (date ${pick.date}): ${resolved.reason}`);
-        out.notified = true;
-      } catch (e) {
-        out.notify_error = e.message;
-      }
-    }
+    await text(out, `[FB Boost] Exit not applied ${pick.key}: post not live (${resolved.reason}). Next attempt tomorrow.${out.escalate ? ` Post date ${pick.date} is stale; check the poster.` : ''}`);
     writeAudit(out);
     console.log(JSON.stringify(out, null, 2));
     return 0;
@@ -318,7 +337,8 @@ async function cmdRun(args) {
   try {
     await pageClient.getObject(resolved.post_id, 'id');
   } catch (e) {
-    const out = { ok: false, stage: 'verify', error: e.message, post_id: resolved.post_id, pick, week };
+    const out = { ok: false, stage: 'verify', error: e.message, post_id: resolved.post_id, pick, week, started_notified: startedNotified };
+    await text(out, `[FB Boost] Exit verify error ${pick.key}: ${e.message}`);
     writeAudit(out);
     console.log(JSON.stringify(out, null, 2));
     return 1;
@@ -352,6 +372,7 @@ async function cmdRun(args) {
       dry_run: true,
       week,
       pick,
+      started_notified: startedNotified,
       post_id: resolved.post_id,
       permalink: resolved.post?.permalink_url || null,
       resolve_score: resolved.score,
@@ -391,7 +412,9 @@ async function cmdRun(args) {
       pick,
       week,
       post_id: resolved.post_id,
+      started_notified: startedNotified,
     };
+    await text(out, `[FB Boost] Exit REFUSED ${pick.key}: ${out.detail}`);
     writeAudit(out);
     console.log(JSON.stringify(out, null, 2));
     return 1;
@@ -411,11 +434,6 @@ async function cmdRun(args) {
       '--note', `Marketing API error: ${e.message}`.slice(0, 300),
       ...weekArgs,
     ]);
-    let notified = false;
-    try {
-      await sendHermesAlert(`[FB Boost] NOT applied ${pick.key}: Marketing API error — ${e.message}`.slice(0, 400));
-      notified = true;
-    } catch { /* non-fatal */ }
     const out = {
       ok: false,
       stage: 'marketing_api',
@@ -425,8 +443,9 @@ async function cmdRun(args) {
       week,
       post_id: resolved.post_id,
       ledger_fail: fail.ok,
-      notified,
+      started_notified: startedNotified,
     };
+    await text(out, `[FB Boost] NOT applied ${pick.key}: Marketing API error — ${e.message}`);
     writeAudit(out);
     console.log(JSON.stringify(out, null, 2));
     return 1;
@@ -435,51 +454,20 @@ async function cmdRun(args) {
   const publish = await ledger('publish', ['--key', pick.key, ...weekArgs]);
   const statusAfter = await ledger('status', weekArgs);
   const remaining = statusAfter.json?.remaining;
-  const msg = `[FB Boost] Published ${pick.key}: $${pick.daily}/day × ${pick.days}d = $${pick.total}. Ad ${created.ad_id}. Week ${week} remaining: $${remaining ?? '?'}.`;
-  let notified = false;
-  try {
-    await sendHermesAlert(msg);
-    notified = true;
-  } catch (e) {
-    // publish already happened — still report notify failure
-    writeAudit({
-      ok: true,
-      stage: 'publish',
-      boost_applied: true,
-      created,
-      pick,
-      week,
-      post_id: resolved.post_id,
-      publish: publish.json,
-      notified: false,
-      notify_error: e.message,
-    });
-    console.log(JSON.stringify({
-      ok: true,
-      boost_applied: true,
-      created,
-      notified: false,
-      notify_error: e.message,
-      pick,
-      week,
-      post_id: resolved.post_id,
-    }, null, 2));
-    return 0;
-  }
-
   const out = {
     ok: true,
     stage: 'publish',
     boost_applied: true,
     created,
+    started_notified: startedNotified,
     pick,
     week,
     post_id: resolved.post_id,
     object_story_id: plan.object_story_id,
     publish: publish.json,
     remaining,
-    notified,
   };
+  await text(out, `[FB Boost] Published ${pick.key}: $${pick.daily}/day × ${pick.days}d = $${pick.total}. Ad ${created.ad_id}. Week ${week} remaining: $${remaining ?? '?'}.`);
   writeAudit(out);
   console.log(JSON.stringify(out, null, 2));
   return 0;
@@ -501,4 +489,6 @@ try {
   console.error(JSON.stringify({ ok: false, error: e.message, stack: e.stack?.split('\n').slice(0, 4) }));
   code = 1;
 }
-process.exit(code);
+process.exitCode = code;
+// Safety net only: if something keeps the loop alive, exit anyway.
+setTimeout(() => process.exit(code), 10_000).unref();

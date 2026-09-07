@@ -1,7 +1,10 @@
 # FB Boost Runbook — weekly automated boost application
 
 **Primary path (2026-08-17+):** Meta **Marketing API** via `scripts/fb-boost-api.mjs`,
-driven daily from **mav-bridge** after Facebook reconcile. Ledger-gated.
+driven by a dedicated boost tick in **mav-bridge**: once per Central day, at
+or after `MAV_BRIDGE_FB_BOOST_AFTER` (default 09:30), and only when
+`fb-boost-ledger.mjs eligible` reports work or a human-review reason.
+Ledger-gated.
 
 **Rollback path:** Playwright Boost UI (steps below) if the API path is broken
 or credentials are not ready. Claude/`fb-boost-weekly` cron may still use UI.
@@ -64,11 +67,33 @@ account for this — that costs a re-claim into the portfolio, re-assigning
    as the UI path — API will fail closed if Meta rejects billing).
 
 ### Daily automation
-mav-bridge (after 9:00 America/Chicago, once per day) runs:
+mav-bridge runs a dedicated Facebook boost tick once per Central day, at or
+after `MAV_BRIDGE_FB_BOOST_AFTER` (default **09:30** America/Chicago):
 
 ```
 node scripts/fb-boost-api.mjs run
 ```
+
+Why 9:30 and not 9:00: posts publish at 9:00:00 Central on Facebook's
+scheduler and Graph lists them seconds later — the old 9:00:02 tick on
+2026-09-07 missed its post by two seconds, with nothing live to boost. The
+boost tick is deliberately later than the 9 AM reconcile tick.
+
+**Ledger pre-gate.** Before launching the booster, the tick runs
+`node scripts/fb-boost-ledger.mjs eligible` (offline, free) and launches the
+booster only when `eligible` reports work or a human-review reason. Otherwise
+the day is silent: no booster process, no SMS.
+
+**Week rule.** The booster runs only on days with an unapplied YES allocation
+whose post date has arrived. After the week's last allocation is published,
+`eligible` reports nothing left and the tick does not run the booster again
+until the next schedule lands.
+
+**Exit codes.** The booster sets `process.exitCode` instead of calling
+`process.exit()`, because Node 24 on Windows could abort during exit after
+the result JSON was already printed. The bridge parses the JSON result even
+on a non-zero exit and logs `failed` only when there is no parseable result
+or the result says `ok: false`.
 
 Pipeline (fail closed at each gate):
 1. `fb-boost-ledger.mjs eligible` — schedule + summary + $50 cap
@@ -78,6 +103,26 @@ Pipeline (fail closed at each gate):
 5. Campaign (or reuse) → ad set (Dallas + 20 mi, ages/interests) → creative
    (`object_story_id`) → ad `ACTIVE`
 6. `ledger publish` + Hermes SMS
+
+### Notifications
+
+Every run texts Carter through Hermes. Texts never change the exit code or
+stop the pipeline. The full set:
+
+- **Run started** — after config gates pass, before resolving the post.
+- **Exit config** — run exited at a config gate while eligible (not enabled,
+  not ready, or missing token).
+- **Exit resolve error** — resolving the live post threw.
+- **Exit not applied** — post not live; "next attempt tomorrow", plus a
+  stale-date warning when the post date has passed.
+- **Exit verify error** — the Graph object check failed.
+- **Exit REFUSED** — `ledger reserve` refused (cap or double-boost).
+- **NOT applied** — Marketing API create failed; manual review needed.
+- **Published** — boost went live, with amounts and week remaining.
+- **Human review** — once per week, when `eligible` defers the call to Carter
+  (ambiguous summary or over-cap YES rows).
+
+`--no-notify` silences texts for a manual run; dry runs never text.
 
 ### Ad set shape — do not change without checking a working boost
 
@@ -119,17 +164,22 @@ spends, but check `/<act>/campaigns` after any failure and set stragglers to
 node scripts/fb-boost-api.mjs status
 node scripts/fb-boost-api.mjs resolve-post
 node scripts/fb-boost-api.mjs run --dry-run
+node scripts/fb-boost-api.mjs run --dry-run --no-notify
 node scripts/fb-boost-api.mjs run --force-post 108252941997164_…
 # Live (only when FB_BOOST_API=1 and ad account configured):
 node scripts/fb-boost-api.mjs run
+node scripts/fb-boost-api.mjs run --no-notify
 ```
 
-Dry-run never reserves and never creates ads. Without `FB_BOOST_API=1` the run
-exits with code 2 (config) even if eligible.
+Dry-run never reserves and never creates ads. `--no-notify` suppresses the
+notification texts (live or dry). Without `FB_BOOST_API=1` an eligible run
+stops at `stage: config`, exits 0, and sends the "Exit config" text.
 
 ### Disable
 - `FB_BOOST_API=0` (or unset) — API will not spend
 - `MAV_BRIDGE_FB_BOOST=0` — bridge skips the daily tick entirely
+- `MAV_BRIDGE_FB_BOOST_AFTER=HH:MM` — not a disable; moves the tick (Central,
+  24h, default 09:30)
 - Ledger `REFUSED` — no spend
 
 ---
@@ -325,6 +375,13 @@ was created before deciding anything.
 
 ## History
 
+- 2026-09-07: Day 1 Whole-Home Surge Protection, $25×1d. The 9:00:02 tick
+  found no live post (the post published at 9:00:00 on Facebook's scheduler;
+  Graph had not listed it yet), and the bridge mislabelled the run as
+  `failed: Command failed` even though the run's own JSON said `ok: true`.
+  Boost applied manually later that day after this change landed. The tick
+  moved to 09:30 (`MAV_BRIDGE_FB_BOOST_AFTER`) with the ledger pre-gate and
+  full exit texts.
 - 2026-08-07: Day 1 Generator Interlock (slideshow, posted as a reel object —
   post `108252941997164_1029168739903021`), $25×2d=$50, published, In review.
   Notes: (a) the morning run correctly **halted** — the Day 1 asset was still

@@ -29,7 +29,10 @@ import { fileURLToPath } from 'node:url';
 import { sendHermesAlert } from './lib/hermes-alert.mjs';
 
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const LEDGER_PATH = path.join(PROJECT_ROOT, 'outputs', 'fb-boost-ledger.json');
+// FB_BOOST_LEDGER_PATH is a tests-only override: redirects the ledger away
+// from the live file other automation reads.
+const LEDGER_PATH = process.env.FB_BOOST_LEDGER_PATH
+  || path.join(PROJECT_ROOT, 'outputs', 'fb-boost-ledger.json');
 // Overridable so the summary/eligibility logic can be exercised against
 // fixtures without touching the live schedule other processes read.
 const SCHEDULE_PATH = process.env.FB_SCHEDULE_PATH
@@ -44,6 +47,13 @@ if (fs.existsSync(envPath)) {
 }
 
 const CAP = Number(process.env.FB_BOOST_WEEKLY_CAP || 50);
+
+// YYYY-MM-DD in Central time (en-CA renders ISO order).
+function centralDate(now) {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Chicago', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(now);
+}
 
 function readLedger() {
   if (!fs.existsSync(LEDGER_PATH)) return { weeks: {} };
@@ -250,7 +260,9 @@ if (cmd === 'status') {
     console.log(JSON.stringify({ ok: true }));
   } catch (e) {
     console.error(`ERROR: hermes alert failed: ${e.message}`);
-    process.exit(1);
+    // Fall through with exitCode instead of process.exit: exiting while a
+    // child handle is pending can abort after the result was printed.
+    process.exitCode = 1;
   }
 } else if (cmd === 'eligible') {
   // Read the schedule, find posts with BOOST: yes:$N, check if
@@ -272,7 +284,8 @@ if (cmd === 'status') {
   }
   const text = fs.readFileSync(SCHEDULE_PATH, 'utf8');
   const entries = weekEntries(ledger, week);
-  const today = new Date().toISOString().slice(0, 10);
+  // FB_BOOST_TODAY is a tests-only override for the Central calendar date.
+  const today = process.env.FB_BOOST_TODAY || centralDate(new Date());
 
   // Cross-check against the authoritative summary. Fail CLOSED: an unreadable
   // or human-deferred summary must never auto-spend.

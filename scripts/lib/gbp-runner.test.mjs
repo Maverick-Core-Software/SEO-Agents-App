@@ -99,9 +99,10 @@ assert.equal(
 );
 
 // centralDateHour: 2026-06-27 14:30 UTC is 09:30 CDT (UTC-5 in June)
-const { todayDate, cstHour } = centralDateHour(new Date('2026-06-27T14:30:00Z'));
+const { todayDate, cstHour, cstMinute } = centralDateHour(new Date('2026-06-27T14:30:00Z'));
 assert.equal(todayDate, '2026-06-27');
 assert.equal(cstHour, 9);
+assert.equal(cstMinute, 30);
 // 05:30 UTC same day is 00:30 CDT => still 2026-06-27, hour 0
 const early = centralDateHour(new Date('2026-06-27T05:30:00Z'));
 assert.equal(early.todayDate, '2026-06-27');
