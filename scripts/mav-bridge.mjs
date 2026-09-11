@@ -310,6 +310,21 @@ async function executeApprovedRun(run) {
   // switches the day to text-only so no off-topic image ships.
   const FB_REWRITE_PATH = path.join(PROJECT_ROOT, 'scripts', 'fb-photo-rewrite.mjs');
   const scheduleFile = path.join(PROJECT_ROOT, 'outputs', 'facebook_posting_schedule.md');
+
+  // ── 0.55 Service-matched FB photo pick ───────────────────────────────────
+  // fb-photo-rewrite only knows same-date GBP winners, so slideshow / carousel
+  // days kept the crew's guessed IMG_ filenames and photo days went text-only
+  // ("no curated match") every week. fb-photo-pick chooses photos of the post's
+  // own service type from the classified library, copies them into Curated as
+  // <date>-<slug>-<n>.jpg and records them in the selection manifest, which is
+  // exactly what fb-photo-rewrite and facebook-poster then accept. (2026-09-11)
+  const FB_PICK_PATH = path.join(PROJECT_ROOT, 'scripts', 'fb-photo-pick.mjs');
+  if (fs.existsSync(FB_PICK_PATH) && fs.existsSync(scheduleFile)) {
+    const fp = await runPhase(runId, 'fb-photo-pick', 'node', [FB_PICK_PATH], PROJECT_ROOT, { timeoutMs: 3 * 60 * 1000 });
+    if (!fp.ok) await log(runId, 'facebook', 'warn', `fb-photo-pick failed (photo days may go text-only): ${fp.error}`);
+    else await log(runId, 'facebook', 'info', 'FB photos picked by service type from the classified library');
+  }
+
   if (fs.existsSync(FB_REWRITE_PATH) && fs.existsSync(scheduleFile)) {
     const rw = await runPhase(runId, 'fb-photo-rewrite', 'node', [FB_REWRITE_PATH], PROJECT_ROOT, { timeoutMs: 30 * 1000 });
     if (!rw.ok) await log(runId, 'facebook', 'warn', `fb-photo-rewrite failed: ${rw.error}`);

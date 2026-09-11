@@ -19,6 +19,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { ffmpegBin, ffprobeBin } from './lib/ffmpeg-bin.mjs';
 
 // ---------------------------------------------------------------------------
 // Logging (mirrors facebook-poster.mjs hopLog pattern)
@@ -36,7 +37,7 @@ function hopLog(hop, level, message, extra) {
 
 let HAS_FFMPEG = false;
 try {
-  execFileSync('ffmpeg', ['-version'], { timeout: 5000, encoding: 'utf8', stdio: 'pipe' });
+  execFileSync(ffmpegBin() || 'ffmpeg', ['-version'], { timeout: 5000, encoding: 'utf8', stdio: 'pipe' });
   HAS_FFMPEG = true;
 } catch {
   hopLog('video-postprocess', 'warn', 'FFmpeg not found — video post-processing will be skipped');
@@ -64,7 +65,7 @@ function ffmpegEscape(text) {
  * @returns {{ width: number, height: number, fps: number, duration: number, hasAudio: boolean }}
  */
 function probeVideo(videoPath) {
-  const probeOut = execFileSync('ffprobe', [
+  const probeOut = execFileSync(ffprobeBin() || 'ffprobe', [
     '-v', 'error', '-select_streams', 'v:0',
     '-show_entries', 'stream=width,height,r_frame_rate,duration',
     '-of', 'json', videoPath,
@@ -78,7 +79,7 @@ function probeVideo(videoPath) {
 
   let hasAudio = false;
   try {
-    const audioProbe = execFileSync('ffprobe', [
+    const audioProbe = execFileSync(ffprobeBin() || 'ffprobe', [
       '-v', 'error', '-select_streams', 'a:0',
       '-show_entries', 'stream=codec_type', '-of', 'json', videoPath,
     ], { encoding: 'utf8', timeout: 15000 });
@@ -163,7 +164,7 @@ export function enhanceVideo(inputPath, outputPath, options = {}) {
   );
 
   try {
-    execFileSync('ffmpeg', args, { timeout: 120000, stdio: 'pipe' });
+    execFileSync(ffmpegBin() || 'ffmpeg', args, { timeout: 120000, stdio: 'pipe' });
     hopLog('video-postprocess→enhance', 'info',
       `Enhanced: ${path.basename(inputPath)} → ${path.basename(outputPath)}`
       + (shouldTrim ? ' (trimmed ±0.5s)' : '')
@@ -245,7 +246,7 @@ export function addBrandedEndCardWithFade(videoPath, cardPath, outputPath, overl
 
     if (hasAudio) {
       // With audio: concat main video+audio with card video+silence
-      execFileSync('ffmpeg', [
+      execFileSync(ffmpegBin() || 'ffmpeg', [
         '-y',
         '-i', videoPath,
         '-loop', '1', '-t', String(cardDuration), '-i', cardPath,
@@ -263,7 +264,7 @@ export function addBrandedEndCardWithFade(videoPath, cardPath, outputPath, overl
       ], { timeout: 120000 });
     } else {
       // No audio: concat video only
-      execFileSync('ffmpeg', [
+      execFileSync(ffmpegBin() || 'ffmpeg', [
         '-y',
         '-i', videoPath,
         '-loop', '1', '-t', String(cardDuration), '-i', cardPath,

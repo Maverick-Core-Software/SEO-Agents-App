@@ -18,12 +18,35 @@ export const SERVICE_TYPE_KEYWORDS = {
   panel: ['panel', 'breaker', 'main panel', 'subpanel', 'electrical panel', 'box'],
 };
 
-export function derivePostServiceType(post = {}) {
-  const text = `${post.service || ''} ${post.topic || ''} ${post.headline || ''} ${post.body || ''}`.toLowerCase();
+// Keyword hit with word boundaries. Short keywords ("ev", "led", "box") must be
+// whole words — a plain substring test made "level", "prevent", "installed"
+// and "every" count as EV-charger or lighting hits, which on 2026-09-11 typed a
+// Federal Pacific panel post as ev-charger and handed it an EV photo. Longer
+// keywords keep a leading boundary only so stems like "illuminat"/"rewir" work.
+function hasKeyword(text, keyword) {
+  const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const pattern = keyword.length <= 3
+    ? `(^|[^a-z0-9])${escaped}($|[^a-z0-9])`
+    : `(^|[^a-z0-9])${escaped}`;
+  return new RegExp(pattern).test(text);
+}
+
+function typeFromText(text) {
   for (const [type, keywords] of Object.entries(SERVICE_TYPE_KEYWORDS)) {
-    if (keywords.some(keyword => text.includes(keyword))) return type;
+    if (keywords.some(keyword => hasKeyword(text, keyword))) return type;
   }
   return 'other';
+}
+
+export function derivePostServiceType(post = {}) {
+  // The title fields name the service; the body mentions everything (a panel
+  // post discusses EV chargers, a lighting post mentions the breaker). Decide
+  // from service/topic/headline first and only fall back to the body when the
+  // title is generic ("emergency electrician", "cost transparency").
+  const title = `${post.service || ''} ${post.topic || ''} ${post.headline || ''}`.toLowerCase();
+  const fromTitle = typeFromText(title);
+  if (fromTitle !== 'other') return fromTitle;
+  return typeFromText(`${title} ${post.body || ''}`.toLowerCase());
 }
 
 export function serviceSlug(service) {

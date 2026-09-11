@@ -82,6 +82,43 @@ const FALLBACK_TYPES = {
 };
 const allowFallback = !process.argv.includes('--no-fallback');
 
+// The Curated folder is the classifier's surviving output: the Takeout sources and
+// the Backfill copies recorded in electrical-qwen-takeout.json are gone, but every
+// approved photo was renamed YYYY-MM-DD-<service_type>[-n].ext into Curated. Read
+// that classification back from the filename (2026-09-11).
+const CURATED_NAME_RE = /^(\d{4}-\d{2}-\d{2})-(panel|lighting|wiring|ev-charger|outlet|generator)(?:-\d+)?\.(?:jpe?g|png|webp)$/i;
+const CURATED_SEED_SCORE = parseInt(process.env.FB_CURATED_SEED_SCORE || process.env.GBP_CURATED_SEED_SCORE || '70', 10);
+
+function curatedPool(seen) {
+  const out = [];
+  let names;
+  try { names = fs.readdirSync(CURATED_FOLDER); } catch { return out; }
+  const stems = new Set();
+  for (const name of names) {
+    const m = CURATED_NAME_RE.exec(name);
+    if (!m) continue;
+    // The library holds the same shot in several formats (x.jpg / x.jpeg / x.png);
+    // one per stem, or a carousel ends up showing one photo three times.
+    const stem = name.replace(/\.[^.]+$/, '').toLowerCase();
+    if (stems.has(stem)) continue;
+    stems.add(stem);
+    const full = path.join(CURATED_FOLDER, name);
+    const key = full.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      srcPath: full,
+      usable: full,
+      score: CURATED_SEED_SCORE,
+      serviceType: m[2].toLowerCase(),
+      tags: [m[2].toLowerCase()],
+      photoDate: Date.parse(m[1] + 'T12:00:00Z') || 0,
+    });
+  }
+  // Newest first within the seeded tier so recent jobs surface before 2018 shots.
+  return out.sort((a, b) => b.photoDate - a.photoDate);
+}
+
 function loadPool() {
   const out = [];
   const seen = new Set();
@@ -105,27 +142,41 @@ function loadPool() {
       });
     }
   }
-  return out.sort((a, b) => b.score - a.score);
+  const classified = out.sort((a, b) => b.score - a.score);
+  return classified.concat(curatedPool(seen));
 }
 
 function parseSchedule(text) {
   const posts = [];
-  const blocks = text.split(/^## DAY /m).slice(1);
+  // Headers are "## POST n OF m" in the current crew output (older files used
+  // "## DAY n"). fb-photo-rewrite strips the bold markers from the TYPE: and
+  // PHOTO_FILE: lines it flips to text-only, so the markers are optional and a
+  // marker-less "TYPE: text" with no PHOTO_FILE is recognised as a photo day
+  // that was only demoted for lack of a match (2026-09-11).
+  const blocks = text.split(/^## (?:POST|DAY) /m).slice(1);
   for (const block of blocks) {
     const get = (field) => {
-      const m = block.match(new RegExp('^\\*\\*' + field + ':\\*\\*[ \\t]*(.*)$', 'm'));
+      const m = block.match(new RegExp('^\\*{0,2}' + field + ':\\*{0,2}[ \\t]*(.*)$', 'm'));
       return m ? m[1].trim() : '';
     };
     const dateRaw = get('DATE');
     const dateOnly = dateRaw.replace(/\s*\(.*$/, '').trim();
     if (!/^\d{4}-\d{2}-\d{2}$/.test(dateOnly)) continue;
+    let type = get('TYPE').toLowerCase();
+    const photoFile = get('PHOTO_FILE');
+    let demoted = false;
+    if (type === 'text' && !photoFile && /^TYPE:[ \t]*text[ \t]*$/m.test(block)) {
+      type = 'photo';
+      demoted = true;
+    }
     posts.push({
       day: parseInt(get('DAY'), 10) || 0,
       dateRaw,
       date: dateOnly,
-      type: get('TYPE').toLowerCase(),
+      type,
+      demoted,
       service: get('SERVICE'),
-      photoFile: get('PHOTO_FILE'),
+      photoFile,
     });
   }
   return posts;
@@ -166,6 +217,12 @@ async function main() {
   let text = fs.readFileSync(SCHEDULE, 'utf8');
   const posts = parseSchedule(text);
   const used = new Set();
+  // Never hand out a photo that an earlier week already used (GBP or FB).
+  try {
+    for (const e of JSON.parse(fs.readFileSync(SELECTION_MANIFEST, 'utf8'))) {
+      for (const k of [e.sourcePath, e.photoPath]) if (k) used.add(String(k).toLowerCase());
+    }
+  } catch { /* no manifest yet */ }
   const selections = [];
   let matched = 0, short = 0;
 
@@ -229,10 +286,16 @@ async function main() {
     for (const pick of picks) console.log(`      ${pick.score}  ${path.basename(pick.srcPath)}`);
     matched++;
 
-    // Rewrite PHOTO_FILE for this day.
-    const oldLine = `**PHOTO_FILE:** ${post.photoFile}`;
+    // Rewrite PHOTO_FILE for this day, scoped to the day's block. The marker may
+    // have lost its bold asterisks (or the day its TYPE) when fb-photo-rewrite
+    // demoted it to text-only on an earlier pass; restore both.
     const newLine = `**PHOTO_FILE:** ${destPaths.join(', ')}`;
-    if (text.includes(oldLine)) text = text.replace(oldLine, newLine);
+    const blockStart = text.indexOf(`**DATE:** ${post.dateRaw}`);
+    const head = blockStart >= 0 ? text.slice(0, blockStart) : '';
+    let tail = blockStart >= 0 ? text.slice(blockStart) : text;
+    tail = tail.replace(/^\*{0,2}PHOTO_FILE:\*{0,2}[ \t]*.*$/m, newLine);
+    if (post.demoted) tail = tail.replace(/^TYPE:[ \t]*text[ \t]*$/m, '**TYPE:** photo');
+    text = head + tail;
   }
 
   if (dryRun) {

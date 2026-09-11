@@ -90,6 +90,19 @@ const SELECTION_MANIFEST_FILE = process.env.GBP_PHOTO_SELECTION_MANIFEST
   || path.join(PROJECT_ROOT, 'state', 'photo-selection-manifest.json');
 const SCHEDULE_FILE = path.join(PROJECT_ROOT, 'outputs', 'gbp_posting_schedule.md');
 const MIN_SCORE = parseInt(process.env.GBP_MIN_PHOTO_SCORE || '60');
+// 2026-09-11: the weekly run was scoring the whole 4k-photo Curated library with
+// gpt-4o one file at a time and being killed by the caller's timeout (480 s in
+// mav-bridge, 900 s in gbp-worker) every week, so no winners were ever picked.
+// Curated files already carry their classification in the filename
+// (YYYY-MM-DD-<service_type>[-n].ext, written by classify-electrical.mjs --curate),
+// so they are seeded into the cache without a vision call; only genuinely new
+// photos are scored, at most GBP_PHOTO_SCORE_BUDGET per run.
+const SCORE_BUDGET = parseInt(process.env.GBP_PHOTO_SCORE_BUDGET || '40');
+const CURATED_SEED_SCORE = parseInt(process.env.GBP_CURATED_SEED_SCORE || '70');
+const CURATED_NAME_RE = /^(\d{4}-\d{2}-\d{2})-(panel|lighting|wiring|ev-charger|outlet|generator)(?:-\d+)?\.(?:jpe?g|png|webp)$/i;
+// Sub-folders the picker must never draw from: "Unused Review" is the
+// classifier's borderline / false-positive pile, "Archive" is retired material.
+const EXCLUDED_DIRS = new Set(['unused review', 'archive']);
 const SUPPORTED_EXTS = new Set(['.jpg', '.jpeg', '.png', '.heic', '.heif', '.webp']);
 
 const dryRun = process.argv.includes('--dry-run');
@@ -291,11 +304,53 @@ function isLikelyImage(filePath) {
   return false;
 }
 
+// Curated files are named YYYY-MM-DD-<service_type>[-n].ext by the classifier;
+// give them a cache entry from that name so they compete without a vision call.
+function seedCuratedCache(cache, allFiles) {
+  let seeded = 0;
+  for (const filePath of allFiles) {
+    if (cache[filePath]) continue;
+    const filename = path.basename(filePath);
+    const m = CURATED_NAME_RE.exec(filename);
+    if (!m) continue;
+    const parent = path.basename(path.dirname(filePath)).toLowerCase();
+    if (parent !== 'curated') continue;
+    const type = m[2].toLowerCase();
+    const photoDate = Date.parse(m[1] + 'T12:00:00Z') || 0;
+    cache[filePath] = {
+      filePath,
+      filename,
+      score: CURATED_SEED_SCORE,
+      service_type: type,
+      tags: [type],
+      scoredAt: new Date().toISOString(),
+      photoDate,
+      seeded: 'curated-filename',
+    };
+    seeded++;
+  }
+  return seeded;
+}
+
+// The GPT matcher gets a bounded catalog: the best few of each service type.
+// The full pool (thousands after seeding) would not fit a prompt and the model
+// only needs enough choice to honour the type rule.
+function shortlistForMatching(usable, perType = 12) {
+  const byType = new Map();
+  for (const p of usable) {
+    const list = byType.get(p.service_type) || [];
+    if (list.length < perType) { list.push(p); byType.set(p.service_type, list); }
+  }
+  return [...byType.values()].flat();
+}
+
 function discoverPhotos(folder) {
   if (!fs.existsSync(folder)) return [];
   return fs.readdirSync(folder, { recursive: true, withFileTypes: false })
     .map(f => path.join(folder, f.toString()))
     .filter(f => {
+      const rel = path.relative(folder, f).split(path.sep);
+      if (rel.slice(0, -1).some(seg => EXCLUDED_DIRS.has(seg.toLowerCase()))) return false;
       try {
         if (!fs.statSync(f).isFile()) return false;
         const ext = path.extname(f).toLowerCase();
@@ -432,10 +487,16 @@ async function main() {
 
   // ── Step 2: Score new photos (cache prevents re-scoring) ─────────────────
   const cache = rescan ? {} : loadCache();
-  const toScore = allFiles.filter(f => !cache[f]);
+  const seeded = seedCuratedCache(cache, allFiles);
+  if (seeded) { saveCache(cache); console.log(`Seeded ${seeded} curated photo(s) from their filenames (no vision call)`); }
+  const unscored = allFiles.filter(f => !cache[f]);
+  const toScore = unscored.slice(0, SCORE_BUDGET);
+  if (unscored.length > toScore.length) {
+    console.log(`${unscored.length} unscored photo(s); scoring ${toScore.length} this run (GBP_PHOTO_SCORE_BUDGET=${SCORE_BUDGET}), the rest on later runs`);
+  }
 
   if (toScore.length > 0) {
-    console.log(`Scoring ${toScore.length} new photos (${allFiles.length - toScore.length} cached)...`);
+    console.log(`Scoring ${toScore.length} new photos (${allFiles.length - unscored.length} cached)...`);
     for (const filePath of toScore) {
       const filename = path.basename(filePath);
       process.stdout.write(`  ${filename}... `);
@@ -484,9 +545,13 @@ async function main() {
     return 0;
   }
 
+  const priorManifest = loadPhotoSelectionManifest(SELECTION_MANIFEST_FILE);
+  const usedBefore = new Set(priorManifest.flatMap(e => [e.sourceFilename, e.sourcePath && path.basename(e.sourcePath)])
+    .filter(Boolean).map(n => n.toLowerCase()));
   const usable = allFiles
     .map(f => cache[f])
     .filter(e => e && e.score >= MIN_SCORE)
+    .filter(e => !usedBefore.has(String(e.filename || '').toLowerCase()))
     .map(e => ({ ...e, effectiveScore: e.score + recencyBonus(e) }))
     .sort((a, b) => b.effectiveScore - a.effectiveScore);
 
@@ -520,7 +585,7 @@ async function main() {
   console.log('\nMatching photos to posts...');
   let matches;
   try {
-    matches = await matchPhotosToSchedule(postsToMatch, usable);
+    matches = await matchPhotosToSchedule(postsToMatch, shortlistForMatching(usable));
   } catch (e) {
     console.error(`GPT matching failed: ${e.message}`);
     // Fallback when the vision matcher is unavailable (OpenAI key invalid,

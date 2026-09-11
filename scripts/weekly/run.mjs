@@ -786,7 +786,11 @@ export async function main(argv = process.argv.slice(2)) {
   }
 }
 
-const invokedDirectly = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+// realpath both sides: the scheduler launches this via the C:\Workspace junction while Node
+// resolves the module to D:\Workspace, and a plain path compare silently skipped main() (2026-09-11).
+const invokedDirectly = process.argv[1]
+  && fs.realpathSync.native(fileURLToPath(import.meta.url))
+    === fs.realpathSync.native(path.resolve(process.argv[1]));
 if (invokedDirectly) {
   main().then((code) => { process.exitCode = code; });
 }

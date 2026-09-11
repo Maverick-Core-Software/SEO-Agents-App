@@ -46,6 +46,7 @@ import path from 'node:path';
 import os from 'node:os';
 import process from 'node:process';
 import { execFileSync } from 'node:child_process';
+import { ffmpegBin, ffprobeBin } from './lib/ffmpeg-bin.mjs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { normalizePhotoFile } from './lib/schedule-text.mjs';
 import { loadPhotoSelectionManifest, isManifestSelectionCompatible } from './lib/photo-selection.mjs';
@@ -151,7 +152,7 @@ function hopLog(hop, level, message, extra) {
 // errors when FFmpeg isn't installed; branded end cards are simply skipped.
 let HAS_FFMPEG = false;
 try {
-  execFileSync('ffmpeg', ['-version'], { timeout: 5000, encoding: 'utf8', stdio: 'pipe' });
+  execFileSync(ffmpegBin() || 'ffmpeg', ['-version'], { timeout: 5000, encoding: 'utf8', stdio: 'pipe' });
   HAS_FFMPEG = true;
 } catch {
   hopLog('facebook-poster', 'warn', 'FFmpeg not found — branded end cards will be skipped for all videos this run');
@@ -1091,7 +1092,7 @@ export function addBrandedEndCard(rawPath, finalPath) {
     return;
   }
   try {
-    const probeOut = execFileSync('ffprobe', [
+    const probeOut = execFileSync(ffprobeBin() || 'ffprobe', [
       '-v', 'error', '-select_streams', 'v:0',
       '-show_entries', 'stream=width,height,r_frame_rate', '-of', 'json', rawPath,
     ], { encoding: 'utf8', timeout: 15000 });
@@ -1122,7 +1123,7 @@ export function addBrandedEndCard(rawPath, finalPath) {
     // and pad silence over the still end card so the concat aligns.
     let hasAudio = false;
     try {
-      const audioProbe = execFileSync('ffprobe', [
+      const audioProbe = execFileSync(ffprobeBin() || 'ffprobe', [
         '-v', 'error', '-select_streams', 'a:0',
         '-show_entries', 'stream=codec_type', '-of', 'json', rawPath,
       ], { encoding: 'utf8', timeout: 15000 });
@@ -1131,7 +1132,7 @@ export function addBrandedEndCard(rawPath, finalPath) {
 
     const cardChain = `[1:v]scale=${W}:-1,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps=${fps}${textFilter}[card]`;
     if (hasAudio) {
-      execFileSync('ffmpeg', [
+      execFileSync(ffmpegBin() || 'ffmpeg', [
         '-y',
         '-i', rawPath,
         '-loop', '1', '-t', '3', '-i', cardSrc,
@@ -1147,7 +1148,7 @@ export function addBrandedEndCard(rawPath, finalPath) {
         finalPath,
       ], { timeout: 120000 });
     } else {
-      execFileSync('ffmpeg', [
+      execFileSync(ffmpegBin() || 'ffmpeg', [
         '-y', '-i', rawPath, '-loop', '1', '-t', '3', '-i', cardSrc,
         '-filter_complex', [
           cardChain,
@@ -1234,7 +1235,7 @@ function validateVideo(videoPath) {
   const stats = fs.statSync(videoPath);
   if (stats.size < 100_000) return { ok: false, reason: `file too small (${stats.size} bytes)` };
   try {
-    const probe = execFileSync('ffprobe', [
+    const probe = execFileSync(ffprobeBin() || 'ffprobe', [
       '-v', 'error', '-select_streams', 'v:0',
       '-show_entries', 'stream=width,height,duration',
       '-of', 'json', videoPath,

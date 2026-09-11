@@ -28,6 +28,19 @@ const UPLOAD_PREVIEW_SELECTOR = [
     'img[src^="data:"]',
     'img[src*="googleusercontent.com"]',
     '[aria-label*="image preview" i] img',
+    // Since ~2026-09-07 the merged Search UI renders the attached photo without any
+    // <img>/inline-style element the selectors above can see (frame inventory in
+    // outputs/gbp-debug/failure-2026-09-11T14-36-36-816Z.json), but it does show
+    // per-photo "Crop photo" / "Delete photo" controls and an "Edit photos" button
+    // only once an attachment is in the composer. Those are the proof now.
+    '[aria-label="Crop photo" i]',
+    '[aria-label="Delete photo" i]',
+    'button:has-text("Crop photo")',
+    '[role="button"]:has-text("Crop photo")',
+    'button:has-text("Delete photo")',
+    '[role="button"]:has-text("Delete photo")',
+    'button:has-text("Edit photos")',
+    '[role="button"]:has-text("Edit photos")',
 ].join(', ');
 
 // ponytail: schedule time is fixed at 9:00 AM business-local; make it a config
@@ -279,7 +292,10 @@ async function attachImage(ctx, imagePath, page) {
     // submit successfully. The preview is the last reversible proof that the
     // attachment reached the composer, so fail before the Post click instead.
     try {
-        await ctx.locator(UPLOAD_PREVIEW_SELECTOR).first()
+        // ">> visible=true" before .first(): the composer keeps hidden matches
+        // (an avatar <img>, an off-screen "Edit photos" control) earlier in DOM
+        // order, and .first() on the raw union waited on one of those forever.
+        await ctx.locator(`${UPLOAD_PREVIEW_SELECTOR} >> visible=true`).first()
             .waitFor({ state: 'visible', timeout: 30000 });
     } catch (error) {
         throw new Error(`Image upload preview did not appear before timeout; refusing to post without photo. ${error.message || error}`);
@@ -398,7 +414,38 @@ async function saveFailureArtifacts(page) {
             n.innerText || n.textContent || n.getAttribute('aria-label') || n.getAttribute('placeholder') || ''
         ).trim()).filter(Boolean).slice(0, 300))])
         .catch(() => []);
-    fs.writeFileSync(textFile, JSON.stringify({ url: page.url(), texts }, null, 2));
+    // 2026-09-11: inventory the composer's media elements so a preview-selector miss
+    // (UPLOAD_PREVIEW_SELECTOR) is diagnosable from the artifact alone, without a
+    // second browser session against the live account.
+    // Inventory media in EVERY frame: the merged Search UI hosts the composer in an
+    // iframe (promote/updates/add), so a top-document scan never sees the preview.
+    const inventory = async (frame) => frame.evaluate(() => {
+        const scope = document.querySelector('div[role="dialog"]') || document.body;
+        const out = [];
+        for (const el of scope.querySelectorAll('img, canvas, video, iframe, [style*="url("]')) {
+            const r = el.getBoundingClientRect();
+            const style = el.getAttribute('style') || '';
+            out.push({
+                tag: el.tagName.toLowerCase(),
+                src: (el.getAttribute('src') || '').slice(0, 100) || undefined,
+                bg: style.includes('url(') ? style.slice(0, 140) : undefined,
+                alt: el.getAttribute('alt') || undefined,
+                aria: el.getAttribute('aria-label') || undefined,
+                role: el.getAttribute('role') || undefined,
+                cls: (el.className && String(el.className).slice(0, 80)) || undefined,
+                w: Math.round(r.width), h: Math.round(r.height),
+            });
+        }
+        const controls = [...scope.querySelectorAll('button, [role="button"]')]
+            .map((b) => (b.getAttribute('aria-label') || b.textContent || '').trim().slice(0, 60))
+            .filter(Boolean);
+        return { dialogs: document.querySelectorAll('div[role="dialog"]').length, scoped_to_dialog: scope !== document.body, items: out.slice(0, 80), controls: controls.slice(0, 60) };
+    }).catch((e) => ({ error: String(e.message || e) }));
+    const media = [];
+    for (const frame of page.frames()) {
+        media.push({ frame: frame.url().slice(0, 120), name: frame.name() || undefined, ...(await inventory(frame)) });
+    }
+    fs.writeFileSync(textFile, JSON.stringify({ url: page.url(), texts, media }, null, 2));
     return { screenshot, textFile };
 }
 
