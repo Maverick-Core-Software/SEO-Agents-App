@@ -79,6 +79,10 @@ const FALLBACK_TYPES = {
   generator: ['panel'],
   outlet: ['wiring', 'panel'],
   wiring: ['panel'],
+  // Generic posts (pricing, emergency service, "electrical repair") have no
+  // service type of their own; the classifier's "other" bucket is small and
+  // low-scoring, so fall back to the core trade imagery rather than text-only.
+  other: ['panel', 'wiring', 'lighting'],
 };
 const allowFallback = !process.argv.includes('--no-fallback');
 
@@ -267,7 +271,9 @@ async function main() {
       }
       destPaths.push(destPath);
       selections.push({
-        postDate: post.dateRaw,
+        // Bare YYYY-MM-DD, same as gbp-photo-pick: fb-photo-rewrite and
+        // facebook-poster compare manifest dates against the parsed day date.
+        postDate: post.date,
         postService: post.service,
         postServiceType: wantType,
         photoPath: destPath,

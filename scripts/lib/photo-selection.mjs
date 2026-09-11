@@ -83,7 +83,10 @@ export function findPhotoSelection(filePath, manifest = []) {
 export function isManifestSelectionCompatible({ date, service, photoPath, manifest = [] }) {
   const entry = findPhotoSelection(photoPath, manifest);
   if (!entry) return { ok: false, reason: 'photo has no audited selection manifest entry' };
-  if (date && entry.postDate !== date) {
+  // Compare bare dates: callers may pass the schedule's raw DATE line
+  // ("2026-09-18 (Friday, ...)") and older manifest entries stored it that way.
+  const bareDate = (value) => String(value || '').replace(/\s*\(.*$/, '').trim();
+  if (date && bareDate(entry.postDate) !== bareDate(date)) {
     return { ok: false, reason: `manifest date ${entry.postDate || '(blank)'} does not match ${date}`, entry };
   }
   if (service && serviceSlug(entry.postService) !== serviceSlug(service)) {

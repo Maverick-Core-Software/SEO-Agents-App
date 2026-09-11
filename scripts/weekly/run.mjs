@@ -377,6 +377,15 @@ export async function collectAll(collectors, ctx) {
       }));
     }
   });
+  // Observation ids are content-derived (serp:<hash>, sc:<row>, hist:post:<hash>)
+  // and therefore repeat across weeks; research_observations.id is the primary
+  // key, so the second shadow attempt collided with the first week's rows
+  // ("duplicate key value violates unique constraint", 2026-09-11). Scope every
+  // id to the attempt; downstream evidence references use the scoped id.
+  const prefix = `${ctx.attemptId}:`;
+  for (const obs of observations) {
+    if (typeof obs.id === 'string' && !obs.id.startsWith(prefix)) obs.id = prefix + obs.id;
+  }
   return { observations, history: history || { posts: [], website_tasks: [] } };
 }
 

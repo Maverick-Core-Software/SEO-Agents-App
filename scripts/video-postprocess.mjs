@@ -37,7 +37,7 @@ function hopLog(hop, level, message, extra) {
 
 let HAS_FFMPEG = false;
 try {
-  execFileSync(ffmpegBin() || 'ffmpeg', ['-version'], { timeout: 5000, encoding: 'utf8', stdio: 'pipe' });
+  execFileSync(ffmpegBin() || 'ffmpeg', ['-version'], { timeout: 20000, encoding: 'utf8', stdio: 'pipe' });
   HAS_FFMPEG = true;
 } catch {
   hopLog('video-postprocess', 'warn', 'FFmpeg not found — video post-processing will be skipped');

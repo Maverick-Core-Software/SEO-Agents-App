@@ -36,10 +36,13 @@ export function resolveFfBin(name, env = process.env) {
   if (resolved.has(name)) return resolved.get(name);
   let found = null;
   const tryRun = (exe) => {
-    try { execFileSync(exe, ['-version'], { timeout: 5000, stdio: 'pipe' }); return true; } catch { return false; }
+    try { execFileSync(exe, ['-version'], { timeout: 20000, stdio: 'pipe' }); return true; } catch { return false; }
   };
   for (const c of candidates(name, env)) {
-    if (c && fs.existsSync(c) && tryRun(c)) { found = c; break; }
+    // An explicit candidate that exists is taken as-is: running `-version` on the
+    // 212 MB winget build right after a reboot took longer than the old 5 s probe
+    // and every candidate was wrongly rejected (2026-09-11 10:17 run).
+    if (c && fs.existsSync(c)) { found = c; break; }
   }
   if (!found && tryRun(name)) found = name; // plain PATH lookup
   resolved.set(name, found);

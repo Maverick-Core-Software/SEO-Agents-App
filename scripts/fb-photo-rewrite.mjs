@@ -66,8 +66,12 @@ const dryRun = process.argv.includes('--dry-run');
 // whose name starts with `${date}-${slug}` and has an image extension. Case-
 // insensitive — the picker preserves original extension case from the source
 // photo (e.g. .JPG vs .jpg), so we can't assume lowercase.
-function findCuratedPhoto(date, service, manifest) {
-  if (!date || !service) return null;
+function findCuratedPhoto(dateRaw, service, manifest) {
+  if (!dateRaw || !service) return null;
+  // The crew writes DATE as "2026-09-18 (Friday, September 18, 2026)"; curated
+  // files and manifest entries use the bare date. Building the prefix from the
+  // raw line meant no Facebook day ever matched (every week until 2026-09-11).
+  const date = String(dateRaw).replace(/\s*\(.*$/, '').trim();
   const slug = serviceSlug(service);
   if (!slug) return null;
   const prefix = `${date}-${slug}`.toLowerCase();

@@ -152,7 +152,7 @@ function hopLog(hop, level, message, extra) {
 // errors when FFmpeg isn't installed; branded end cards are simply skipped.
 let HAS_FFMPEG = false;
 try {
-  execFileSync(ffmpegBin() || 'ffmpeg', ['-version'], { timeout: 5000, encoding: 'utf8', stdio: 'pipe' });
+  execFileSync(ffmpegBin() || 'ffmpeg', ['-version'], { timeout: 20000, encoding: 'utf8', stdio: 'pipe' });
   HAS_FFMPEG = true;
 } catch {
   hopLog('facebook-poster', 'warn', 'FFmpeg not found — branded end cards will be skipped for all videos this run');

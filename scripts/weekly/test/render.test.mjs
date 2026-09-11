@@ -97,12 +97,12 @@ function gbpPhotoPickParse(text) {
   return posts;
 }
 
-/** scripts/fb-photo-pick.mjs parseSchedule — bold-only getters inside `## DAY ` blocks. */
+/** scripts/fb-photo-pick.mjs parseSchedule — marker-optional getters inside `## POST n OF m` / `## DAY n` blocks (2026-09-11). */
 function fbPhotoPickParse(text) {
   const posts = [];
-  for (const block of text.split(/^## DAY /m).slice(1)) {
+  for (const block of text.split(/^## (?:POST|DAY) /m).slice(1)) {
     const get = (field) => {
-      const m = block.match(new RegExp('^\\*\\*' + field + ':\\*\\*[ \\t]*(.*)$', 'm'));
+      const m = block.match(new RegExp('^\\*{0,2}' + field + ':\\*{0,2}[ \\t]*(.*)$', 'm'));
       return m ? m[1].trim() : '';
     };
     const dateOnly = get('DATE').replace(/\s*\(.*$/, '').trim();
@@ -782,8 +782,8 @@ describe('legacy parser drift guards', () => {
       "date.toLowerCase().includes('day')",
     ],
     'scripts/fb-photo-pick.mjs': [
-      'text.split(/^## DAY /m)',
-      "'^\\\\*\\\\*' + field + ':\\\\*\\\\*[ \\\\t]*(.*)$', 'm'",
+      'text.split(/^## (?:POST|DAY) /m)',
+      "'^\\\\*{0,2}' + field + ':\\\\*{0,2}[ \\\\t]*(.*)$', 'm'",
       "dateRaw.replace(/\\s*\\(.*$/, '')",
     ],
     'scripts/fb-photo-rewrite.mjs': [
