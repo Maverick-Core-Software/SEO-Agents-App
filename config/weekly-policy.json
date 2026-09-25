@@ -13,7 +13,8 @@
     "performance": 0.1
   },
   "models": {
-    "generate": "deepseek-chat",
+    "generate": "deepseek-v4-flash",
+    "_notes": "T7 / root decision 4: pin the id the API actually served (live probe 2026-09-06 requested deepseek-chat and got deepseek-v4-flash back). Both servable ids keep a pricing entry; the mode's preflight probes this id before the attempt and the meter warns if the provider serves something else.",
     "fallback": null
   },
   "pricing": {

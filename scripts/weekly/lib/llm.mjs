@@ -5,6 +5,9 @@
  * chatJSON never throws on a validation failure: it returns { data: null,
  * issues } so the caller can run one bounded repair. It throws on transport
  * failure, HTTP errors, timeout, or a tripped budget ceiling.
+ *
+ * `preflightModel` is the T7 probe: one tiny metered call that confirms the
+ * pinned model id is servable, run before an attempt is created.
  */
 import { parseOrIssues } from './schemas.mjs';
 
@@ -102,7 +105,7 @@ export function createLlmClient({ apiKey, model, baseUrl = DEFAULT_BASE_URL, fet
       output: Number(json.usage?.completion_tokens ?? 0),
     };
     const usedModel = json.model || model;
-    if (meter) meter.record({ kind: 'llm', model: usedModel, fallbackModel: model, inputTokens: usage.input, outputTokens: usage.output, label });
+    if (meter) meter.record({ kind: 'llm', model: usedModel, requestedModel: model, fallbackModel: model, inputTokens: usage.input, outputTokens: usage.output, label });
 
     const content = json.choices?.[0]?.message?.content ?? '';
     const parsed = parseJsonLoose(content);
@@ -114,4 +117,36 @@ export function createLlmClient({ apiKey, model, baseUrl = DEFAULT_BASE_URL, fet
   }
 
   return { chatJSON, model, endpoint };
+}
+
+/**
+ * T7: one tiny metered probe of the pinned model, run before the attempt record
+ * exists so a pinned id the provider no longer serves is visible up front. Never
+ * throws — the outcome is returned — and a failed probe is still recorded in the
+ * meter (cost 0, the reason as the entry's warning) so it cannot vanish.
+ *
+ * @returns {Promise<{ ok: boolean, requested: string|null, served: string|null,
+ *   issues: Array, usage: { input: number, output: number }, error: string|null }>}
+ */
+export async function preflightModel({ llm, meter = null, label = 'preflight', maxTokens = 16 } = {}) {
+  if (!llm || typeof llm.chatJSON !== 'function') throw new Error('preflightModel: an llm client is required');
+  const requested = llm.model || null;
+  try {
+    const out = await llm.chatJSON({
+      system: 'You are a health check. Reply with a single JSON object: {"ok":true}.',
+      user: '{"preflight":true}',
+      maxTokens,
+      temperature: 0,
+      label,
+    });
+    return { ok: true, requested, served: out.model || requested, issues: out.issues || [], usage: out.usage || { input: 0, output: 0 }, error: null };
+  } catch (e) {
+    const error = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
+    if (meter && typeof meter.record === 'function') {
+      // The request never returned, so nothing was billed; the entry exists so
+      // the failed probe shows up in the attempt's ledger.
+      meter.record({ kind: 'llm', model: requested, requestedModel: requested, usd: 0, label, warning: `preflight failed: ${error}` });
+    }
+    return { ok: false, requested, served: null, issues: [], usage: { input: 0, output: 0 }, error };
+  }
 }

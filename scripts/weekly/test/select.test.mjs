@@ -324,6 +324,22 @@ describe('rankCandidates: opportunity from Search Console position', () => {
     assert.match(reason(lighting, 'opportunity'), /avg position 20\.0 across 50 impressions/);
   });
 
+  it('ignores a position resting on fewer than 10 impressions (T8) and keeps the local-pack bonus', () => {
+    const observations = [
+      scObs({ query: 'electrical panel upgrade wylie', impressions: 4, clicks: 0, position: 12 }),
+      scObs({ query: 'ev charger installation wylie', impressions: 10, clicks: 1, position: 12 }),
+      serpObs({ query: 'electrical panel upgrade wylie', service_key: 'panel_upgrade', city: 'Wylie', local_pack: [{ title: 'Ace Electric', rating: 4.8, reviews: 120 }], grizzly_in_local_pack: false }),
+    ];
+    const selection = rank({ observations });
+    assertSelection(selection);
+    const panel = pick(selection, 'panel_upgrade', 'Wylie');
+    assert.equal(panel.scores.opportunity, 0.2, 'no position below the floor, but the local-pack bonus survives');
+    assert.match(reason(panel, 'opportunity'), /4 impressions is under the 10-impression floor; no position data/);
+    assert.doesNotMatch(reason(panel, 'opportunity'), /avg position/);
+    near(panel.scores.demand, 0.4, 'the floor is on the position component only');
+    assert.equal(pick(selection, 'ev_charger', 'Wylie').scores.opportunity, 1, 'exactly 10 impressions is enough evidence');
+  });
+
   it('treats the 8–30 band as inclusive', () => {
     assert.equal(opportunityFromPosition(8), 1);
     assert.equal(opportunityFromPosition(30), 1);
@@ -709,7 +725,7 @@ describe('rankCandidates: degraded selection', () => {
     }
     assert.match(selection.rationale, /Search Console and SerpApi were both unavailable, so demand and opportunity defaulted to 0\.50/);
     assert.match(selection.rationale, /degraded selection/);
-    assert.match(selection.rationale, /Facebook insights unavailable/);
+    assert.match(selection.rationale, /No matured Facebook performance memory/);
     assert.match(selection.rationale, /^Winner: /);
   });
 
@@ -785,32 +801,43 @@ describe('rankCandidates: city weight multiplies the total', () => {
 
 // ── Performance ─────────────────────────────────────────────────────────────
 
-describe('rankCandidates: performance from Facebook insights joined to history', () => {
-  it('normalizes engagement by the best service and leaves unknown services at 0.5', () => {
-    const observations = [
-      fbObs({ id: 'fb-1', reach: 1000, engaged: 100, message: 'Level 2 charger install in Wylie' }),
-      fbObs({ id: 'fb-2', reach: 1000, engaged: 25, message: 'Panel upgrade day in Garland' }),
-      fbObs({ id: 'fb-orphan', reach: 5000, engaged: 4000 }),
-    ];
+describe('rankCandidates: performance from the durable memory (T9)', () => {
+  it('normalizes the stored per-post values by the best service and leaves unknown services at 0.5', () => {
     const history = {
       posts: [
-        post({ platform: 'facebook', post_date: '2026-08-26', service: 'EV Charger Installation', platform_post_id: 'fb-1', city: 'Wylie' }),
-        post({ platform: 'facebook', post_date: '2026-08-26', service: 'Electrical Panel Upgrade / Replacement', platform_post_id: 'fb-2', city: 'Garland' }),
+        post({ platform: 'facebook', post_date: '2026-08-26', service: 'EV Charger Installation', platform_post_id: '108_a', city: 'Wylie' }),
+        post({ platform: 'facebook', post_date: '2026-08-26', service: 'Electrical Panel Upgrade / Replacement', platform_post_id: '108_b', city: 'Garland' }),
       ],
       website_tasks: [],
+      performance: [
+        { platform_post_id: '108_a', window_days: 28, metric: 'fb_interactions', value: 100, measured_at: '2026-09-10T00:00:00Z' },
+        { platform_post_id: '108_b', window_days: 28, metric: 'fb_interactions', value: 25, measured_at: '2026-09-10T00:00:00Z' },
+      ],
     };
-    const selection = rank({ observations, history });
+    const selection = rank({ history });
     assertSelection(selection);
     const ev = pick(selection, 'ev_charger', 'Plano');
     assert.equal(ev.scores.performance, 1);
-    assert.match(reason(ev, 'performance'), /Facebook engagement 10\.0% \(1\.00 of best\)/);
-    near(pick(selection, 'panel_upgrade', 'Plano').scores.performance, 0.25, '2.5% is a quarter of the best');
+    assert.match(reason(ev, 'performance'), /Facebook performance memory \(28d fb_interactions\) avg 100\.0 over 1 post \(1\.00 of best\)/);
+    near(pick(selection, 'panel_upgrade', 'Plano').scores.performance, 0.25, '25 interactions is a quarter of the best');
     assert.equal(pick(selection, 'generator', 'Plano').scores.performance, 0.5);
     assert.match(reason(pick(selection, 'generator', 'Plano'), 'performance'), /no performance data \(0\.50\)/);
-    assert.doesNotMatch(selection.rationale, /Facebook insights unavailable/);
+    assert.doesNotMatch(selection.rationale, /No matured Facebook performance memory/);
   });
 
-  it('uses Search Console CTR for services posted inside the window when Facebook is silent', () => {
+  it('ignores the live Facebook insights observations: the stored memory is the only Facebook source', () => {
+    const observations = [fbObs({ id: '108_a', reach: 1000, engaged: 900, message: 'Level 2 charger install in Wylie' })];
+    const history = {
+      posts: [post({ platform: 'facebook', post_date: '2026-08-26', service: 'EV Charger Installation', platform_post_id: '108_a', city: 'Wylie' })],
+      website_tasks: [],
+      performance: [],
+    };
+    const selection = rank({ observations, history });
+    assertSelection(selection);
+    assert.equal(pick(selection, 'ev_charger', 'Plano').scores.performance, 0.5, 'a 90% engagement rate in the live read scores nothing');
+  });
+
+  it('uses Search Console CTR for services posted inside the window when the memory is silent', () => {
     const observations = [
       scObs({ query: 'electrician rowlett tx', impressions: 100, clicks: 10, position: 12 }),
       scObs({ query: 'ev charger installation wylie', impressions: 100, clicks: 2, position: 12 }),
@@ -825,6 +852,7 @@ describe('rankCandidates: performance from Facebook insights joined to history',
         post({ post_date: '2026-07-20', service: 'Recessed Lighting Installation', city: 'Plano' }),
       ],
       website_tasks: [],
+      performance: [],
     };
     const selection = rank({ observations, history });
     assertSelection(selection);
@@ -835,7 +863,7 @@ describe('rankCandidates: performance from Facebook insights joined to history',
     assert.equal(pick(selection, 'generator', 'Plano').scores.performance, 0.5, 'under 10 impressions is not evidence');
     assert.equal(pick(selection, 'recessed_lighting', 'Plano').scores.performance, 0.5, 'a post outside the 28-day window is not joined');
     assert.equal(pick(selection, 'panel_upgrade', 'Plano').scores.performance, 0.5, 'never posted');
-    assert.match(selection.rationale, /Facebook insights unavailable; performance rests on Search Console CTR/);
+    assert.match(selection.rationale, /No matured Facebook performance memory; performance rests on Search Console CTR/);
   });
 });
 

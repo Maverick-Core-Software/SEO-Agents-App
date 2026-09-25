@@ -10,13 +10,17 @@
  *   demand       Search Console impressions for the family (28d) / max across
  *                candidates, +0.2 when SerpApi shows People Also Ask
  *   opportunity  1.0 when the family's average position is 8–30, 0.6 beyond
- *                30, 0.3 above 8, 0 with no data; +0.2 when the local pack for
- *                the city lacks Grizzly (capped at 1)
+ *                30, 0.3 above 8, 0 when the impression count behind the
+ *                position is under `opportunity_min_impressions` (10) or there
+ *                is no data; +0.2 when the local pack for the city lacks
+ *                Grizzly (capped at 1)
  *   recency      1.0 never published, 0.5 same service in the recency window,
  *                0.1 same service and city
  *   season       policy.services[].season[month] (default 0.5)
- *   performance  Facebook / Search Console engagement joined to history posts
- *                of the same service, normalized (0.5 when unknown)
+ *   performance  Facebook performance memory (`history.performance`: one
+ *                matured window per post, written by the reconcile stage) plus
+ *                Search Console CTR for history posts of the same service,
+ *                normalized (0.5 when unknown)
  *   total        Σ weights[k] × score[k], multiplied by the city weight
  *
  * Family membership: a Search Console or SerpApi query belongs to a service
@@ -55,6 +59,10 @@ export const DEFAULT_THRESHOLDS = Object.freeze({
   opportunity_beyond: 0.6,
   opportunity_above: 0.3,
   opportunity_no_data: 0,
+  // A position is only evidence when enough impressions sit behind it: a
+  // 12.0 "average" built on four impressions is noise, not a ranking (T8).
+  // Applies to the position component only; the local-pack bonus is untouched.
+  opportunity_min_impressions: 10,
   local_pack_bonus: 0.2,
   recency_same_service: 0.5,
   recency_same_service_city: 0.1,
@@ -307,7 +315,6 @@ function indexObservations(observations, policy, matcher, thresholds) {
   const scPure = [];
   const scPage = [];
   const serp = [];
-  const facebook = new Map();
 
   for (const obs of observations || []) {
     if (!obs || typeof obs !== 'object' || !(obs.source in sources)) continue;
@@ -347,7 +354,6 @@ function indexObservations(observations, policy, matcher, thresholds) {
       serp.push({ query, service, city, paa, packLacksGrizzly });
     } else if (obs.source === 'facebook') {
       sources.facebook = true;
-      if (obs.scope) facebook.set(String(obs.scope), value);
     }
   }
 
@@ -356,7 +362,7 @@ function indexObservations(observations, policy, matcher, thresholds) {
   const isShort = (r) => r.days == null || r.days <= thresholds.short_window_max_days;
   const demandRows = sc.some(isShort) ? sc.filter(isShort) : sc;
   const windowDays = demandRows.reduce((max, r) => Math.max(max, r.days || 0), 0) || thresholds.default_window_days;
-  return { sources, sc, demandRows, windowDays, serp, facebook };
+  return { sources, sc, demandRows, windowDays, serp };
 }
 
 /**
@@ -439,24 +445,28 @@ function recentWinners(posts, history, weekSpec, matcher, thresholds) {
 }
 
 /**
- * Per-service performance: Facebook engagement rate joined by platform post id,
- * and Search Console CTR for the family when the service was posted inside the
- * window. Each part is normalized by the best service; parts are averaged.
+ * Per-service performance from the durable memory (T9): the stored Facebook
+ * values of the posts this service published (`memory` is history.performance —
+ * one matured window per post, `unavailable` rows already dropped at read time,
+ * so an unknown value is absent here rather than a zero), plus Search Console
+ * CTR for the family when the service was posted inside the window. Each part is
+ * normalized by the best service; parts are averaged.
  */
-function performanceByService(posts, index, thresholds) {
-  const fbRates = new Map();
+function performanceByService(posts, index, memory, thresholds) {
+  const byPost = new Map((Array.isArray(memory) ? memory : []).map((row) => [String(row.platform_post_id), row]));
+  const fb = new Map(); // service → { values, windows: Set, metrics: Set }
   for (const p of posts) {
-    if (!p.platform_post_id || (p.platform && p.platform !== 'facebook')) continue;
-    const v = index.facebook.get(p.platform_post_id);
-    if (!v) continue;
-    const reach = Math.max(num(v.reach), num(v.impressions));
-    if (reach <= 0) continue;
-    const engaged = num(v.engaged) > 0 ? num(v.engaged) : num(v.reactions) + num(v.comments) + num(v.shares);
-    if (!fbRates.has(p.service)) fbRates.set(p.service, []);
-    fbRates.get(p.service).push(engaged / reach);
+    if (!p.platform_post_id) continue;
+    const row = byPost.get(String(p.platform_post_id));
+    if (!row) continue;
+    const entry = fb.get(p.service) || { values: [], windows: new Set(), metrics: new Set() };
+    entry.values.push(num(row.value));
+    entry.windows.add(row.window_days);
+    entry.metrics.add(row.metric);
+    fb.set(p.service, entry);
   }
   const fbMean = new Map();
-  for (const [service, rates] of fbRates) fbMean.set(service, rates.reduce((a, b) => a + b, 0) / rates.length);
+  for (const [service, entry] of fb) fbMean.set(service, entry.values.reduce((a, b) => a + b, 0) / entry.values.length);
   const maxFb = Math.max(0, ...fbMean.values());
 
   const ctr = new Map();
@@ -474,9 +484,11 @@ function performanceByService(posts, index, thresholds) {
     const parts = [];
     const notes = [];
     if (fbMean.has(service)) {
+      const entry = fb.get(service);
       const norm = maxFb > 0 ? fbMean.get(service) / maxFb : 0;
       parts.push(norm);
-      notes.push(`Facebook engagement ${(fbMean.get(service) * 100).toFixed(1)}% (${norm.toFixed(2)} of best)`);
+      const window = [...entry.windows].sort((a, b) => b - a).join('/');
+      notes.push(`Facebook performance memory (${window}d ${[...entry.metrics].join('/')}) avg ${fbMean.get(service).toFixed(1)} over ${entry.values.length} post${entry.values.length === 1 ? '' : 's'} (${norm.toFixed(2)} of best)`);
     }
     if (ctr.has(service)) {
       const norm = maxCtr > 0 ? ctr.get(service) / maxCtr : 0;
@@ -540,10 +552,13 @@ function scoreCandidate(candidate, ctx) {
 
     const posRows = weightedPosition(famRows) ? famRows : index.sc.filter(inFamily);
     const pos = weightedPosition(posRows);
-    let opportunity = opportunityFromPosition(pos ? pos.position : null, T);
-    why.opportunity.push(pos
+    const enoughImpressions = pos != null && pos.impressions >= T.opportunity_min_impressions;
+    let opportunity = opportunityFromPosition(enoughImpressions ? pos.position : null, T);
+    why.opportunity.push(enoughImpressions
       ? `avg position ${pos.position.toFixed(1)} across ${pos.impressions} impressions (${describePosition(pos.position, T)})`
-      : 'no Search Console position data');
+      : pos
+        ? `${pos.impressions} impressions is under the ${T.opportunity_min_impressions}-impression floor; no position data`
+        : 'no Search Console position data');
     const packRows = serpFamily.length ? serpFamily : index.serp.filter((r) => r.city === city);
     if (packRows.some((r) => r.packLacksGrizzly)) {
       opportunity += T.local_pack_bonus;
@@ -592,7 +607,7 @@ function reasonFor(candidate, key) {
   return text ? text.slice(key.length + 2) : '';
 }
 
-function buildRationale({ winner, runnerUp, weights, excludedServices, exclusionSkipped, degraded, sources, T }) {
+function buildRationale({ winner, runnerUp, weights, excludedServices, exclusionSkipped, degraded, sources, memoryRows, T }) {
   const drivers = SCORE_KEYS
     .map((k) => ({ k, contribution: (Number(weights[k]) || 0) * winner.scores[k] }))
     .sort((a, b) => b.contribution - a.contribution)
@@ -619,7 +634,7 @@ function buildRationale({ winner, runnerUp, weights, excludedServices, exclusion
     if (!sources.serpapi) missing.push('SerpApi');
     if (missing.length) parts.push(`${missing.join(' and ')} unavailable; the other search source carried demand and opportunity.`);
   }
-  if (!sources.facebook) parts.push('Facebook insights unavailable; performance rests on Search Console CTR where posts exist, else 0.50.');
+  if (!memoryRows) parts.push(`No matured Facebook performance memory; performance rests on Search Console CTR where posts exist, else ${T.performance_unknown.toFixed(2)}.`);
   return parts.join(' ');
 }
 
@@ -651,7 +666,9 @@ export function rankCandidates({ policy, observations = [], history = null, fact
   const index = indexObservations(observations, policy, matcher, T);
   const posts = indexHistory(history, policy, matcher, { runFridayMs, weekOfMs });
   const degraded = !index.sources.search_console && !index.sources.serpapi;
-  const perf = performanceByService(posts, index, T);
+  // The durable performance memory replaces the live Facebook join (T9).
+  const memory = Array.isArray(history && history.performance) ? history.performance : [];
+  const perf = performanceByService(posts, index, memory, T);
   const winners = recentWinners(posts, history, weekSpec, matcher, T);
   const month = Number(String(weekSpec.week_of).slice(5, 7));
   const serviceByKey = new Map(policy.services.map((s) => [s.key, s]));
@@ -697,7 +714,7 @@ export function rankCandidates({ policy, observations = [], history = null, fact
   const excludedServices = [...new Set(excludedRaw.map((c) => c.service_label))];
   const rationale = buildRationale({
     winner: ranked[0], runnerUp: ranked[1] || null, weights, excludedServices, exclusionSkipped,
-    degraded, sources: index.sources, T,
+    degraded, sources: index.sources, memoryRows: memory.length, T,
   });
   return { winner: ranked[0], ranked, excluded, rationale, degraded };
 }

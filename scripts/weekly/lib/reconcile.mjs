@@ -3,10 +3,11 @@
  *
  * 1. reconcilePerformance: for every published Facebook post in the lookback
  *    window, record per-post metrics at 7 and 28 days (only once a window has
- *    matured) into performance_observations. Idempotent per
- *    (platform_post_id, metric, window_days): a retry of a window recorded as
- *    unavailable replaces those rows in place, it never inserts a second copy.
- *    Reads weekly_posts read-only.
+ *    matured) into performance_observations. Idempotent per (stored
+ *    platform_post_id, metric, window_days) — the row key is the id stored on
+ *    weekly_posts, even when a bare id is page-scoped for the Graph call, so a
+ *    retry of a window recorded as unavailable replaces those rows in place,
+ *    it never inserts a second copy. Reads weekly_posts read-only.
  * 2. recordPageMetrics: page-level Search Console rows into
  *    performance_observations, keyed by page_url + metric + window + day.
  *    Source is part of every key, so a Facebook retry can never collide with a
@@ -179,11 +180,12 @@ export async function reconcilePerformance({ supabase, fbClient, now = new Date(
     // with the canonical form. Nothing is invented here — whether the node exists
     // is decided by Graph, and a rejected id is recorded unavailable below.
     const graphId = normalizePostId(post.platform_post_id, pageId);
+    const storedId = String(post.platform_post_id);
     for (const windowDays of windows) {
       if (!windowMatured(post.post_date, windowDays, now)) { skipped += 1; continue; }
       // A post-window is done when any of its metrics carried a value (Reels
       // only ever carry media_views) or an unavailable row is still fresh.
-      if (windowRecorded(done, graphId, windowDays)) { skipped += 1; continue; }
+      if (windowRecorded(done, storedId, windowDays)) { skipped += 1; continue; }
       let perf = null;
       try {
         perf = await fbClient.postPerformance({ postId: graphId });
@@ -194,12 +196,12 @@ export async function reconcilePerformance({ supabase, fbClient, now = new Date(
             videos += 1;
           } catch (e2) {
             unavailable += 1;
-            reasons.push({ platform_post_id: graphId, window_days: windowDays, reason: `video fallback failed for ${graphId}: ${e2.message || e2}` });
+            reasons.push({ platform_post_id: storedId, window_days: windowDays, reason: `video fallback failed for ${graphId}: ${e2.message || e2}` });
             log(reasons[reasons.length - 1].reason);
           }
         } else {
           unavailable += 1;
-          reasons.push({ platform_post_id: graphId, window_days: windowDays, reason: `facebook insights unavailable for ${graphId}: ${e.message || e}` });
+          reasons.push({ platform_post_id: storedId, window_days: windowDays, reason: `facebook insights unavailable for ${graphId}: ${e.message || e}` });
           log(reasons[reasons.length - 1].reason);
         }
       }
@@ -208,7 +210,7 @@ export async function reconcilePerformance({ supabase, fbClient, now = new Date(
       // rows (and their retry targets) instead of duplicating them.
       const verified = perf && typeof perf.id === 'string' && perf.id.trim() ? perf.id.trim() : null;
       if (verified && verified !== graphId) log(`graph id mismatch: requested ${graphId}, Graph returned ${verified}`);
-      rows.push(...metricRowsForPost({ post, perf, windowDays, now, planItemId: itemByRef.get(post.id) || null, postId: graphId }));
+      rows.push(...metricRowsForPost({ post, perf, windowDays, now, planItemId: itemByRef.get(post.id) || null, postId: storedId }));
     }
   }
   const written = rows.length ? await writeRows(supabase, rows, retry) : { inserted: 0, replaced: 0 };

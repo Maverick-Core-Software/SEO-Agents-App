@@ -124,8 +124,9 @@ Copy `topic` verbatim from `topic.winner` in the user message (`service_key`, `s
   weirdest electrical issue you have had at home? Tell us below".
 - `hashtags`: 0 to 3. Keyword-rich body text matters more than hashtags.
 - `format`: name the content format used, and never use the same format on two consecutive
-  posts. Rotate across: Before/After transformation, Educational/How-To, Behind-the-Scenes,
-  Interactive/Question, Social Proof (only from facts you were given), Humor/Personality.
+  posts. Rotate across: photo walkthrough (describe the single photo you were given, present
+  tense), Educational/How-To, Behind-the-Scenes, Interactive/Question, Social Proof (only from
+  facts you were given), Humor/Personality.
   Aim for about half education, a third social proof or personality, and one interactive post.
   Zero direct sales pitches.
 - `post_goal` reflects the format: education, social_proof, engagement, or entertainment.
@@ -135,6 +136,21 @@ Copy `topic` verbatim from `topic.winner` in the user message (`service_key`, `s
   topic. On days 3, 5 and 6, `on_screen_text` is an empty string.
 - Never repeat a hook that appears in `history.recent_hooks_to_avoid`, and do not reuse their
   angles word for word.
+
+## Job stories and anecdotes (a violation rejects the whole plan)
+
+Write what Grizzly does and what the photo shows, never a job "we just did". A post carries one
+photo, so a first-person past-tense completed-job claim cannot be proven and is an error.
+
+- Forbidden: "We just finished a panel upgrade in <winner city>." · "Our crew installed a
+  Level 2 charger last Friday." · "I replaced a 30-year-old panel yesterday." · "Before: a
+  crowded panel with doubled-up breakers." (a "Before:" label needs two photos of the same
+  job)
+- Allowed: "A 1990s panel like this one often runs out of breaker space." (describe the photo)
+  · "When we open a panel this old, the first thing we check is the bus bar." (present tense,
+  general practice) · "If your lights dim when the AC starts, the panel is where we look
+  first." (hypothetical) · "Left: crowded panel. Right: a clean 200-amp upgrade." (one real
+  composite photo, no "Before:" label)
 
 ## Hooks and headlines must be new
 

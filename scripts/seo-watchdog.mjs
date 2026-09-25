@@ -23,6 +23,12 @@
  *      pending_approval.
  *   6. Staleness: the health marker is older than STALE_DAYS.
  *
+ * Shadow/new pipeline (T3, additive and config-gated on SEO_PIPELINE): once the
+ * wrapper runs the rebuilt pipeline, its attempt-derived `shadow` block in the same
+ * health file is the run's evidence, so the watchdog also alerts on
+ * PIPELINE NO-SHOW / FAILED / HUNG / NOTIFY MISS and on a stale memory pass
+ * (reconcile `last_success_at`). `legacy` watches none of it.
+ *
  * Single-shot: checks once, alerts if needed, exits. Exit codes:
  *   0 = healthy or alert delivered; 1 = alert needed but ALL channels failed
  *   (so Task Scheduler's LastTaskResult itself becomes a visible signal).
@@ -57,6 +63,18 @@ const RUNNER_HEALTH_FILE    = path.join(PROJECT_ROOT, 'outputs', 'weekly-runner-
 const NOTIFY_RESULT_FILE    = path.join(PROJECT_ROOT, 'outputs', 'approval-notify.json');
 const LOG_FILE              = path.join(PROJECT_ROOT, 'outputs', 'watchdog.jsonl');
 const HUNG_MINUTES          = parseInt(process.env.SEO_WATCHDOG_HUNG_MINUTES ?? '90', 10);
+
+// ── Rebuilt pipeline (T3) ────────────────────────────────────────────────────
+// Only the modes where run-weekly-seo.py actually launches the rebuilt pipeline are
+// watched; `legacy` (the default, and an unset/unrecognized value) adds no checks.
+const PIPELINE_MODE          = (process.env.SEO_PIPELINE || 'legacy').trim().toLowerCase();
+const WATCHED_PIPELINE_MODES = new Set(['shadow', 'new']);
+const RECONCILE_HEALTH_FILE  = path.join(PROJECT_ROOT, 'outputs', 'reconcile-health.json');
+// The daily reconcile pass is the pipeline's memory. Freshness is read from
+// `last_success_at` (only a clean pass advances it), never from table rows.
+const RECONCILE_STALE_HOURS  = parseInt(process.env.SEO_RECONCILE_STALE_HOURS ?? '48', 10);
+const PIPELINE_UNFINISHED    = new Set(['running', 'started']);
+const PIPELINE_GOOD          = new Set(['succeeded', 'degraded']);
 
 const DOW_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
@@ -187,23 +205,116 @@ function readJson(file) {
   }
 }
 
+/**
+ * T3: what the rebuild's own health evidence says — independent of the legacy
+ * status, so `new` mode needs no "legacy succeeded" dependency.
+ *
+ * `health.shadow` is the block run-weekly-seo.py derives from the attempt record
+ * (never from the child's exit code). Reconcile freshness is checked every day
+ * (the pass is daily); the run-day checks fire like the legacy ones.
+ */
+export function evaluatePipelineWatchdog({
+  now,
+  pipelineMode = PIPELINE_MODE,
+  health,
+  reconcile,
+  reconcileStaleHours = RECONCILE_STALE_HOURS,
+  deadline = NO_SHOW_DEADLINE_HHMM,
+  expectedDow = EXPECTED_RUN_DOW,
+  hungMinutes = HUNG_MINUTES,
+} = {}) {
+  const mode = String(pipelineMode || '').trim().toLowerCase();
+  const problems = [];
+  if (!WATCHED_PIPELINE_MODES.has(mode)) return problems;
+
+  const lastSuccess = reconcile?.last_success_at ? new Date(reconcile.last_success_at) : null;
+  const successAgeH = lastSuccess && !Number.isNaN(lastSuccess.getTime())
+    ? (now - lastSuccess) / 3_600_000
+    : Infinity;
+  if (successAgeH > reconcileStaleHours) {
+    problems.push(
+      `RECONCILE STALE: the last clean memory pass was ` +
+      `${Number.isFinite(successAgeH) ? `${successAgeH.toFixed(1)} h ago` : 'never recorded'} ` +
+      `(threshold ${reconcileStaleHours}h; last reconcile status ` +
+      `${reconcile ? `'${reconcile.status}'` : 'no outputs/reconcile-health.json'}). ` +
+      `The daily 'Grizzly SEO Reconcile' task is not advancing last_success_at.`
+    );
+  }
+
+  if (now.getDay() !== expectedDow || localHHMM(now) < deadline) return problems;
+
+  const shadow = health && typeof health.shadow === 'object' && health.shadow ? health.shadow : null;
+  const shadowAt = shadow?.at ? new Date(shadow.at) : null;
+  const fresh = Boolean(shadowAt) && !Number.isNaN(shadowAt.getTime())
+    && localDateISO(shadowAt) === localDateISO(now);
+  const where = `(SEO_PIPELINE=${mode}; see outputs/weekly-runner-health.json 'shadow'` +
+    `${shadow?.log_file ? ` and ${shadow.log_file}` : ''})`;
+
+  if (!fresh) {
+    problems.push(
+      `PIPELINE NO-SHOW: the ${mode} pipeline wrote no health block today ` +
+      `(shadow block ${shadow ? `says '${shadow.status}' from ${shadow.at}` : 'is missing'}). ` +
+      `Check the wrapper started and launched the rebuilt pipeline ${where}.`
+    );
+    return problems;
+  }
+
+  const status = String(shadow.status || 'unknown');
+  if (PIPELINE_UNFINISHED.has(status)) {
+    const ageMin = (now - shadowAt) / 60_000;
+    if (ageMin >= hungMinutes) {
+      problems.push(
+        `PIPELINE HUNG: the ${mode} attempt is still '${status}' after ${ageMin.toFixed(0)} min ` +
+        `(threshold ${hungMinutes}m) ${where}.`
+      );
+    }
+    return problems;
+  }
+
+  if (status.startsWith('failed')) {
+    problems.push(
+      `PIPELINE FAILED: the ${mode} attempt record reads '${status}' ` +
+      `(week of ${shadow.week_of || 'unknown'})` +
+      `${shadow.error ? `: ${shadow.error}` : ''} ${where}.`
+    );
+    return problems;
+  }
+
+  if (PIPELINE_GOOD.has(status) && !(shadow.notify && shadow.notify.sent === true)) {
+    problems.push(
+      `PIPELINE NOTIFY MISS: the ${mode} attempt finished '${status}' but its alert was not ` +
+      `confirmed delivered (notify receipt ` +
+      `${shadow.notify ? `${shadow.notify.status}${shadow.notify.error ? `: ${shadow.notify.error}` : ''}` : 'absent'}) ` +
+      `${where}.`
+    );
+  }
+  return problems;
+}
+
 async function main() {
   const now = new Date();
   const health = readJson(RUNNER_HEALTH_FILE);
   const notify = readJson(NOTIFY_RESULT_FILE);
+  const reconcile = readJson(RECONCILE_HEALTH_FILE);
   const autoApprove = /^(1|true|yes)$/i.test(process.env.SEO_AUTO_APPROVE || '');
 
   if (!health && now.getDay() !== EXPECTED_RUN_DOW) {
     log('warn', 'No runner health marker found', { file: RUNNER_HEALTH_FILE });
   }
 
-  const problems = evaluateWatchdog({ now, health, notify, autoApprove });
+  const problems = [
+    ...evaluateWatchdog({ now, health, notify, autoApprove }),
+    ...evaluatePipelineWatchdog({ now, health, reconcile }),
+  ];
 
   if (problems.length === 0) {
     log('info', 'Healthy', {
       last_run_date: health?.date ?? null,
       last_status: health?.status ?? null,
       notify_sent: notify?.sent ?? null,
+      pipeline: PIPELINE_MODE,
+      shadow_status: health?.shadow?.status ?? null,
+      reconcile_last_success_at: reconcile?.last_success_at ?? null,
     });
     return;
   }

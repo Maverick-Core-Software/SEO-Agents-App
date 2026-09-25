@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   validatePlan, findPhoneNumbers, findDollarAmounts, dollarValue, findDomains, findTenureClaims,
-  textFactsErrors, normalizeHook, normalizeBoostPlan, HEADLINE_WARN_CHARS,
+  textFactsErrors, normalizeHook, normalizeBoostPlan, downgradeCarousels, HEADLINE_WARN_CHARS,
 } from '../lib/validate.mjs';
 import { parseFacts, loadFacts } from '../lib/facts.mjs';
 import { weekSpecForWeekOf } from '../lib/week-spec.mjs';
@@ -408,6 +408,107 @@ describe('normalizeBoostPlan (T12: deterministic arithmetic, model YES choices p
     assert.deepEqual(plan.facebook[1].boost, { decision: 'MAYBE', daily_usd: null, days: null });
     assert.ok(has(warnings, /^facebook day 3: cleared MAYBE boost allocation \(daily_usd=5, days=2\)$/));
     assert.deepEqual(boostErrors(plan), []);
+  });
+});
+
+describe('T13/T14: the anecdote rules and the carousel downgrade', () => {
+  /**
+   * Production order: normalize (T14), then validate. The baseline plan is
+   * normalized first so each case's carousel warnings come only from its own
+   * mutation — the fixture itself carries a legitimate day-5 carousel.
+   */
+  const runCase = (mutate) => {
+    const { plan: base } = downgradeCarousels(clone(PLAN));
+    mutate(base);
+    const { plan, warnings } = downgradeCarousels(base);
+    const result = validatePlan(plan, { facts: FACTS, weekSpec: WEEK, photos: PHOTOS, history: HISTORY, policy: POLICY });
+    return { plan, ok: result.ok, errors: result.errors, warnings: [...warnings, ...result.warnings] };
+  };
+  const carouselWarnings = (warnings) => warnings.filter((w) => /carousel downgraded/.test(w));
+
+  const cases = [
+    {
+      name: 'T14: every carousel becomes a photo with a warning, and the plan still validates',
+      mutate: (p) => { p.facebook[1].type = 'carousel'; p.facebook[2].type = 'carousel'; },
+      ok: true,
+      errors: [],
+      carouselWarnings: 2,
+    },
+    {
+      name: 'T13: a first-person past-tense job claim in the copy is an error',
+      mutate: (p) => { p.facebook[1].body += ' We just finished a panel swap in Rockwall.'; },
+      ok: false,
+      errors: [/^facebook day 3 body: first-person past-tense job claim "We just finished" — say what Grizzly does/],
+      carouselWarnings: 0,
+    },
+    {
+      name: 'T13: "Before:" copy on a one-photo post is an error',
+      mutate: (p) => { p.gbp[2].caption = 'Before: a crowded panel with doubled-up breakers.'; },
+      ok: false,
+      errors: [/^gbp day 3 caption: "Before:" copy needs two photos of the same job \(this post carries 1\)$/],
+      carouselWarnings: 0,
+    },
+    {
+      name: 'T13 + T14 combined: a downgraded carousel that also invents a job story and a "Before:" label fails all three ways',
+      mutate: (p) => {
+        p.facebook[1].type = 'carousel';
+        p.facebook[1].body += ' Our crew installed a Level 2 charger last Friday.';
+        p.gbp[2].caption = 'Before: a crowded panel with doubled-up breakers.';
+      },
+      ok: false,
+      errors: [
+        /^gbp day 3 caption: "Before:" copy needs two photos of the same job \(this post carries 1\)$/,
+        /^facebook day 3 body: first-person past-tense job claim "Our crew installed"/,
+      ],
+      carouselWarnings: 1,
+    },
+    {
+      name: 'T13: present-tense practice, hypotheticals and a composite photo stay clean',
+      mutate: (p) => {
+        p.facebook[1].body += ' When we open a panel this old, the first thing we check is the bus bar.';
+        p.gbp[2].body += ' If your lights dim when the AC starts, the panel is where we look first.';
+        p.gbp[4].caption = 'Left: crowded panel. Right: a clean 200-amp upgrade.';
+        p.facebook[3].body += ' We have replaced a lot of these across Rockwall since 2021.';
+      },
+      ok: true,
+      errors: [],
+      carouselWarnings: 0,
+    },
+    {
+      name: 'T13: "Before:" is allowed once the item lists two photos',
+      mutate: (p) => {
+        p.gbp[2].caption = 'Before: a crowded panel. After: room to grow.';
+        p.gbp[2].photo_files = ['panel-before.jpg', 'panel-after.jpg'];
+      },
+      ok: true,
+      errors: [],
+      carouselWarnings: 0,
+    },
+    {
+      name: 'T13: "Before and after:" is not a "Before:" label',
+      mutate: (p) => { p.gbp[2].caption = 'Before and after of a Rockwall panel replacement.'; },
+      ok: true,
+      errors: [],
+      carouselWarnings: 0,
+    },
+  ];
+
+  for (const c of cases) {
+    it(c.name, () => {
+      const result = runCase(c.mutate);
+      assert.equal(result.errors.length, c.errors.length, JSON.stringify(result.errors));
+      c.errors.forEach((re, i) => assert.match(result.errors[i], re));
+      assert.equal(carouselWarnings(result.warnings).length, c.carouselWarnings, JSON.stringify(result.warnings));
+      assert.equal(result.ok, c.ok, JSON.stringify(result.errors));
+    });
+  }
+
+  it('downgrades only the carousel and leaves every other choice exactly as the model made it', () => {
+    const { plan } = downgradeCarousels(JSON.parse(JSON.stringify(PLAN)));
+    assert.deepEqual(plan.facebook.map((f) => f.type), ['slideshow', 'photo', 'photo', 'text']);
+    const changed = Object.keys(plan.facebook[2]).filter((k) => k !== 'type' && JSON.stringify(plan.facebook[2][k]) !== JSON.stringify(PLAN.facebook[2][k]));
+    assert.deepEqual(changed, [], 'nothing but the type changed');
+    assert.deepEqual(downgradeCarousels(null), { plan: null, warnings: [] });
   });
 });
 

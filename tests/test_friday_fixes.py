@@ -409,6 +409,58 @@ class TestWrapperShadowHealth:
         assert block["runtime_s"] == 61
         assert block["spent_usd"] == 0.42 and block["budget_usd"] == 20
 
+    def test_notify_receipt_surfaces_in_health_block(self, tmp_path):
+        """T1: the wrapper reports the attempt's `notify:<event>` receipt (outcome and
+        channel) in the health block, and reports an absent receipt as not sent — the
+        watchdog's notify-miss signal — never as a delivered alert."""
+        run_weekly_seo = _load_run_weekly_seo()
+        paths = self._paths(tmp_path)
+        attempts_dir = paths["store"] / "attempts"
+        attempt_id = "2026-09-21T120000Z-abcdef"
+        child_script = (
+            "import json, pathlib\n"
+            "from datetime import datetime, timezone, timedelta\n"
+            f"attempts = pathlib.Path({str(attempts_dir)!r})\n"
+            f"out = pathlib.Path({str(paths['out'])!r})\n"
+            "attempts.mkdir(parents=True, exist_ok=True)\n"
+            "out.mkdir(parents=True, exist_ok=True)\n"
+            "now = datetime.now(timezone.utc)\n"
+            f"attempt_id = {attempt_id!r}\n"
+            "started = now.isoformat().replace('+00:00', 'Z')\n"
+            "finished = (now + timedelta(seconds=42)).isoformat().replace('+00:00', 'Z')\n"
+            "record = {'id': attempt_id, 'week_of': '2026-09-21', 'mode': 'offline',\n"
+            "    'status': 'succeeded', 'error': None, 'spent_usd': 0.1, 'budget_usd': 20,\n"
+            "    'started_at': started, 'finished_at': finished, 'stages': {\n"
+            "        'notify:succeeded': {'started_at': finished, 'finished_at': finished,\n"
+            "                             'status': 'ok', 'error': 'via hermes+smtp'}}}\n"
+            "(attempts / (attempt_id + '.json')).write_text(json.dumps(record), encoding='utf-8')\n"
+            "(out / 'current-attempt.json').write_text(json.dumps({\n"
+            "    'attempt_id': attempt_id, 'week_of': '2026-09-21', 'mode': 'offline',\n"
+            "    'status': 'succeeded', 'started_at': started, 'finished_at': finished}),\n"
+            "    encoding='utf-8')\n"
+        )
+
+        block = run_weekly_seo.run_pipeline(
+            "offline", paths, week_of="2026-09-21",
+            cmd=[sys.executable, "-c", child_script], timeout_s=60,
+        )
+
+        assert block["status"] == "succeeded"
+        assert block["notify"]["sent"] is True
+        assert block["notify"]["event"] == "succeeded"
+        assert block["notify"]["channel"] == "hermes+smtp"
+        assert block["notify"]["error"] is None
+        # A rehearsal sends no alert; only shadow/new notify.
+        assert block["notify_expected"] is False
+        # Absent and undelivered receipts both read as not sent, with a reason.
+        assert run_weekly_seo.notify_receipt({"status": "succeeded", "stages": {}})["sent"] is False
+        undelivered = run_weekly_seo.notify_receipt({
+            "status": "failed",
+            "stages": {"notify:failed": {"status": "failed", "error": "all channels failed"}},
+        })
+        assert undelivered["sent"] is False
+        assert undelivered["error"] == "all channels failed"
+
     def test_earlier_same_week_record_reads_stale(self, tmp_path):
         run_weekly_seo = _load_run_weekly_seo()
         paths = self._paths(tmp_path)

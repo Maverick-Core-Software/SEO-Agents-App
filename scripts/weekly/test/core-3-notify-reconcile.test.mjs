@@ -191,7 +191,7 @@ describe('reconcile', () => {
     assert.ok(!supabase.calls.some((c) => c.table === 'performance_observations' && c.ops.some((o) => o[0] === 'insert')));
   });
 
-  it('records a precise reason with each unavailable post-window and fabricates no id', async () => {
+  it('records a precise reason with each unavailable post-window and keeps the stored id as the row key', async () => {
     const supabase = fakeSupabase({
       weekly_posts: { data: [{ id: 'wp1', platform: 'facebook', post_date: '2026-08-01', status: 'posted', platform_post_id: '98765' }], error: null },
     });
@@ -199,9 +199,26 @@ describe('reconcile', () => {
     const fbClient = { postPerformance: async ({ postId }) => { seen.push(postId); throw new Error('(#100) insights denied for this node'); } };
     const r = await reconcilePerformance({ supabase, fbClient, now: NOW, windows: [7], pageId: '108' });
     assert.deepEqual(seen, ['108_98765'], 'a bare stored id is page-scoped before the Graph call');
-    assert.deepEqual(r.reasons, [{ platform_post_id: '108_98765', window_days: 7, reason: 'facebook insights unavailable for 108_98765: (#100) insights denied for this node' }]);
+    assert.deepEqual(r.reasons, [{ platform_post_id: '98765', window_days: 7, reason: 'facebook insights unavailable for 108_98765: (#100) insights denied for this node' }]);
     const rows = supabase.calls.find((c) => c.table === 'performance_observations' && c.ops[0][0] === 'insert').ops[0][1];
-    assert.ok(rows.every((x) => x.availability === 'unavailable' && x.platform_post_id === '108_98765'), 'the stored id is recorded, never an invented one');
+    assert.ok(rows.every((x) => x.availability === 'unavailable' && x.platform_post_id === '98765'), 'the stored id is the row key, never the page-scoped Graph id');
+  });
+
+  it('recognizes its own rows for a bare stored id, so a page-scoped Graph call cannot duplicate them', async () => {
+    // Regression for the row-key decision: keying rows by the scoped id made the
+    // done-window probe miss rows stored under the bare id and re-record them.
+    const supabase = fakeSupabase({
+      weekly_posts: { data: [{ id: 'wp1', platform: 'facebook', post_date: '2026-08-01', status: 'posted', platform_post_id: '98765' }], error: null },
+      performance_observations: (chain) => (chain.ops[0][0] === 'select'
+        ? { data: [{ id: 'obs-1', source: 'facebook', platform_post_id: '98765', page_url: null, metric: 'fb_interactions', window_days: 7, availability: 'ok', measured_at: '2026-08-15T00:00:00Z' }], error: null }
+        : { data: null, error: null }),
+    });
+    let calls = 0;
+    const fbClient = { postPerformance: async () => { calls += 1; return {}; } };
+    const r = await reconcilePerformance({ supabase, fbClient, now: NOW, windows: [7], pageId: '108' });
+    assert.equal(calls, 0, 'the 7-day window is already recorded under the stored id');
+    assert.equal(r.skipped, 1);
+    assert.equal(r.inserted, 0);
   });
 
   it('recordPageMetrics writes four metrics per page and skips seen ones', async () => {

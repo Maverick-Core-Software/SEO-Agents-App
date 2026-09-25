@@ -309,6 +309,9 @@ def preflight() -> list[str]:
 # ---------------------------------------------------------------------------
 
 PIPELINE_MODES = ("shadow", "offline")
+# Modes whose attempt is expected to send one attempt-bound alert (T1). `new`
+# arrives with the cutover; today only `shadow` runs with `--notify`.
+NOTIFY_MODES = ("shadow", "new")
 SHADOW_TIMEOUT_S = int(os.environ.get("SEO_SHADOW_TIMEOUT_MIN", "30")) * 60
 
 
@@ -409,6 +412,44 @@ def read_attempt_identity(paths: dict) -> dict | None:
     return data if isinstance(data, dict) and data.get("attempt_id") else None
 
 
+def notify_receipt(record) -> dict:
+    """The attempt's `notify:<event>` delivery receipt, for the health block (T1).
+
+    Lane B's notify.mjs records one receipt per attempt event as a `notify:<event>`
+    stage (`status: ok|failed`; on success the `error` field carries the channel —
+    `via hermes+smtp`). The block reports it so the watchdog can raise a notify-miss
+    without reading the alert body. ``sent`` is False (never null) when no receipt is
+    visible in the record this launch read: an absent receipt is exactly the
+    silent-failure the alert exists to catch, so it must not look like "nothing here".
+    """
+    stages = (record or {}).get("stages")
+    if not isinstance(stages, dict):
+        stages = {}
+    receipts = [(key.split(":", 1)[1], stage) for key, stage in stages.items()
+                if isinstance(key, str) and key.startswith("notify:") and isinstance(stage, dict)]
+    if not receipts:
+        return {
+            "event": record.get("status") if isinstance(record, dict) else None,
+            "sent": False,
+            "status": "missing",
+            "channel": None,
+            "at": None,
+            "error": "no notify:<event> receipt on the attempt record",
+        }
+    matching = [r for r in receipts if r[0] == (record or {}).get("status")]
+    event, stage = (matching or [max(receipts, key=lambda r: _parse_stamp(r[1].get("finished_at")))])[0]
+    sent = stage.get("status") == "ok"
+    channel = (stage.get("error") or "").removeprefix("via ").strip() if sent else None
+    return {
+        "event": event,
+        "sent": sent,
+        "status": stage.get("status"),
+        "channel": channel or None,
+        "at": stage.get("finished_at"),
+        "error": None if sent else (stage.get("error") or "notify failed"),
+    }
+
+
 def pipeline_health_block(mode: str, paths: dict, *, launched_at: str,
                           expected_week_of=None, child: dict | None = None) -> dict:
     """The structured `shadow` health block, derived from the attempt record.
@@ -428,6 +469,10 @@ def pipeline_health_block(mode: str, paths: dict, *, launched_at: str,
         "at": _now_iso(),
         "week_of": expected_week_of,
         "log_file": str(paths["log"]),
+        # T1: whether an alert was expected at all (a rehearsal sends none) plus the
+        # receipt itself. Set from the attempt record below, never from the child's exit.
+        "notify_expected": mode in NOTIFY_MODES,
+        "notify": notify_receipt(None),
     }
     if child:
         block["child"] = child
@@ -472,6 +517,7 @@ def pipeline_health_block(mode: str, paths: dict, *, launched_at: str,
         "spent_usd": record.get("spent_usd"),
         "budget_usd": record.get("budget_usd"),
         "error": record.get("error"),
+        "notify": notify_receipt(record),
     })
     return block
 
@@ -509,6 +555,8 @@ def run_pipeline(mode: str, paths: dict | None = None, week_of=None, *,
         "launched_at": launched_at,
         "at": launched_at,
         "log_file": str(paths["log"]),
+        "notify_expected": mode in NOTIFY_MODES,
+        "notify": notify_receipt(None),
     })
     log_line(f"[run-weekly-seo] {mode} pipeline -> {paths['log']}", log_file=paths["log"])
     child = _spawn_pipeline(cmd or pipeline_cmd(mode, paths, week_of), paths["log"],

@@ -4,7 +4,9 @@
  * Same two transports the legacy pipeline uses (Hermes CLI first, Gmail SMTP
  * second, both best-effort), but every send is keyed by attempt and event and
  * the receipt is written to the attempt's stages as `notify:<event>` so a
- * re-run never re-sends and the watchdog can see what was delivered.
+ * re-run never re-sends and the watchdog can see what was delivered. The
+ * message carries the topic, the item counts, the validation result, the
+ * runtime, the spend and the summary path (T1).
  */
 import { sendHermesAlert } from '../../lib/hermes-alert.mjs';
 
@@ -12,7 +14,16 @@ function short(id) {
   return String(id || '').slice(0, 8);
 }
 
-export function formatAttemptMessage({ attempt, event, plan = null, summary = {} } = {}) {
+/** Wall-clock runtime of a finished attempt as "42s" / "3m 4s"; null when it did not finish. */
+export function attemptRuntime(attempt) {
+  const start = Date.parse(attempt && attempt.started_at);
+  const end = Date.parse(attempt && attempt.finished_at);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return null;
+  const seconds = Math.round((end - start) / 1000);
+  return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+}
+
+export function formatAttemptMessage({ attempt, event, plan = null, validation = null, summary = {} } = {}) {
   const lines = [];
   const mode = attempt?.mode ? `[${attempt.mode}]` : '';
   const head = {
@@ -26,6 +37,11 @@ export function formatAttemptMessage({ attempt, event, plan = null, summary = {}
   if (attempt?.id) lines.push(`Attempt ${short(attempt.id)}`);
   if (plan?.topic) lines.push(`Topic: ${plan.topic.service_label} — ${plan.topic.city}`);
   if (plan) lines.push(`GBP posts: ${plan.gbp?.length ?? 0} | Facebook posts: ${plan.facebook?.length ?? 0} | Website actions: ${plan.website_actions?.length ?? 0}`);
+  // T1: the alert is the review surface, so the validation result and the
+  // runtime are stated rather than left to the reader's inference.
+  if (validation) lines.push(`Validation: ${validation.ok ? 'ok' : 'FAILED'} — ${(validation.errors || []).length} error(s), ${(validation.warnings || []).length} warning(s)`);
+  const runtime = attemptRuntime(attempt);
+  if (runtime) lines.push(`Runtime: ${runtime}`);
   if (plan?.notes?.degraded && plan.notes.degraded_reason) lines.push(`Degraded: ${plan.notes.degraded_reason}`);
   if (typeof attempt?.spent_usd === 'number') lines.push(`Spend: $${attempt.spent_usd.toFixed(4)}`);
   if (attempt?.error && event === 'failed') lines.push(`Error: ${String(attempt.error).slice(0, 300)}`);

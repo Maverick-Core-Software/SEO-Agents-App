@@ -38,10 +38,20 @@ export const DEFAULT_MAX_CALLS = 60;
 export const DEFAULT_MAX_QUERIES = 60;
 export const DEFAULT_NUM = 10;
 export const DEFAULT_TIMEOUT_MS = 30_000;
+/** Live calls allowed in flight at once (T5: 4-6). */
+export const DEFAULT_IN_FLIGHT = 5;
+/**
+ * Hard collect deadline. A cold collect must finish inside 3 minutes: dispatching
+ * stops at the deadline and the remainder is marked unavailable, while a request
+ * already in flight may still settle inside its own 30 s timeout — so the
+ * deadline sits one timeout below the bound (145 s + 30 s < 180 s).
+ */
+export const DEFAULT_DEADLINE_MS = 145_000;
 /** The only website domain (knowledge/baselines/grizzly-business-facts.md). */
 export const GRIZZLY_DOMAIN = 'grizzlyelectricaltx.com';
 export const GRIZZLY_NAME_PATTERN = /grizzly/i;
 export const NOTE_CAP_REACHED = 'cap reached';
+export const NOTE_DEADLINE = 'collect deadline reached';
 export const NOTE_NO_API_KEY = 'SERPAPI_API_KEY not configured';
 /** Marker in the note of the exhausted request and every later uncached query (S2). */
 export const NOTE_QUOTA_EXHAUSTED = 'quota_exhausted';
@@ -439,12 +449,21 @@ export async function fetchSerpJson({ url, fetchImpl = globalThis.fetch, timeout
  * Extra optional inputs: `policy` (parsed weekly-policy; read from disk when
  * absent — supplies queries, serp defaults, city names and the per-call
  * price), `env` (defaults to process.env; only SERPAPI_API_KEY is read),
- * `timeoutMs`, `pricePerCall`, `grizzlyDomain`, `grizzlyPattern`.
+ * `timeoutMs`, `pricePerCall`, `grizzlyDomain`, `grizzlyPattern`, `inFlight`
+ * (live calls at once, default 5) and `deadlineMs` (Infinity disables the
+ * deadline).
  *
- * Cached hits never count toward `maxCalls` and are still served after the
- * cap. Live calls are sequential (deterministic order, gentle on the API).
- * A live call is recorded in the meter as `kind: 'serpapi'` on every HTTP
- * 2xx (SerpApi bills those; failed requests are not billed).
+ * Cached hits never count toward `maxCalls` and are still served once the cap,
+ * the budget or the deadline has stopped live work. Live calls run up to
+ * `inFlight` at a time with the same per-call timeout; each one reserves its
+ * `maxCalls` slot **and** its worst-case price before it is dispatched, so the
+ * in-flight calls alone can overshoot neither the cap nor the meter ceiling. On
+ * account-quota exhaustion no new live work is dispatched (requests already sent
+ * may settle). A hard `deadlineMs` deadline marks every query it reaches before
+ * dispatch `unavailable` (NOTE_DEADLINE). Observations are returned in query
+ * order whatever order the calls settle in. A live call is recorded in the meter
+ * as `kind: 'serpapi'` on every HTTP 2xx (SerpApi bills those; failed requests
+ * are not billed).
  */
 export async function collectSerp({
   attemptId,
@@ -460,6 +479,8 @@ export async function collectSerp({
   policy,
   env = process.env,
   timeoutMs = DEFAULT_TIMEOUT_MS,
+  inFlight,
+  deadlineMs,
   pricePerCall,
   grizzlyDomain = GRIZZLY_DOMAIN,
   grizzlyPattern = GRIZZLY_NAME_PATTERN,
@@ -467,7 +488,6 @@ export async function collectSerp({
   const nowDate = now instanceof Date ? now : new Date(now);
   if (Number.isNaN(nowDate.getTime())) throw new TypeError(`collectSerp: now is not a valid date (${String(now)})`);
   const retrievedAt = nowDate.toISOString();
-  const observations = [];
 
   let pol = policy;
   if (!pol) {
@@ -476,11 +496,10 @@ export async function collectSerp({
     } catch (err) {
       pol = {};
       if (queries === undefined) {
-        observations.push(failedObservation({
+        return [failedObservation({
           attemptId, retrievedAt, entry: { query: 'policy' }, key: createHash('sha1').update('policy').digest('hex'),
           geography: null, status: 'unavailable', note: `policy unreadable: ${err && err.message ? err.message : String(err)}`,
-        }));
-        return observations;
+        })];
       }
     }
   }
@@ -489,6 +508,8 @@ export async function collectSerp({
   const settings = {
     cacheDays: cacheDays ?? serp.cache_days ?? DEFAULT_CACHE_DAYS,
     maxCalls: nonNegativeInt(maxCalls ?? serp.max_calls, DEFAULT_MAX_CALLS),
+    inFlight: Math.max(1, nonNegativeInt(inFlight, DEFAULT_IN_FLIGHT)),
+    deadlineMs: deadlineMs === undefined || deadlineMs === null ? DEFAULT_DEADLINE_MS : deadlineMs,
     location: String(location ?? serp.location ?? DEFAULT_LOCATION),
     pricePerCall: pricePerCall ?? (pol.pricing && typeof pol.pricing.serpapi_per_call === 'number' ? pol.pricing.serpapi_per_call : undefined),
     // A blank or whitespace-only key is "not configured", not a key to send.
@@ -497,85 +518,131 @@ export async function collectSerp({
   const cities = policyCities(pol);
   const list = normalizeQueries(queries === undefined ? buildSerpQueries(pol) : queries);
 
+  // One worker pool over the query list. The cache key is the identity of a live
+  // call, so duplicate queries are dropped up front and no two workers can race
+  // on one key.
+  const queue = [];
   const seen = new Set();
-  let liveCalls = 0;
-  let stopNote = null;
   for (const entry of list) {
     const key = cacheKey(entry.query, settings.location);
     if (seen.has(key)) continue;
     seen.add(key);
-    const base = { attemptId, retrievedAt, entry, key, geography: entry.city || findCity(entry.query, cities) };
+    queue.push({ entry, key });
+  }
 
-    const cached = readCacheEntry(cacheDir, key);
-    if (cached && !isErrorPayload(cached.response) && isFresh(cached.fetched_at, { now: nowDate, cacheDays: settings.cacheDays })) {
-      // Never throw out of a collector: a cache entry that cannot be turned
-      // into an observation is reported as an error, not refetched (the
-      // failure is in parsing, not in the data, so a live call would not help).
-      try {
-        observations.push(okObservation({
-          ...base, location: settings.location, response: cached.response, rawRef: `cache:${key}`,
-          fetchedAt: cached.fetched_at, fromCache: true, grizzlyDomain, grizzlyPattern,
-        }));
-      } catch (err) {
-        observations.push(failedObservation({
-          ...base, status: 'error', note: redact(`cache entry unusable: ${err && err.message ? err.message : String(err)}`, settings.apiKey),
-        }));
-      }
-      continue;
-    }
+  const positional = (entry, key) => ({ attemptId, retrievedAt, entry, key, geography: entry.city || findCity(entry.query, cities) });
+  const observations = new Array(queue.length).fill(null);
+  let next = 0;
+  let liveCalls = 0;
+  // Dispatched but not yet settled: their worst-case price is reserved against
+  // the ceiling, so the calls in flight can never overshoot it together.
+  let pending = 0;
+  let stopNote = null;
+  // The deadline runs on the wall clock, not on the injected `now`: that clock
+  // can be frozen, and a deadline has to pass regardless.
+  const deadlineAt = Number.isFinite(Number(settings.deadlineMs))
+    ? Date.now() + Math.max(0, Math.floor(Number(settings.deadlineMs)))
+    : Infinity;
+  const unitPrice = typeof settings.pricePerCall === 'number'
+    ? settings.pricePerCall
+    : (meter && typeof meter.estimate === 'function' ? meter.estimate({ kind: 'serpapi' }) : 0);
 
-    if (!stopNote && !settings.apiKey) stopNote = NOTE_NO_API_KEY;
-    if (!stopNote && liveCalls >= settings.maxCalls) stopNote = NOTE_CAP_REACHED;
-    if (!stopNote && meter && typeof meter.assertUnder === 'function') {
-      try {
-        meter.assertUnder(settings.pricePerCall ?? 0);
-      } catch (err) {
-        stopNote = `budget reached: ${err && err.message ? err.message : String(err)}`;
-      }
-    }
-    if (stopNote) {
-      observations.push(failedObservation({ ...base, status: 'unavailable', note: stopNote }));
-      continue;
-    }
+  async function worker() {
+    for (;;) {
+      const index = next++;
+      if (index >= queue.length) return;
+      const { entry, key } = queue[index];
+      const base = positional(entry, key);
 
-    liveCalls += 1;
-    try {
-      const url = buildSerpUrl({ query: entry.query, location: settings.location, apiKey: settings.apiKey });
-      const response = await fetchSerpJson({
-        url, fetchImpl, timeoutMs,
-        // Metered as soon as the 2xx arrives: SerpApi bills it even when the body is unusable.
-        onResponse: () => {
-          if (meter && typeof meter.record === 'function') {
-            meter.record({ kind: 'serpapi', model: null, usd: settings.pricePerCall, label: entry.query });
-          }
-        },
-      });
-      if (!response || typeof response !== 'object') throw new Error('SerpApi returned a non-object response');
-      if (isErrorPayload(response)) throw new Error(`SerpApi error: ${response.error}`);
-      let cacheNote = null;
-      try {
-        writeCacheEntry(cacheDir, key, { query: entry.query, location: settings.location, fetched_at: retrievedAt, response });
-      } catch (err) {
-        cacheNote = `cache write failed: ${err && err.message ? err.message : String(err)}`;
-      }
-      const obs = okObservation({
-        ...base, location: settings.location, response, rawRef: `serpapi:${key}`,
-        fetchedAt: retrievedAt, fromCache: false, grizzlyDomain, grizzlyPattern,
-      });
-      if (cacheNote) obs.note = redact(cacheNote, settings.apiKey);
-      observations.push(obs);
-    } catch (err) {
-      if (err && err.quota_exhausted) {
-        // The account is out of searches, not throttled: stop issuing live calls
-        // for this attempt and mark this request plus every later uncached query
-        // with the stable marker. Earlier successes and valid cache hits stand.
-        stopNote = `${NOTE_QUOTA_EXHAUSTED}: ${redact(err && err.message ? err.message : String(err), settings.apiKey)}`;
-        observations.push(failedObservation({ ...base, status: 'unavailable', note: stopNote }));
+      const cached = readCacheEntry(cacheDir, key);
+      if (cached && !isErrorPayload(cached.response) && isFresh(cached.fetched_at, { now: nowDate, cacheDays: settings.cacheDays })) {
+        // Never throw out of a collector: a cache entry that cannot be turned
+        // into an observation is reported as an error, not refetched (the
+        // failure is in parsing, not in the data, so a live call would not help).
+        try {
+          observations[index] = okObservation({
+            ...base, location: settings.location, response: cached.response, rawRef: `cache:${key}`,
+            fetchedAt: cached.fetched_at, fromCache: true, grizzlyDomain, grizzlyPattern,
+          });
+        } catch (err) {
+          observations[index] = failedObservation({
+            ...base, status: 'error', note: redact(`cache entry unusable: ${err && err.message ? err.message : String(err)}`, settings.apiKey),
+          });
+        }
         continue;
       }
-      observations.push(failedObservation({
-        ...base, status: 'error', note: redact(err && err.message ? err.message : String(err), settings.apiKey),
-      }));
+
+      // A stop condition means no new live work; the slot is filled with the
+      // note and the worker moves on, so cache hits later in the list still get
+      // served (a stop is about live calls, not about the cache).
+      if (!stopNote && !settings.apiKey) stopNote = NOTE_NO_API_KEY;
+      if (!stopNote && liveCalls >= settings.maxCalls) stopNote = NOTE_CAP_REACHED;
+      if (!stopNote && Date.now() >= deadlineAt) stopNote = NOTE_DEADLINE;
+      if (!stopNote && meter && typeof meter.assertUnder === 'function') {
+        try {
+          meter.assertUnder(unitPrice * (pending + 1));
+        } catch (err) {
+          stopNote = `budget reached: ${err && err.message ? err.message : String(err)}`;
+        }
+      }
+      if (stopNote) {
+        observations[index] = failedObservation({ ...base, status: 'unavailable', note: stopNote });
+        continue;
+      }
+
+      // Reserve the call's slot and its worst-case price before dispatching.
+      liveCalls += 1;
+      pending += 1;
+      try {
+        const url = buildSerpUrl({ query: entry.query, location: settings.location, apiKey: settings.apiKey });
+        const response = await fetchSerpJson({
+          url, fetchImpl, timeoutMs,
+          // Metered as soon as the 2xx arrives: SerpApi bills it even when the body is unusable.
+          onResponse: () => {
+            if (meter && typeof meter.record === 'function') {
+              meter.record({ kind: 'serpapi', model: null, usd: settings.pricePerCall, label: entry.query });
+            }
+          },
+        });
+        if (!response || typeof response !== 'object') throw new Error('SerpApi returned a non-object response');
+        if (isErrorPayload(response)) throw new Error(`SerpApi error: ${response.error}`);
+        let cacheNote = null;
+        try {
+          writeCacheEntry(cacheDir, key, { query: entry.query, location: settings.location, fetched_at: retrievedAt, response });
+        } catch (err) {
+          cacheNote = `cache write failed: ${err && err.message ? err.message : String(err)}`;
+        }
+        const obs = okObservation({
+          ...base, location: settings.location, response, rawRef: `serpapi:${key}`,
+          fetchedAt: retrievedAt, fromCache: false, grizzlyDomain, grizzlyPattern,
+        });
+        if (cacheNote) obs.note = redact(cacheNote, settings.apiKey);
+        observations[index] = obs;
+      } catch (err) {
+        if (err && err.quota_exhausted) {
+          // The account is out of searches, not throttled: dispatch no new live
+          // work for this attempt and mark this request plus every later uncached
+          // query with the stable marker. Requests already sent may settle, and
+          // earlier successes and valid cache hits stand.
+          stopNote = `${NOTE_QUOTA_EXHAUSTED}: ${redact(err && err.message ? err.message : String(err), settings.apiKey)}`;
+          observations[index] = failedObservation({ ...base, status: 'unavailable', note: stopNote });
+        } else {
+          observations[index] = failedObservation({
+            ...base, status: 'error', note: redact(err && err.message ? err.message : String(err), settings.apiKey),
+          });
+        }
+      } finally {
+        pending -= 1;
+      }
+    }
+  }
+
+  const workers = Math.max(1, Math.min(settings.inFlight, queue.length));
+  await Promise.all(Array.from({ length: workers }, () => worker()));
+  // Whatever a stop condition skipped still gets one observation, in query order.
+  for (let i = 0; i < queue.length; i += 1) {
+    if (!observations[i]) {
+      observations[i] = failedObservation({ ...positional(queue[i].entry, queue[i].key), status: 'unavailable', note: stopNote || NOTE_DEADLINE });
     }
   }
   return observations;

@@ -531,6 +531,36 @@ describe('shadow mode plumbing (no network)', () => {
     assert.deepEqual(unusedPhotos(listPhotoInventory({ dirs: [photosDir] }), r.history), [...PHOTOS].sort());
   });
 
+  it('T7: probes the pinned model before the attempt and records a failed probe on the attempt and in the meter', async () => {
+    const photosDir = tmp('preflight-photos');
+    for (const name of PHOTOS) fs.writeFileSync(path.join(photosDir, name), '');
+    const storeDir = tmp('preflight-store');
+    const outDir = path.join(tmp('preflight-out'), 'shadow');
+    const base = createFixtureLlm({ planPath: PLAN_PATH, model: 'pinned-model' });
+    const calls = [];
+    const llm = {
+      model: 'pinned-model',
+      chatJSON: async (args) => {
+        calls.push(args.label);
+        if (args.label === 'preflight') throw new Error('the pinned model is not servable');
+        return base.chatJSON(args);
+      },
+    };
+    const warnings = [];
+    const r = await runWeekly(
+      { mode: 'shadow', now: NOW, storeDir, outDir, photosDir, legacyDir: LEGACY_DIR, warn: (m) => warnings.push(m) },
+      { env: {}, collectors: createFixtureCollectors(FIXTURES), llm, facts: FACTS },
+    );
+    assert.equal(calls[0], 'preflight', 'the probe runs before any generation call');
+    assert.equal(r.attempt.stages.preflight.status, 'failed');
+    assert.match(r.attempt.stages.preflight.error, /the pinned model is not servable/);
+    assert.ok(warnings.some((w) => /preflight failed/.test(w)), warnings.join('|'));
+    const probe = readJson(path.join(outDir, MIRROR_FILES.meter)).entries.find((e) => e.label === 'preflight');
+    assert.deepEqual([probe.kind, probe.model, probe.requested_model, probe.usd], ['llm', 'pinned-model', 'pinned-model', 0]);
+    assert.match(probe.warning, /preflight failed: Error: the pinned model is not servable/);
+    assert.equal(r.attempt.status, 'succeeded', 'a failed probe is recorded, not fatal');
+  });
+
   it('shadow refuses to start without DEEPSEEK_API_KEY (no attempt, no files)', async () => {
     const storeDir = tmp('shadow-nokey');
     const outDir = path.join(tmp('shadow-nokey-out'), 'shadow');
