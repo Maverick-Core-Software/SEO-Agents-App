@@ -1,515 +1,596 @@
-# PLAN.md - Weekly shadow pipeline: everything that must be fixed before cutover
+# Weekly SEO Pipeline — Final Integrated Execution Plan
 
-**Status:** FINDINGS AND REQUIREMENTS. This is not an execution plan yet.
-**Written:** 2026-09-13 (Sunday) by Claude, from the readout of the 2026-09-11 shadow run.
-**Owner:** Carter. **Goal he set:** the shadow run is perfect by 2026-09-30 so the switchover
-to `scripts/weekly` can happen the week of 2026-09-28 (rebuild plan sections 5 and 6).
-**Next step:** an agent reads this file plus the files in section 0.2, then rewrites this file
-in place into an execution plan that satisfies section 9.
+**STATUS: PROPOSED. Awaiting Carter's separate implementation approval. Nothing in this document
+authorizes execution, live actions, or spend. This document itself is approved for public
+publication as a sanitized plan (see 2.5); that approval does not extend to other documents.**
+
+Drafted 2026-09-24 by Jefe (glm-4.7), then polished by replacement Jefe (gpt-6-sol), from the shared brief of the three-reviewer
+session: Karen (gpt-6-astra), Darren (claude-opus-5-5), Grok (grok-4.7); the T22 timing split remains open. Inputs (evidence only,
+none modified): two prior audit plans (local copies `snug-singing-scone.md`,
+`snug-singing-scone-codex.md`; private paths withheld) and the root `PLAN.md` execution plan
+(2026-09-13, tasks T1-T21, uncommitted). Audit baseline: HEAD `6a1aa46`, `PLAN.md` the only
+modified file, the root plan reported none of T1-T21 built at its writing; this review did not re-verify that status.
 
 ---
 
-## 0. How to use this document
+## 0. How to use this plan
 
-### 0.1 What it is and is not
+- Section 1: evidence layers and safety rules. Section 2: decisions (Carter's D1-D6 verbatim;
+  root decisions 1-12 pending). Sections 4-6: Phase 0 (pre-Friday), Phase 1 (Friday), Phase 2
+  (durability + media). Section 7: root task coverage T1-T21 plus new T22/T23. Section 8:
+  dependency-driven schedule with one recorded split. Sections 9-11: checks, rollback,
+  guardrails.
+- Every task names files, one writer, dependencies, the smallest meaningful check, and its owner
+  gate. A recommendation is never consent; a pending decision blocks its gated work.
+- Three evidence layers stay separate throughout: (L1) previously reported live audit evidence;
+  (L2) this session's read-only source review; (L3) future checks — none run yet.
 
-- It lists every defect, gap, and decision found while auditing the 2026-09-11 shadow run,
-  with evidence, the code location, the required outcome, and how to verify it.
-- It does not assign tasks, order work, or estimate effort. That is the execution plan's job.
-- Nothing here changes the rebuild plan of record. Where this file and
-  `docs/rebuild/2026-09-06-weekly-pipeline-rebuild-plan.md` disagree, say so in the execution
-  plan and let Carter decide (section 7).
+## 1. Evidence layers and safety rules
 
-### 0.2 Read these before rewriting (in this order)
+1. **L1 — previously reported live evidence** (historical, not fresh fact): SerpApi free-plan
+   quota exhaustion with a reported 10/5 renewal; GBP zero-of-13-days posting history and the
+   S4U/DPAPI inference; the week-of-9/21 boost skip; photo-library counts (494 duplicate copies
+   in 464 hash groups, 167 files under 80 KB, 168 falsely dated); 627/627 passing tests;
+   historical PID and scheduler/account state. None of this is re-verified by this review.
+2. **L2 — this session's source review** (read-only, repo-relative): confirmed the exit-5
+   fallthrough (`scripts/lib/gbp-runner.mjs:159`); terminal session tests
+   (`scripts/lib/gbp-runner.test.mjs:93,119`); the boost parser gap
+   (`scripts/fb-boost-ledger.mjs:70-90`); the degraded-flag gap (`scripts/weekly/run.mjs:524-532`,
+   `scripts/weekly/lib/select.mjs:653`); manifest purge and used-path key misses
+   (`scripts/fb-photo-pick.mjs:317-318`, `:135,240,280`); filename-only selection
+   (`scripts/lib/photo-selection.mjs:10-50`); the classifier's local-model default
+   (`scripts/classify-electrical.mjs:60-67`); queued→posted mapping with no external id
+   (`scripts/lib/gbp-runner.mjs:65-67`) and unconfirmed exit-0 (`:98-104`); the daily latch
+   (`scripts/gbp-worker.mjs:321-329`); shadow launch without notify (`scripts/run-weekly-seo.py:296`).
+3. **L3 — future checks**: every verification here is future work. No test, pipeline, probe,
+   query, or live check was executed by this review. Do not cite this document as proof any
+   check passed.
 
-| File | Why |
+**Safety rules.** Repo-relative source references only; private user-directory paths, host
+identifiers, business/project names, personal contact data, and secrets are omitted. Future live
+sign-ins/account work, process lifecycle changes, scheduling changes, database or photo-library
+writes, posting/boosting/deleting, and any paid/model/API use each require Carter's explicit
+approval at that moment. Review-session sign-in authority confers no paid/API authority. No
+automatic commits at session close. Credentials and auth state never enter Git, logs, or
+documents.
+
+## 2. Decisions
+
+### 2.1 Carter's D1-D6 (recorded verbatim, 2026-09-24)
+
+| # | Answer |
 |---|---|
-| `AGENTS.md` at `D:\Workspace` (workspace root) | Carter's standing rules: Orca orchestration with cheap subagent workers, model ladder, no commits or pushes unless asked. Quoted in 0.3. |
-| `docs/rebuild/2026-09-06-weekly-pipeline-rebuild-plan.md` | Plan of record. Section 5 = cutover criteria. Section 6 = S1-S7 work breakdown and dates. Section 7 = out of scope. Section 8 = the public-repo decision. |
-| `scripts/weekly/DESIGN.md` | Binding module contracts, schemas, thresholds. Any change to an exported name or schema must be called out. |
-| `scripts/weekly/README.md` | Modes, options, what a run writes, how to read `summary.md`, test commands. |
-| `FRIDAY-RUNBOOK.md` | How the Friday run is scheduled, the wrapper, health file, watchdog, and the "Rebuilt pipeline - shadow mode" section. |
-| `scripts/run-weekly-seo.py` | The scheduler wrapper. `run_shadow_pipeline()` at lines 282-321 is where the shadow launch, timeout, and health write live. |
-| `scripts/weekly/run.mjs` | Orchestrator CLI. Notify block near line 734, model resolution line 557, validate/regenerate lines 641-660, entry guard lines 798-802. |
-| `scripts/weekly/lib/collectors/serpapi.mjs` | The sequential SerpApi loop, lines 487-545. |
-| `scripts/weekly/lib/select.mjs` | Thresholds lines 48-77, `scoreCandidate` lines 511-560, `performanceByService` lines 446-490. |
-| `scripts/weekly/lib/validate.mjs` | `checkBoost` lines 520-557, text rules. |
-| `scripts/weekly/lib/generate.mjs` | Single repair call, lines 410-470. |
-| `scripts/weekly/lib/prompts/plan.system.md` | Editorial rules. Lines 66-68 already forbid invented stories; lines 113-135 Facebook rules; lines 150-160 boost rules. |
-| `scripts/weekly/lib/reconcile.mjs`, `scripts/weekly/reconcile.mjs` | Performance memory writer. Availability rule line 47, plan-item link lines 115-118, video fallback lines 45-58 of the CLI. |
-| `scripts/weekly/lib/notify.mjs` | Attempt-bound alert with receipts. Already built and tested, never invoked by the wrapper. |
-| `scripts/seo-monitor.mjs`, `scripts/seo-watchdog.mjs` | Neither knows the shadow run exists. |
-| `config/weekly-policy.json` | `serp`, `models`, `pricing`, `weights`, `selection` overrides. |
-| `supabase/migrations/003_weekly_pipeline.sql` | The five shadow tables. |
-| `C:\Workspace\Active\brain\inbox\2026-09-11-friday-seo-run-fixes.md` | What happened on 9/11, what was already fixed (commits f381214, 297bb82), and its open threads. |
-| `C:\Workspace\Active\brain\inbox\2026-09-13-seo-shadow-run-readout-and-plan.md` | The readout this plan was written from. |
-| `outputs/shadow/summary.md`, `outputs/shadow/compare.md`, `outputs/weekly-shadow-2026-09-11.log` | The actual artifacts of the 9/11 run (local only, `outputs/` is gitignored). |
+| D1 | Do not store the Windows password yet. Run `--auth` tonight, then the session-0 probe. If that probe fails, tomorrow's GBP worker runs in the interactive session. Playwright `storageState` is the durable fix after Friday (P2.8). |
+| D2 | Accept thin SERP data tomorrow, with the legacy SerpApi tool skipped. The paid tier can wait until Carter wants it, before Oct 2. |
+| D3 | Carter edits or deletes the 9/26 Facebook post himself tonight. No agent deletes through Graph. |
+| D4 | Skip 9/12–9/24. Recover from 9/25. |
+| D5 | gpt-4o for the Phase 2 relabel (it is already the classifier). Spot-check 50 labels before the full run. Cap the caption check at 3 candidates per post. |
+| D6 | Tonight: G2, G3, G4, F1, S1, S2, S3 (as narrowed), plus the legacy SerpApi skip. **Hold G1.** |
 
-### 0.3 Carter's rules that bind the execution plan
+### 2.2 Qualifications (separate from the answers; not new decisions)
 
-**Workers.** Execution work goes through Orca orchestration: the coordinating agent plans and
-reviews, cheaper subagents do the edits. From `AGENTS.md`:
+- **D1**: `storageState` is the selected approach, not a proven durable fix; it must validate in
+  the intended worker context (P2.8) before the interactive fallback retires.
+- **D5**: GPT-4o is the chosen relabel model — not the classifier source's local default, and not
+  spend authority. Pin the approved endpoint/model explicitly; the 50-label owner check gates the
+  full paid run; the 3-candidate cap is per post (total), never per image.
+- **D6**: the answer arrived cut off after "Hold G1". **F2 (the Hermes alert break) remains
+  diagnosis-only through Phase 2** until Carter answers; the fix ships when he adds it.
+- **F2 disambiguation**: root PLAN's historical finding "F2" is content-quality approval (root
+  decision 12) — a different issue. This plan's "F2-alert" is the Hermes `hermes_cli` break.
 
-- `deepseek/deepseek-v4-flash`: small edits, docs, tests, routine execution
-- `zai-code/glm-4.7` or `zai-code/glm-5.2`: normal build work
-- `zai-code/glm-5.3`: harder work only
-- `nvidia-nim` free models: tiny jobs only (40 requests per minute cap)
-- Frontier models (Claude, GPT): reasoning, review, specs, and anything security or
-  infrastructure sensitive. The reviewer of every worker's output is a frontier model.
+### 2.3 Root decisions 1-12 (all PENDING; recommendations are not consent)
 
-Check `orca status --json` first. If Orca is down, say so and do not substitute a full handoff.
-
-**Tests: only necessary ones.** Add a test only when (a) the failure it guards was, or would be,
-silent in production, or (b) a contract in `DESIGN.md` changes. No tests for cosmetic changes,
-logging, or docs. No new frameworks or fixture trees. Run the existing suites once per change
-set: `node --test scripts/weekly/test/*.test.mjs` (627 tests on 9/11), `npm run lint`, and the
-Python suite under `tests/` only when a `.py` file changes. The e2e offline run
-(`node scripts/weekly/run.mjs --mode offline`) is the integration test; use it, do not duplicate it.
-
-**Standing rules.** No commits or pushes unless Carter asks. Shadow mode never writes
-`weekly_posts`, `website_tasks`, or the legacy `outputs/*.md`, and never publishes. Never print
-or commit secrets. Do not bind port 8080. Do not start `local-llm`. The PC is the source of truth.
-The GitHub repository is public (verified 2026-09-13): keep hostnames, project references, phone
-numbers, and tokens out of committed documents.
-
----
-
-## 1. Where things stand
-
-### 1.1 Shadow attempts to date
-
-| Week of | Attempt | How launched | Result | Runtime | Spend | Topic |
-|---|---|---|---|---|---|---|
-| 2026-09-07 | `...760a01` | manual, Saturday 9/06 | succeeded | 755 s (collect 734 s) | $0.82 | Electrical Troubleshooting & Repair, Rockwall |
-| 2026-09-14 | `...65f703` | manual, 4th try on 9/11 | succeeded | 43 s (warm SerpApi cache) | $0.19 | Outlet, Switch & GFCI Installation, Rowlett |
-
-There has never been an unattended scheduled shadow success. The 9/11 scheduled launch exited
-without running (entry guard, fixed in f381214). Attempts 1 and 2 on 9/11 ran while the PC was on
-the KB5124008 build with a jammed service layer, so their stalls are environment noise and not
-counted as pipeline defects. Two real defects did surface that day and are already fixed:
-content-derived observation ids colliding across weeks (297bb82) and the entry guard (f381214).
-One real defect surfaced and is not fixed: boost over-allocation (D1).
-
-### 1.2 Cutover scorecard (rebuild plan section 5: two consecutive clean shadow Fridays)
-
-| Criterion | 9/06 week | 9/11 week | Notes |
+| # | Decision | Recommended default (review only) | Gates |
 |---|---|---|---|
-| Finished under 10 minutes | no, 12.6 min | 43 s warm only | cold-cache baseline is over the limit (B1) |
-| Schema-valid revision | yes | yes | |
-| Passed all facts checks | yes | yes | 0 errors, 0 warnings |
-| Markdown round-trips with identical row counts | yes | yes | 7 GBP, 4 FB |
-| Under budget | $0.82 of $20 | $0.19 of $20 | |
-| Unattended scheduled success | no | no | E1 |
-| Content-quality approval from Carter | not given | not given | F2 |
+| 1 | Alert channels | Hermes only for now; revisit a backup before cutover | T1 channel |
+| 2 | Review surface | Summary digest via alert; no dashboard | T1 digest |
+| 3 | SerpApi numbers | Keep 80 calls / 5-day cache (60/7 changes rotation coverage) | T5 numbers, T23 |
+| 4 | Model to pin | The model the API actually served, with its own pricing entry | T7 |
+| 5 | Opportunity floor | Hard floor at 10 impressions on the position component | T8 |
+| 6 | Performance memory | Wire into selection now; "later" makes T9 docs-only | T9 |
+| 7 | Owner actions | Read-only inspection first, then scoped approved registration | T11, T17 |
+| 8 | Anecdotes | Hypotheticals allowed; first-person past-tense job claims are errors | T13 |
+| 9 | Carousel | Conservative downgrade to photo until a multi-photo contract is approved | T14 |
+| 10 | Website drafts | Title + description only; drafts deferred as a known gap | T20 |
+| 11 | Repository visibility | See 2.5 — this plan's publication approved; broader question pending | docs, T11 |
+| 12 | Content approval record | One-line recorded verdict per clean-Friday audit | Friday gates |
 
-Remaining shadow Fridays before the deadline: 2026-09-18 and 2026-09-25. Both must be clean.
+### 2.4 F2-alert ownership
 
-### 1.3 What was good on 9/11 (do not break these)
+F2-alert has no lane tonight (diagnosis only). Slack `account_inactive` is a separate break with
+no lane owner; it stays an owner check. Until both resolve, the Friday audit is the safety net
+and alert delivery is verified by receipt **and** actual channel delivery (5.2).
 
-All four collectors healthy (Search Console 2943 rows, Facebook 18, SerpApi 80 of 80, history 216).
-Validation clean after one regeneration. Dates all on spec. No phone, domain, tenure, or price
-violations. Winner service on exactly 3 of 7 GBP days. Winner city named in 6 GBP and 3 FB posts.
-GBP headlines 36-42 chars; FB bodies 60-70 words; no phone in captions; every slot has a photo.
-14 plan items stored. Spend metered per call.
+### 2.5 Publication scope (narrow, resolved)
+
+Carter approved public publication of **this sanitized document only**. The broader root decision
+11 question — repository visibility for other operational documents — **remains pending**. This
+approval does not authorize committing credentials, private account data, other operational
+documents, or any unsanitized material.
+
+## 3. Execution shape
+
+Orca orchestration, max 3 workers in disjoint file lanes; a frontier coordinator plans,
+serializes shared files, and reviews every diff and readback. Per-lane briefs name the only
+writable files, the required outcome, the exact check commands, and a `DONE:` line; every brief
+forbids other files, `.env`, network/LLM/Supabase writes, posting, pm2 CLI, commits, scheduler
+changes, and printing secrets. Model ladder per workspace rules (flash tier for routine edits,
+escalation only after two failed attempts). One writer per file at all times; the coordinator
+serializes shared tests, docs, and runner files. No commits or pushes unless Carter asks.
+
+## 4. Phase 0 — pre-Friday code wave (D6 scope)
+
+### 4.0 Owner actions (Carter, each separately approved)
+
+1. GBP sign-in at the console (`driver.mjs --auth`) — owner-only; agents never enter passwords
+   or sign in to Google. Isolate the shared profile first (4.5).
+2. Edit or delete the 9/26 Facebook post personally (D3); no agent deletes through Graph.
+3. Answer the F2-alert scope question (ship the fix now, or keep diagnosis-only).
+4. Check the Slack app/workspace behind `account_inactive` (owner check; no lane).
+
+### 4.1 Lane G — GBP
+
+Sole writer: `scripts/lib/gbp-runner.mjs` + test, `scripts/gbp-poster/driver.mjs`,
+`scripts/gbp-worker.mjs` + test, `scripts/lib/gbp-paths.mjs` + test, `scripts/gbp-photo-pick.mjs`,
+`scripts/gbp-poster/policy-check.mjs`, and a scoped update to `docs/runbooks/gbp-worker.md`.
+
+- **G1 — HELD (D6).** `session_expired` and captcha stay terminal `error`; existing tests
+  unchanged.
+- **G2.** `gbpScheduleStatusForExit` (and the daily mapper if it shares the gap) maps exit 5
+  `policy_violation` to `error` with the policy detail instead of falling through to `scheduled`
+  (`gbp-runner.mjs:159`). The daily path already errors — preserve the detail there. Check: the
+  exit-5→error mapping case in `gbp-runner.test.mjs`.
+- **G3.** New `driver.mjs --check-session`: opens the existing profile, runs the existing login
+  check without a schedule row and **without opening the composer**; success requires successful
+  navigation plus the existing Posts/Add-update control; rejects captcha, logged-out, unknown,
+  and timeout; closes the browser; prints bounded `{ok, reason}`; exits 0 or 2; API mode
+  unchanged.
+  Worker integration: probe at startup and daily 08:00 Central **under the existing pidfile
+  helper**, with exclusive-create acquisition and owner-safe stale handling — **no new lease
+  framework**. Health record `state/gbp-session-health.json` carries fresh timestamp, PID,
+  worker context, and reason, so stale or foreign results cannot be mistaken for this probe.
+  Failed probes send one non-fatal alert and gate approved-row claims, the daily posting path,
+  and worker retries. A failed probe releases ownership **only after** browser and active work
+  settle, then idles; an idle process never touches another process's lock, profile, or health
+  record; resumption requires exclusive reacquisition plus a passing probe. **Fix the stuck-poll
+  busy-reset**: a stuck run must not clear the busy flag while a prior pass or child may still
+  be alive — fail closed, alert for operator recovery, no new pass or probe until settled. Add a
+  **probe-only startup mode** that records health and exits without claims or polling.
+  Checks: the exit-5 mapping case; an ownership/handoff case beyond login (failed probe →
+  release → interactive takeover → background stays idle, including retries; resumption needs
+  reacquisition + passing probe) in `gbp-worker.test.mjs`; a stuck-poll/busy case. No arbitrary
+  one-test cap — necessary silent-failure cases are allowed.
+- **G4.** Export the existing 10 KB/format policy from `scripts/gbp-poster/policy-check.mjs`
+  (currently private) or a shared helper; apply it to the picker pool, configured-path and
+  date-prefix resolver returns, and fallback — judging the **final resolved/converted artifact**.
+  A source needing conversion qualifies only if its converted artifact passes; never copy
+  unconverted HEIC bytes under a JPG name. Log every skipped file with reason and size.
+  Checks: undersized-image and size-valid-but-unsupported-format fixtures through the existing
+  `scripts/lib/gbp-paths.test.mjs` seam, including an existing configured path; confirm imports
+  load. Broader quality cuts stay Phase 2 (P2.2).
+- **Runbook update (scoped).** `docs/runbooks/gbp-worker.md` carries stale auth advice and an
+  unsafe broad `--once` recommendation. A later docs writer updates only the auth, probe,
+  recovery, and media sections — sanitized, no identities, no private paths copied.
+
+### 4.2 Lane F — Facebook boosts
+
+Sole writer: `scripts/fb-boost-ledger.mjs` + test.
+
+- **F1.** `scheduleWeekStart` (`fb-boost-ledger.mjs:70-90`) accepts both the single-date heading
+  (`## Week of <Month D, YYYY>`) and the bold `**DATE:** YYYY-MM-DD` form. Check: one focused
+  table case using the real 9/18 heading shape in `fb-boost-ledger.test.mjs`.
+- **F2-alert — diagnosis only (2.2, 2.4).** The helper default (`scripts/lib/hermes-alert.mjs:19`)
+  already points at the venv Hermes executable, so re-pointing it fixes nothing. Reproduce
+  `No module named 'hermes_cli'` with the exact command pm2 runs; compare the relevant
+  environment (PATH, PYTHONHOME, PYTHONPATH, VIRTUAL_ENV — values except secrets) against the
+  monitor/watchdog invocations that work; adopt that invocation **when Carter authorizes the
+  fix**. A shipped fix must never let an alert failure kill a poll or tick; callers catch.
+  Owned file when it ships: `scripts/lib/hermes-alert.mjs`, plus `ecosystem.config.cjs` env
+  block only if the cause is environmental. No test.
+
+### 4.3 Lane S — shadow/wrapper/legacy SerpApi
+
+Temporary owner of a B/C subset, then explicit handback: `scripts/run-weekly-seo.py`,
+`scripts/weekly/lib/collectors/serpapi.mjs`, `scripts/weekly/run.mjs` (the `applyDegraded`
+helper **and both generation call sites**, plus minimal source-availability/quota-evidence
+plumbing), `scripts/weekly/test/collect-2-serpapi.test.mjs`,
+`scripts/weekly/test/e2e-offline.test.mjs` (the one quota/degraded/regeneration assertion), and
+`src/seo_agents/crew.py` (build_tools only).
+
+- **S1 — part of T1 only.** Add `--notify` to the shadow command (`run-weekly-seo.py:296`);
+  notify is already non-fatal (`run.mjs:734-741`). The rest of T1 stays a root task (7.1).
+- **S2.** On SerpApi's account-exhaustion 429, reuse the existing stop mechanism (`stopNote`),
+  stop issuing live calls for the attempt, and record the exhausted request plus subsequent
+  uncached queries as `unavailable` with a stable `quota_exhausted` marker in the existing
+  observation note field — **no new availability field**. Distinguish account exhaustion from
+  generic rate limiting. Preserve earlier successes and valid cache hits. Check: the existing
+  collector test gains the injected-429 case (no further live calls; uncached remainder
+  unavailable; valid cache hits still ok).
+- **S3 (narrowed).** Quota-exhaustion evidence or a zero-ok SerpApi source flags
+  `plan.notes.degraded` (with reason) at **both** generation call sites; the summary and attempt
+  carry the flag. Pass source availability/quota evidence in; do not infer from selection alone.
+  No "mostly error" heuristic. Check: an e2e assertion covering quota→degraded→regeneration
+  behavior; the shared e2e test file is serialized by the coordinator (one writer at a time).
+- **Legacy skip.** `build_tools()` (`src/seo_agents/crew.py:158-165`) stops inserting the legacy
+  SerpApi tool unless `SEO_LEGACY_SERPAPI=1`; default is skip, so `.env` needs no change.
+  Search Console, Facebook, and history still feed the crew. Check: the build_tools one-liner
+  showing no SerpApi tool.
+
+### 4.4 Change-set checks (coordinator, once, after assembly — all L3)
+
+- `node --test scripts/weekly/test/*.test.mjs scripts/lib/gbp-runner.test.mjs
+  scripts/gbp-worker.test.mjs scripts/fb-boost-ledger.test.mjs` (single assembled command, plus
+  G4's fixture cases). Any change set that touches the watchdog adds `scripts/seo-watchdog.test.mjs`
+  to the same command (root `PLAN.md` §0.3 rule, T3).
+- `npm run lint`
+- venv py_compile of `scripts/run-weekly-seo.py` and `src/seo_agents/crew.py`; pytest
+  `tests/test_friday_fixes.py` (a `.py` file changed)
+- The wrapper `preflight()` one-liner and the `build_tools()` one-liner
+- `node scripts/weekly/run.mjs --mode offline` with isolated out/store paths
+- **Not a check**: `scripts/gbp-photo-pick.mjs --dry-run` — the picker's dry-run currently
+  syncs, scores, and cache-writes, so it is not a no-write preview until the P-lane preview fix
+  lands (6). (The driver's own dry-run returns before browser launch — `driver.mjs:588` onward —
+  and is not the side-effect source.)
+
+### 4.5 Live steps — each needs Carter's yes at that moment (all L3)
+
+1. Confirm no other process uses the shared profile; set `MAV_BRIDGE_GBP` off; then the owner
+   runs interactive `--check-session` after 4.0-1. Record the result.
+2. Before any approved restart: freshly resolve the worker's PID, command line, owner, session,
+   and pidfile (historical PIDs are evidence, never action targets); inspect pending approved
+   rows and retries read-only. **A normal worker restart can post — it is not a probe-only
+   action.**
+3. The real session-0 probe uses G3's probe-only startup under the documented intended-identity
+   invocation, with separate launch-configuration/lifecycle approval. Never guess a task; never
+   the pm2 CLI from an agent shell. A passing session-0 probe supports a context-specific
+   difference; it does **not** uniquely prove the S4U/DPAPI theory.
+4. Production pause/resume is separately approved. Before the Friday run, with approval to
+   resume, start the selected worker (session-0 if validated, otherwise the hidden interactive
+   launcher) and verify exclusive ownership; the competing worker stays gated. Never launch a
+   probe while a worker owns the profile.
+5. F1 needs no restart if the bridge spawns the boost ledger by path (`scripts/mav-bridge.mjs:89`);
+   confirm read-only. Any restart is its own approved action.
+6. Nothing is reset tonight (D4). Nothing is posted tonight. If probe-only loading cannot
+   preserve that boundary, defer normal worker activation to the approved Friday resume step.
+
+## 5. Phase 1 — Friday run, audit, recovery
+
+### 5.1 Expected timeline (estimates; verify actual completion)
+
+08:25 photo sync · 08:30 legacy run (no legacy SerpApi tool) and monitor · ~08:40 bridge: GBP
+day 1 live, days 2-7 `scheduled_native`, 4 FB posts scheduled · ~08:45 shadow run with
+`--notify` · 09:30 boost tick · 10:00 watchdog · audit **after fresh completion**.
+
+### 5.2 Friday audit (read-only; root `PLAN.md` §6 checklist governs)
+
+1. `outputs/weekly-runner-health.json`: today's legacy success plus a fresh `shadow` block
+   matching this attempt — distinguish running, failed, and stale prior-week evidence.
+2. `outputs/shadow/attempt.json` for the expected `week_of`, correlated with observations and
+   the model plan; SerpApi rows carry `quota_exhausted` after observed exhaustion; degraded
+   flags set in plan, summary, and attempt; inspect the `notify:*` receipt **and** the actual
+   delivery channel — a CLI receipt alone is not delivery.
+3. `weekly_posts` for the expected window: GBP day 1 `posted`, days 2-7 `scheduled_native`; FB
+   posts scheduled with media. **Database status is not external proof**: queued→posted mapping
+   carries no external id (`gbp-runner.mjs:65-67`) and exit-0 can remain unconfirmed
+   (`:98-104`). Corroborate with driver/listing/reference evidence; ambiguous stays
+   unconfirmed; no blind retry. `scheduled_native` is not guaranteed external delivery.
+4. The legacy crew log shows no SerpApi calls.
+5. Every chosen photo opened against its caption; mismatches flagged (Phase 2 baseline).
+6. The boost parser resolves the current week-of and the tick's eligibility decision is correct
+   for today's date; future posts stay ineligible; no next-week ledger entries expected before
+   eligibility. Reservation/publication is verified on an actually eligible day.
+7. New FB copy contains no invented job anecdotes or price claims.
+8. Which alerts actually arrived, per channel.
+
+### 5.3 GBP recovery (D4 verbatim: "Skip 9/12–9/24. Recover from 9/25.")
+
+- Initial exact recovery covers **9/25 only**; any other date is Carter's call.
+- The existing reset script filters only platform and date — unsafe as-is. Recovery is an
+  approved operator procedure: identify the exact row/run; conditional update from expected
+  `error` to `scheduled` guarded by id + run + expected status; exactly one affected row;
+  before-image preserved. Never reset a posted or ambiguous row.
+- Account for the daily latch (`gbp-worker.mjs:321-329`): a same-morning reset alone will not
+  re-run today's daily pass. Use the approved same-day procedure under exclusive ownership with
+  a fresh passing probe; broad `--once` or a restart has whole-queue effects and is not a
+  single-row recovery. **No new recovery CLI is presumed**; if one is justified it is a separate
+  reviewed, approved task. Verify the external result before any further retry.
+- FB media missing → the existing fix-scheduled-photo script. Boost skipped → Carter boosts
+  manually. Both approval-gated.
+
+### 5.4 Deliverable
+
+Readout to Carter plus a handoff note; alert delivery stated per channel with receipt evidence.
+
+## 6. Phase 2 — GBP durability and media integrity (lanes L/P/F)
+
+Lanes (exact file lists): **L** — `scripts/classify-electrical.mjs` plus new test
+`scripts/lib/classify-electrical.test.mjs` (one label-schema rejection case); label data
+artifact `state/curated-labels.json`. **P** — `scripts/lib/photo-selection.mjs` + existing
+`scripts/lib/photo-selection.test.mjs`; `scripts/lib/gbp-paths.mjs` + existing
+`scripts/lib/gbp-paths.test.mjs`; `scripts/gbp-photo-pick.mjs`; `scripts/sync-photos-from-drive.mjs`
+(only if hash ingestion requires it); `scripts/mav-bridge.mjs` (photo block only);
+`scripts/gbp-worker.mjs` (media-preservation block only, after G3 handback).
+`scripts/gbp-media-sync.mjs` is **read-only inspection** unless its GBP gallery upload contract
+is separately approved for change; it does not rename/archive files. **F** —
+`scripts/fb-photo-pick.mjs`; `scripts/facebook-poster.mjs`; `scripts/fb-photo-rewrite.mjs`;
+`scripts/fb-boost-ledger.mjs` + existing `scripts/fb-boost-ledger.test.mjs`;
+new focused `scripts/fb-photo-pick.test.mjs`, `scripts/facebook-poster.test.mjs`, and
+`scripts/fb-photo-rewrite.test.mjs` only for behaviors not covered by existing tests. The bridge photo edit has exactly one media writer (P).
+Sequence schema/history migration before picker/poster consumers. Library changes are
+logged, reversible moves after Carter reviews a dry run; code-worker scope never authorizes
+library moves or paid vision execution.
+
+- **P2.1 Content labels.** `classify-electrical.mjs --relabel-curated` reuses the existing
+  transport with an extended prompt/schema/token allowance; **explicitly selects the approved
+  GPT-4o endpoint/model** (the source defaults to a local model — never silently started);
+  records requested/reported model without secrets; rejects malformed/unknown labels;
+  checkpoints by hash so interrupted relabels resume. Output `state/curated-labels.json` keyed
+  by sha256: filenames, service_type, subtype, tags, one-sentence "what is visible", quality
+  (ok | tiny | logo_or_graphic | non_electrical | people), score, model, date. Taxonomy: panel
+  (upgrade/replacement/subpanel/meter-service), generator (standby/inlet-interlock/
+  transfer-switch), ev-charger, lighting (recessed/ceiling-fan/outdoor/fixture), outlet
+  (gfci/standard), wiring (rewire/conduit/junction), surge, smoke-co, other. **Carter
+  spot-checks 50 labels before any full paid run.**
+- **P2.2 Library hygiene (ordered).** Build a path→sha256 index and migrate existing
+  selection/history references to hashes **first**; deploy hash-aware readers before any move;
+  preserve eight weeks of known usage, marking missing history unknown; protect media referenced
+  by pending schedules/rows, or migrate-and-verify those references first. Inspect the known archive caller before assigning a move: `markGbpPostedAndArchive`
+  in `scripts/lib/gbp-runner.mjs:230-278` renames the workbook-selected photo after posting;
+  `scripts/sync-gbp-schedule.mjs:130-141,179-190` resolves workbook media paths.
+  `scripts/gbp-media-sync.mjs` is gallery upload, **not** the archive-rename mechanism;
+  `scripts/sync-photos-from-drive.mjs` is additive cache ingestion. The picker already excludes
+  the library `Archive` directory (`scripts/gbp-photo-pick.mjs:104-105`). Scope any archive
+  change only after checking this known caller and approved consumer contracts. P owns
+  conditional media-only edits to `scripts/lib/gbp-runner.mjs` and
+  `scripts/sync-gbp-schedule.mjs`, with `scripts/lib/gbp-runner.test.mjs` and
+  `scripts/sync-gbp-schedule.test.mjs` checks, after G handback and Carter's approval.
+  No whole-library work before the 50-label check. Then: collapse the 494 duplicate copies; stop caption-renamed
+  picker copies re-entering Curated (the manifest records source path + hash instead); move
+  tiny/graphic/non-electrical files to review; re-date the 168 false-dated files only where
+  valid EXIF supports it, else an explicit unknown-date marker. Moves only, hash move log, no
+  deletes.
+- **P2.3 One shared selection path** in `photo-selection.mjs` for GBP and FB: SERVICE →
+  structured service key with a fixed title-first fallback; validated allowed-label table per
+  key, **no silent cross-topic fallback**: a cross-topic pair is eligible only when Carter's
+  approved compatibility allowlist explicitly names that pair; otherwise block or use text-only;
+  commercial context as an explicit tag + matching rule, not keyword order; content-hash
+  no-reuse across platforms, 8 weeks, backed by migrated history with unknown history explicit;
+  platform-keyed manifest so the FB date purge cannot drop GBP entries; FB used-path keys
+  fixed. **Concurrency**: worker and bridge call pickers independently, so add one small local
+  manifest reservation lock with atomic temp/rename writes — or demonstrate every caller is
+  already serialized. No database, queue, or new package.
+- **P2.4 Caption-photo check.** One GPT-4o yes/no call sees the actual image plus hook and
+  service. On "no", the next candidate — **3 candidates total per post** — then the allowlist
+  photo (GBP) or text-only (FB). Recommended default pending Carter's multi-image decision: one
+  passing photo, or text-only if none passes; the cap is never reinterpreted per image. An
+  unavailable vision service leaves the image unverified, not passed. Verdicts and candidate
+  hashes recorded.
+- **P2.5 Poster guard.** `scripts/facebook-poster.mjs` rejects photos that fail the manifest
+  audit, including guessed `IMG_` files; `scripts/fb-photo-rewrite.mjs` and
+  `scripts/sync-photos-from-drive.mjs` consumers preserve selected identity. Cover rejection
+  and rewrite with the focused FB tests listed above; use isolated fixtures, no live write.
+- **P2.6 → root T22** (7.4).
+- **P2.7 ffmpeg + classify task.** Reuse `scripts/lib/ffmpeg-bin.mjs`; diagnose the pm2-session
+  resolution failure and fix by configuration only. Inspect the no-op classify scheduled task,
+  then repair or retire under separate approval. Slideshows fall back to a single photo
+  (nonblocking contract) pending the multi-image decision. If configuration-only diagnosis
+  cannot fix resolution, return to Carter rather than changing `scripts/lib/ffmpeg-bin.mjs`
+  without a separately scoped approval.
+- **P2.8 GBP durable auth (D1; G owns `scripts/gbp-poster/driver.mjs`,
+  `scripts/gbp-worker.mjs`, `scripts/gbp-worker.test.mjs`, auth/probe cases in
+  `scripts/lib/gbp-runner.test.mjs`, and auth/probe/recovery sections of
+  `docs/runbooks/gbp-worker.md`; P's later worker edit is media-only after G handback).** `--auth` exports Playwright `storageState` under Carter's
+  profile; the worker launches a non-persistent context from it and refreshes atomically under
+  exclusive ownership; ACL-restricted, outside Git and logs. Acceptance: fresh export validated
+  under the intended worker identity, then again from a later fresh context — **before** the
+  working interactive fallback retires. The session probe remains the gate. **F2-alert is still
+  gated even in Phase 2**: diagnose only until Carter answers the D6 scope question, and obtain
+  separate approval to ship a fix; Slack remains a separate owner check (2.2, 2.4).
+- **Archive safety prerequisite (recorded dissent).** Before eliminating copies, verify the
+  `scripts/lib/gbp-runner.mjs` workbook-photo rename cannot move a canonical source. P may edit
+  that media-only block + `scripts/lib/gbp-runner.test.mjs`, and the media-path consumer
+  `scripts/sync-gbp-schedule.mjs` + `scripts/sync-gbp-schedule.test.mjs`, **only after G handback
+  and Carter's archive/consumer approval**; G retains runner auth/status ownership until then.
+  Choose a safe disposable
+  artifact outside Curated or an owner-approved archive-consumer adaptation. Grok opposes an
+  unconditional archive rewrite; the mechanism is owner-gated, not presumed implementation.
+- **Allowlist.** An owner-approved compatibility/brand allowlist governs cross-topic pairs for
+  both GBP and FB and replaces GBP's "any curated still" fallback; an empty or non-qualifying
+  allowlist **blocks** the photo for review or uses an approved text-only fallback, never
+  silently reverts to arbitrary imagery. Reuse and vision-fallback exceptions are
+  recorded in the manifest.
+- **Acceptance.** A picker dry-run that is **truly no-write and no-network** — fix
+  `scripts/gbp-photo-pick.mjs --dry-run` (it currently syncs, scores, and cache-writes) or use
+  isolated fixtures. Non-fallback
+  images match service keys with passing verdicts; allowlist and text-only/downgraded exceptions
+  explicit; no repeats against migrated 8-week history, or the unverified-history gap reported;
+  pending media paths still resolve; competing selections never reserve the same hash. Carter
+  eyeballs one week.
+
+## 7. Root task coverage — T1-T21 preserved, plus T22/T23
+
+### 7.1 Task matrix (key contracts kept; root acceptance subtleties not dropped)
+
+| Task | Required outcome (contract) | Files → owner | Depends | Smallest check | Gate |
+|---|---|---|---|---|---|
+| T1 | Every shadow (later `new`) attempt sends one idempotent attempt-bound alert on succeeded/degraded/failed via the existing `notify:<event>` receipt; message carries topic, counts, **validation result + runtime**, spend, summary path; receipt visible to the health/watchdog read path. S1 covers only the `--notify` wiring. | `scripts/run-weekly-seo.py` → A; `scripts/weekly/run.mjs`, `scripts/weekly/lib/notify.mjs` → B | T2; S1 | `scripts/weekly/test/core-3-notify-reconcile.test.mjs` receipt and `tests/test_friday_fixes.py` health visibility; separately confirm channel delivery | Decisions 1-2 (channel/surface) |
+| T2 | Health file states what happened: structured `shadow` block from the attempt record (never exit code); fresh + matching week_of or `failed (stale/no attempt)`; pre-launch `running` marker; legacy keys preserved. | `scripts/run-weekly-seo.py` → A | — | pytest case in `tests/test_friday_fixes.py`: no-op child → `failed (no attempt written)` | — |
+| T3 | Watchdog/monitor see shadow: config-gated on `SEO_PIPELINE`; no-show / failed / hung / notify-miss / reconcile-stale alerts; **`new`-mode parity** (no "legacy succeeded" dependency); reconcile freshness from `last_success_at`, never table rows. | `scripts/seo-watchdog.mjs`, `scripts/seo-monitor.mjs` → A | T2; T11 health writer | Table case in `scripts/seo-watchdog.test.mjs` (4 states + stale) | — |
+| T4 | `compare.md` renders a finished attempt (status, finished_at, runtime, spend) and a two-sided legacy comparison; runbook names `compare.md`. | `scripts/weekly/lib/compare.mjs`, `scripts/weekly/run.mjs` → B; `scripts/run-weekly-seo.py`, `FRIDAY-RUNBOOK.md` → A | — | Offline run shows finished attempt + legacy runtime | — |
+| T5 | SerpApi collect: 4-6 in flight, same per-call timeout, cache/cap semantics; reserve maxCalls slot **and** worst-case price before dispatch so in-flight calls cannot overshoot either limit. On account-quota exhaustion stop dispatching new live work immediately (already-sent requests may settle), preserve valid cache hits; hard collect deadline marks remainder `unavailable`; cold collect < 3 min. **Code/offline proceed now; live capped run waits for T23.** | `scripts/weekly/lib/collectors/serpapi.mjs`, `scripts/weekly/DESIGN.md` → B (DESIGN handed to A sole writer); `config/weekly-policy.json` → B only if approved | T23 (live run) | Injected `fetchImpl` in `scripts/weekly/test/collect-2-serpapi.test.mjs`: peak in-flight bounded; cap/budget reservations never exceeded; quota stop dispatches no more live calls, cache still ok; deadline remainder unavailable | Decision 3 (numbers) |
+| T6 | Kill/timeout finalizes the attempt `failed` and releases the lease; wrapper patch guarded by the **current attempt identity** (published early, refreshed); never patches a foreign attempt. | `scripts/weekly/run.mjs`, `scripts/weekly/lib/attempt.mjs` → B; `scripts/run-weekly-seo.py` → A | — | Kill case in `scripts/weekly/test/e2e-offline.test.mjs`: failed + lease released + identity guard | — |
+| T7 | Pin the served model explicitly; pricing entry per servable id; meter records requested **and** served, priced from served, warns on mismatch; one tiny metered preflight call before attempt creation, recorded even on failure. | `scripts/weekly/run.mjs`, `scripts/weekly/lib/llm.mjs`, `scripts/weekly/lib/cost-meter.mjs`, `config/weekly-policy.json` → B; private configuration → Carter only | Decision 4 (id) | Meter-record case in `scripts/weekly/test/core-2-cost-llm.test.mjs` | Decision 4 |
+| T8 | `opportunity_min_impressions` floor (default 10) on the position component only → `opportunity_no_data` + rationale; local-pack bonus preserved either way. | `scripts/weekly/lib/select.mjs` → C; `scripts/weekly/DESIGN.md` → A after C handoff | Decision 5 (style) | Case in `scripts/weekly/test/select.test.mjs`: below-floor + bonus intact | Decision 5 |
+| T9 | Performance memory into selection: matured rows only; one window per post (28-day else 7-day, latest measured_at); availability ok-only (unavailable absent, never 0 → `performance_unknown` 0.5); replaces the live FB join in-window; rationale names the source. | `scripts/weekly/lib/collectors/history.mjs`, `scripts/weekly/lib/select.mjs` → C | T10 mapping; **Decision 6 hard gate** | Fixture case in `scripts/weekly/test/collect-2-history.test.mjs`: precedence + unavailable-not-zero | Decision 6 |
+| T10 | Every published post yields reach/impressions + one engagement metric or `unavailable` with the precise reason; verified Graph id normalization (never fabricate); video fallback uses a readable field; **FB keys split by source** `(platform_post_id, metric, window)` vs Search Console daily history preserved; retry updates atomically (upsert, no dupes); migration only if unavoidable, owner-gated. | `scripts/lib/facebook-insights.mjs`, `scripts/weekly/lib/reconcile.mjs`, `scripts/weekly/reconcile.mjs` → C | — | Retry-replaces-unavailable case in `scripts/weekly/test/core-3-notify-reconcile.test.mjs` (no dupes, SC intact) | Migration apply = owner |
+| T11 | Read-only inspection of the task-registration script (it re-registers unrelated tasks), scoped action list for Carter; reconcile CLI writes health with `last_success_at` separate from `last_attempt_at`/`status`. | `scripts/setup-scheduled-tasks.ps1` inspect-only → A report; `scripts/weekly/reconcile.mjs` → C | — | Read-only report + health-file fields | Decision 7 (owner actions) |
+| T12 | Deterministic boost normalizer before **both** validations and render. Preserve exactly the model's YES choices: never invent, drop or pick rows. Normalize arithmetic **only for 1–2 YES rows**: `days=1`, integer-cent equal split (odd cent to first YES), exact `policy.boost_weekly_usd` total; clear MAYBE/NO allocations; warn in summary. Zero or >2 YES fails unchanged; any residual overbudget fails, never silently accepted. | `scripts/weekly/lib/validate.mjs` → C; `scripts/weekly/run.mjs` call site → B; `scripts/weekly/DESIGN.md` → A after C/B handoff | — | `scripts/weekly/test/validate.test.mjs`: raw $90 plan → $50 total (two YES at $25 each) + warning; odd-cent split, zero or >2 YES fail unchanged; residual overbudget fails | — |
+| T13 | Prompt names the anecdote pattern with forbidden/allowed examples; validator errors on first-person past-tense job claims and "Before:" without two photos; optional LLM judge stays off. | `scripts/weekly/lib/prompts/plan.system.md`, `scripts/weekly/lib/validate.mjs` → C | Decision 8 (voice) | Combined table case with T14 in `scripts/weekly/test/validate.test.mjs` | Decision 8 |
+| T14 | Every `carousel` conservatively downgraded to `photo` with warning (singular-photo schema cannot prove two attached); deterministic normalization before render+validate; multi-photo schema deferred until approved. | `scripts/weekly/lib/validate.mjs` (downgrade + validator) → C; `scripts/weekly/run.mjs` (normalization call site) → B; `scripts/weekly/DESIGN.md` → A after handoff | Decision 9 | Combined table case with T13 in `scripts/weekly/test/validate.test.mjs` | Decision 9 |
+| T15 | Boost radius centers on the city named in the post (winner city when none). Prompt-only. | `scripts/weekly/lib/prompts/plan.system.md` → C | — | Prompt readback | — |
+| T16 | Prove the scheduler path: e2e case spawns offline through the real junction alias while the module resolves to the real path; wrapper gains an injectable offline seam (isolated store/out/health, never the legacy main path); runbook documents the rehearsal command + health block. | `scripts/weekly/test/e2e-offline.test.mjs` → B; `scripts/run-weekly-seo.py`, `FRIDAY-RUNBOOK.md` → A | — | Junction-path case writes an attempt | — |
+| T17 | Read-only confirmation of the scheduled task's action path / working dir / principal (task XML or CIM; sandbox-safe); report only. | `scripts/setup-scheduled-tasks.ps1` inspect-only → A report | — | Handoff-note record | — |
+| T18 | Freeze between qualifying Fridays: bug fixes only; every post-freeze change recorded with reason, reviewer, comparability note; same discipline at the cutover boundary. | `FRIDAY-RUNBOOK.md` freeze section → A | — | Note lists each change | — |
+| T19 | Projection links by `weekly_posts` row id (source wins over the old finding prose); platform id kept separately; website items join through the inserted row/target; GBP metrics stay conditional — absent, never zero-filled. | `scripts/weekly/lib/project.mjs`, `scripts/weekly/test/project.test.mjs`, `scripts/weekly/run.mjs` → B; `scripts/weekly/lib/reconcile.mjs` → C | Cutover session | Fixture case in `scripts/weekly/test/project.test.mjs`: ref survives reconcile + website join | Owner cutover approval |
+| T20 | Website drafts at projection: title+description default; drafts only if Decision 10 requires; budget recheck if added. | `scripts/weekly/lib/project.mjs` → B; conditional `scripts/weekly/lib/prompts/plan.system.md`, `scripts/weekly/lib/schemas.mjs`, `scripts/weekly/lib/validate.mjs` → C | Decision 10 | Test only if drafts required; else none — never TBD | Decision 10 |
+| T21 | Cutover: budget to $5, `--pipeline new`, projection applied, legacy research crews disabled; **gates layer retired one session later** (S7), not in the cutover session; notify/health/watchdog `new`-mode parity verified in the same session; offline refusal path exercised. | `scripts/run-weekly-seo.py`, `FRIDAY-RUNBOOK.md` → A; `scripts/weekly/run.mjs`, `scripts/weekly/lib/project.mjs`, `config/weekly-policy.json` → B; private configuration → Carter only | T19-T20; owner cutover approval | Offline ceiling refusal; parity checks | Owner cutover approval |
+
+### 7.2 Key dependencies (root order, re-dated)
+
+T2 before T3 and before T1's visibility half · T1/T2 before the first audited Friday · T12/T13
+before output-affecting Fridays · T5 code before the freeze, T5 live after T23 · T6/T7 before the
+first audited Friday · T16's seam before T2's offline acceptance · T11's health writer before
+T3's integration · T10's mapping before T9 · T18 freeze after the assembled integration pass ·
+T9 hard-gated on Decision 6 · T19-T21 only in the approved cutover session.
+
+### 7.3 Ownership map (exact; one writer per file, explicit phase handback)
+
+- **Lane A** (root): `scripts/run-weekly-seo.py`, `scripts/seo-watchdog.mjs`,
+  `scripts/seo-monitor.mjs`, `scripts/seo-watchdog.test.mjs`, `tests/test_friday_fixes.py`, `FRIDAY-RUNBOOK.md`,
+  `scripts/weekly/DESIGN.md` (sole writer; B/C hand over interface notes).
+- **Lane B** (root): `scripts/weekly/run.mjs`, `scripts/weekly/lib/notify.mjs`,
+  `scripts/weekly/lib/collectors/serpapi.mjs`, `scripts/weekly/lib/attempt.mjs`,
+  `scripts/weekly/lib/llm.mjs`, `scripts/weekly/lib/cost-meter.mjs`,
+  `scripts/weekly/lib/compare.mjs`, `config/weekly-policy.json` (sole writer),
+  `scripts/weekly/test/e2e-offline.test.mjs`, `scripts/weekly/test/collect-2-serpapi.test.mjs`,
+  `scripts/weekly/test/core-2-cost-llm.test.mjs`, `scripts/weekly/lib/project.mjs`,
+  `scripts/weekly/test/project.test.mjs`.
+- **Lane C** (root): `scripts/weekly/lib/validate.mjs`, `scripts/weekly/lib/schemas.mjs`,
+  `scripts/weekly/lib/select.mjs`, `scripts/weekly/lib/collectors/history.mjs`,
+  `scripts/weekly/lib/reconcile.mjs`, `scripts/weekly/reconcile.mjs`,
+  `scripts/lib/facebook-insights.mjs`, `scripts/weekly/lib/prompts/plan.system.md`,
+  `scripts/weekly/test/validate.test.mjs`, `scripts/weekly/test/select.test.mjs`,
+  `scripts/weekly/test/collect-2-history.test.mjs`,
+  `scripts/weekly/test/core-3-notify-reconcile.test.mjs` (B gets a serialized T1 handoff).
+- **Phase 0**: lane G owns its GBP file set (4.1); lane F owns the boost ledger; lane S
+  temporarily owns its B/C subset (4.3) and hands back before the root-task waves (7.1).
+- **Phase 2**: L = `scripts/classify-electrical.mjs` (+ its new test); P =
+  `scripts/lib/photo-selection.mjs`(+test), `scripts/lib/gbp-paths.mjs`(+test),
+  `scripts/gbp-photo-pick.mjs`, `scripts/sync-photos-from-drive.mjs` if ingestion changes,
+  `scripts/mav-bridge.mjs` photo block, `scripts/gbp-worker.mjs` media block after G handback;
+  `scripts/gbp-media-sync.mjs` inspect-only (gallery upload, not archive rename);
+  conditional P archive/planned-media consumer scope after G handback and Carter approval:
+  `scripts/lib/gbp-runner.mjs` (`markGbpPostedAndArchive` media block) +
+  `scripts/lib/gbp-runner.test.mjs`, `scripts/sync-gbp-schedule.mjs` media-path block +
+  `scripts/sync-gbp-schedule.test.mjs`; G retains status/auth paths. F = `scripts/fb-photo-pick.mjs`,
+  `scripts/facebook-poster.mjs`, `scripts/fb-photo-rewrite.mjs`, `scripts/fb-boost-ledger.mjs`(+test).
+  Root `run.mjs`, prompt, and validator stay under B/C even for T22 work. Coordinator serializes
+  shared tests/docs/runner.
+
+### 7.4 T22 — label-aware shadow media (complete task)
+
+- **Outcome:** the shadow plan prompt sees label descriptions; the validator checks
+  label/service compatibility; after cutover the bridge/worker preserve shadow-planned media
+  instead of overwriting. No silent auto-enable of optional labels.
+- **Files → owner:** `scripts/weekly/lib/prompts/plan.system.md` + `scripts/weekly/lib/validate.mjs` → C; `scripts/mav-bridge.mjs` photo block and `scripts/gbp-worker.mjs` media-preservation block → P after G handback (one writer each); `scripts/weekly/run.mjs` inventory plumbing → B; C owns `scripts/weekly/test/validate.test.mjs`, B owns `scripts/weekly/test/e2e-offline.test.mjs`, P owns `scripts/gbp-worker.test.mjs` and `scripts/lib/photo-selection.test.mjs` (serialize shared tests).
+- **Depends on:** accepted P2.1 labels + P2.3 selectors; T13/T14 validation rules.
+- **Checks:** `scripts/weekly/test/validate.test.mjs` label/service incompatibility;
+  `scripts/weekly/test/e2e-offline.test.mjs` planned-media inventory/preservation;
+  `scripts/gbp-worker.test.mjs` worker preservation and `scripts/lib/photo-selection.test.mjs`
+  quality, unknown-history, fallback and reservation cases. Include
+  `scripts/seo-watchdog.test.mjs` in the assembled Node check if watchdog is touched.
+- **Gate:** owner approval; timing per 8.1 split recommendation.
+
+### 7.5 T23 — sustainable quota/capacity owner gate (complete task)
+
+- **Outcome:** a live-run gate coupled to pending Decision 3 and D2: before any live run, check
+  fresh remaining quota, valid cache, and planned consumption against the forecast (80 calls ×
+  4-5 attempts/month exceeds the 250 free plan, plus every live rehearsal/probe). Optional
+  policy edits are lane B's file only. **No implied purchase authority; the paid tier is
+  Carter's decision.** The reported 10/5 renewal alone cannot fund a 10/2 run.
+- **Files → owner:** `FRIDAY-RUNBOOK.md` capacity check → A;
+  `config/weekly-policy.json` optional approved policy edit → B. No new runtime service.
+- **Depends on:** S2/S3 quota evidence; Decision 3.
+- **Checks:** the pre-live quota/capacity readback recorded before each live run.
+- **Gate:** owner approval for any live run and any paid tier.
+- **T5 live acceptance:** reuse the first candidate cold-Friday collect as the live acceptance
+  when all invariants are observed (no publish, no warm-cache reuse); **no extra 80-call
+  rehearsal by default**.
+
+## 8. Schedule — dependency-driven, with one recorded split
+
+### 8.1 T22 timing — a NEW Carter decision; the team records a split, not a default
+
+- **Position A (Karen + Darren):** finish and freeze T22 **before** the two qualifying Fridays
+  and cutover, so the pair exercises the final media contract.
+- **Position B (Grok):** carry the current filename-based contract to cutover as an explicit
+  known gap, unless Carter requires labels at cutover.
+- Both are proposals; **Carter chooses before cutover.** All three reviewers agree on what
+  surrounds the choice:
+  - The actual photo contract to be used at cutover is **frozen before the first qualifying
+    Friday**.
+  - A later material generation/validation/media change **resets the clean-Friday pair**;
+    compatible bugfixes continue only with a recorded comparability note and targeted checks.
+  - Baseline Fridays never grandfather untested final behavior.
+
+### 8.2 Dates follow completion, not the calendar
+
+- No promised 9/28-30 completion; the original wave dates are aspirational and overloaded.
+  Priority: safety first, then dependency-complete root/auth/media waves (max 3 disjoint
+  workers). Real accepted completion + freeze + capacity control set the dates.
+- **10/2 + 10/9** is the earliest *illustrative* clean pair, only if both Fridays are ready and
+  healthy; otherwise **10/9 + 10/16 or later**, same gates. Historical quota exhaustion is not a
+  guaranteed 10/2 failure, and a no-purchase decision is not a categorical degraded verdict —
+  each Friday is judged on fresh quota, valid caches, and the full required-source gate (T23).
+- **First production Friday is derived from the actual approved cutover**, not from a stale
+  10/2 date.
+
+### 8.3 Clean-Friday definition (unchanged gate, never bent)
+
+Two consecutive genuinely clean Fridays, each requiring: every required source present with
+**at least one `ok` observation** — a source with zero rows is not health — and no
+`unavailable`/`error` rows · attempt `status: succeeded` with `finished_at` set, no stage left
+`running`, lease released · runtime < 600 s and collect < 180 s · validation 0 errors with
+warnings read · exact 7 GBP / 4 FB counts at the actual Friday-derived dates (the week_of
+Monday table) with identical round-trip · under budget with requested=served model · health
+block valid and fresh · alert delivered (receipt + channel) · memory freshness (`last_success_at`
+< 2 days) · **Carter's recorded content verdict (root decision 12)**. A `degraded` attempt is
+never clean. Missing-attempt and pending-approval are different states; only approval pauses.
+
+## 9. Verification (all future/L3; nothing has run)
+
+- Per change set: the assembled single Node command (4.4) + `npm run lint` + Python checks when
+  a `.py` file changed + one offline run with isolated out/store paths. No new frameworks; no
+  fixture trees.
+- G3: ownership/handoff coverage **beyond login** (release → takeover → idle → gated resumption),
+  plus the stuck-poll/busy case.
+- Media: concurrency (no double reservation), idempotent reruns, 8-week no-reuse across
+  platforms, hash migration, archive-rename safety, pending-reference protection — cases in
+  `scripts/lib/photo-selection.test.mjs` plus the G4 fixtures in `scripts/lib/gbp-paths.test.mjs`.
+- T22: targeted final-contract acceptance once the cutover photo contract is frozen.
+- `scripts/gbp-photo-pick.mjs --dry-run` is **not called safe** until the no-write/no-network
+  preview fix lands; the driver dry-run is unaffected (returns before browser launch).
+- Alert checks assert receipt **and** delivery.
+
+## 10. Rollback
+
+- **Code:** scope rollback to the reviewed patch per lane or an explicit fix-SHA allowlist;
+  preserve pre-existing work and root-plan fixes (the entry-guard and observation-id fixes are
+  never reverted). No blanket `git checkout` of files; no range reverts that mix unrelated
+  commits. After commit, revert only the identified lane commit under normal approval
+  boundaries. Disk rollback does not reload workers — any reload is a separate approved live
+  step.
+- **GBP:** owner-safe handoff — settle active work, stop the verified instance with lifecycle
+  approval, confirm ownership released; the other worker exclusively reacquires, passes a probe,
+  and is approved to resume. `MAV_BRIDGE_GBP` off during recovery. Never probe concurrently.
+- **Database:** before-images and conditional-update evidence retained; restoring a status does
+  **not** undo an external post — verify external results before rollback/retry; ambiguous
+  outcomes get review, never an automatic reset.
+- **Legacy SerpApi:** `SEO_LEGACY_SERPAPI=1` restores the tool.
+- **Media:** reverse moves from the hash move log (moves only, no deletes).
+- **Credentials/state:** never committed; any exposure is an immediate owner escalation.
+
+## 11. Guardrails
+
+- The legacy claims/gates/observability layer stays frozen until its own retirement session
+  (S7). No new frameworks. `local-llm` never started; port 8080 never bound; no AIWA/Proxmox
+  work. Agents never enter passwords or sign in to Google. No posting, deleting, boosting, or
+  row resets without Carter's yes for that specific action. No pm2 CLI from agent shells. No
+  commits or pushes unless Carter asks; session close is not commit authority.
 
 ---
 
-## 2. Findings, group A: delivery and observability (why Carter got nothing)
-
-Each finding: **Evidence**, **Cause / anchor**, **Required outcome**, **Verify**, **Tests**.
-
-### A1. The wrapper never asks for the alert
-
-- **Evidence:** `outputs/weekly-shadow-2026-09-11.log` shows the launch as
-  `run.mjs --mode shadow --week-of 2026-09-14`. No `--notify`. The Supabase attempt row for
-  `...65f703` has no `notify:*` stage. Carter had to ask for the results two days later.
-- **Cause / anchor:** `scripts/run-weekly-seo.py:296` builds the command without `--notify`.
-  `run.mjs:734` only notifies when the flag is present. `lib/notify.mjs` is complete and tested.
-- **Required outcome:** every shadow (and later `new`) run sends one attempt-bound alert on
-  `succeeded`, `degraded`, and `failed`, carrying topic, counts, validation result, runtime,
-  spend, and the summary path. Idempotent per attempt and event (the receipt mechanism exists).
-- **Verify:** `seo_attempts.stages` has `notify:<event>` with `status: ok` and `error: via hermes`;
-  Carter receives it on the Friday.
-- **Tests:** none new; `core-3-notify-reconcile.test.mjs` already covers notify.
-- **Related:** secondary channels are dead (inbox 9/11, open thread 7): SMTP returns 535 because
-  `SMTP_APP_PASSWORD` is unset, direct Slack is `account_inactive`. Hermes is the only route.
-  Decide whether to restore one backup channel (section 7, decision 1).
-
-### A2. The health file cannot tell a no-op from a success
-
-- **Evidence:** at 13:44Z on 9/11 the wrapper recorded `shadow.status = "success"` for a launch
-  that ran zero stages. The field is free text and was hand-edited afterwards.
-- **Cause / anchor:** `run-weekly-seo.py:312-321` derives status from the exit code alone and
-  writes `{status, at, log_file}`.
-- **Required outcome:** the wrapper reads `outputs/shadow/attempt.json` after the child exits
-  and writes a structured block: `attempt_id`, `status` (from the attempt, not the exit code),
-  `week_of`, `started_at`, `finished_at`, `runtime_s`, `spent_usd`, `summary_path`,
-  `log_file`. If no attempt for the expected `week_of` was written after launch time, status is
-  `failed (no attempt written)`. Never `success` without an attempt id.
-- **Verify:** run `--mode offline` through the wrapper path and inspect the block; simulate a
-  no-op child (exit 0, no attempt) and confirm `failed`.
-- **Tests:** one Python test in `tests/test_friday_fixes.py` for the no-op case. It guards a
-  silent failure, so it qualifies.
-
-### A3. Monitor and watchdog are blind to the shadow run
-
-- **Evidence:** `grep -i shadow scripts/seo-monitor.mjs scripts/seo-watchdog.mjs` returns
-  nothing. Rebuild plan S5 said "monitor and watchdog read attempts"; that part did not land.
-- **Cause / anchor:** both scripts key everything on the legacy `status` in
-  `outputs/weekly-runner-health.json` (`seo-watchdog.mjs:56`, `seo-monitor.mjs:55`).
-- **Required outcome:** on run day the watchdog also checks the `shadow` block from A2:
-  missing after the legacy run succeeded (shadow no-show), `failed`, `running` for more than the
-  wrapper timeout (hung), and success without a notify receipt (notify miss). Same alert path
-  as the legacy checks. After cutover the same checks apply to the `new` mode.
-- **Verify:** feed the watchdog a health file for each case and see the four alerts.
-- **Tests:** the watchdog has none today; add none unless a pure function is extracted, in
-  which case one table test for the four states is enough.
-
-### A4. There is no review surface
-
-- **Evidence:** rebuild plan section 5 says Carter reviews the shadow plan "in the Marketing
-  Control dashboard or the Markdown export". Neither MCC nor `marketing-control/` reads
-  `seo_attempts` or `outputs/shadow/`. The Markdown export exists but nothing points Carter at it.
-- **Required outcome:** decide the review surface (section 7, decision 2). Recommended: the A1
-  alert carries the summary path and a five-line digest, and `summary.md` is the review document.
-  A dashboard card is out of scope per rebuild plan section 7 unless Carter says otherwise.
-- **Tests:** none.
-
-### A5. Compare report cosmetics
-
-- **Evidence:** `outputs/shadow/compare.md` says the attempt is `running` and "not finished at
-  compare time" because compare runs before finish (`run.mjs` order), and "Legacy runtime and
-  spend: not recorded by the legacy pipeline" even though the wrapper logs the research duration
-  (678 s on 9/11).
-- **Anchor:** `lib/compare.mjs:220-238`.
-- **Required outcome:** compare renders after the attempt is finalized, or the attempt section
-  is re-rendered at finish. The wrapper passes the legacy research duration (and spend if known)
-  so the comparison is two-sided.
-- **Tests:** none new; `stage.compare.test.mjs` exists, adjust only if its assertions change.
-
----
-
-## 3. Findings, group B: runtime and cost
-
-### B1. Cold-cache SerpApi collect alone exceeds the 10-minute criterion
-
-- **Evidence:** week 1 (healthy PC, cold cache): collect 734 s of a 755 s run, 79 live calls.
-  9/11 attempt 4 collected in 14 s only because attempts 2 and 3 had warmed the cache.
-  `config/weekly-policy.json`: `serp.max_calls` 80, `cache_days` 5 (so every Friday is cold by
-  design), `rotate_weekly` true. Rebuild plan section 4 said 60 calls and a 7-day cache.
-- **Cause / anchor:** `lib/collectors/serpapi.mjs:487-545` awaits each call in series;
-  `DEFAULT_TIMEOUT_MS` 30 s (line 40). Worst case 80 x 30 s = 40 min, over the wrapper's 30-min
-  kill (`run-weekly-seo.py:308`).
-- **Required outcome:** collect finishes in under 3 minutes on a cold cache with a healthy
-  network. Bounded concurrency (4 to 6 in flight), the same per-call timeout, plus a total
-  collect deadline after which remaining queries are recorded `unavailable` with a note and the
-  run continues `degraded`. Cache and cap semantics unchanged (a live call is metered when the
-  2xx arrives, cached hits never count).
-- **Verify:** one live shadow run on a cold cache shows `collect` under 3 min in
-  `attempt.json.stages`; the rotation still covers every query every 3 weeks.
-- **Tests:** the collector has unit tests with an injected `fetchImpl`; extend one to assert
-  the in-flight bound and the deadline. That is a contract change, so it qualifies.
-- **Decision:** whether to move to the section 4 numbers (60 calls, 7-day cache) or keep
-  80 and 5 (decision 3).
-
-### B2. A killed run leaves the attempt `running` and the lease held
-
-- **Evidence:** attempt `...329070` on 9/11 was killed by hand at 34 min and had to be marked
-  failed by hand in Supabase; its `collect` stage still says `running`. The wrapper's 30-min
-  timeout would do the same to a scheduled run.
-- **Anchor:** `run-weekly-seo.py:308-314` (timeout kills the child), `run.mjs` has no signal
-  handler; `lib/attempt.mjs` `finishAttempt` is only reached on the normal path.
-- **Required outcome:** on SIGTERM/SIGINT/timeout the orchestrator finalizes the attempt as
-  `failed` with the reason and releases the lease; if the child cannot, the wrapper patches the
-  attempt record itself. The 30-min lease TTL already bounds the damage but the record must be
-  truthful.
-- **Verify:** start an offline run, kill it mid-collect, confirm the file-store attempt says
-  `failed` and the lease file is gone.
-- **Tests:** one e2e-offline case for the kill path if a handler is added (silent failure guard).
-
-### B3. Model identity is not pinned and the served model is not what was requested
-
-- **Evidence:** `WEEKLY_MODEL` is not set in `.env`. `run.mjs:557` falls back to
-  `policy.models.generate` = `deepseek-chat`. The API response reported `deepseek-flash`
-  (`outputs/shadow/meter.json` entries), and `policy.pricing` has no `deepseek-flash` entry, so
-  the meter priced it through the fallback model. Rebuild plan section 4 requires an explicit
-  model id in `.env` verified by a one-token probe in preflight; there is no probe today (only a
-  key-presence check).
-- **Required outcome:** `WEEKLY_MODEL` set explicitly; pricing entries for every model the API
-  can report; the meter records both requested and served model and warns when they differ;
-  the wrapper preflight makes one tiny metered call and fails the run early on auth or model
-  errors. Which model to pin is decision 4.
-- **Verify:** `meter.json` entries show requested and served ids; preflight log line.
-- **Tests:** `cost-meter` has tests; extend one for the served-model pricing path only if the
-  record shape changes.
-
-### B4. Budget after cutover
-
-- **Evidence:** rebuild plan section 4: `WEEKLY_BUDGET_USD` 20 during shadow, 5 after cutover.
-  Actual spend is $0.19 to $0.82. No defect; the execution plan should schedule the change of
-  ceiling for the cutover session and confirm the refusal-to-start path is exercised offline.
-
----
-
-## 4. Findings, group C: selection quality
-
-### C1. The winner was chosen on a single impression
-
-- **Evidence:** `outputs/shadow/summary.md`, winner scores: demand 0.20 (all of it the
-  People-Also-Ask bonus; 1 impression in 28 days against a max of 485), opportunity 1.00 (one
-  impression at position 11, plus the local-pack bonus). 103 of 250 candidates had 10 or more
-  impressions; the runner-up had 32.
-- **Cause / anchor:** `lib/select.mjs:541-543` computes opportunity from the impressions-weighted
-  position with no minimum sample; `opportunityFromPosition` (line 116) is a step function
-  (1.0 / 0.6 / 0.3 / 0). The only minimum-impressions threshold in the file is
-  `ctr_min_impressions: 10` (line 75) and it applies to performance, not opportunity.
-- **Required outcome:** a new threshold `opportunity_min_impressions` (default 10, overridable
-  under `policy.selection`) below which the position evidence is treated as no data (score
-  `opportunity_no_data`, rationale says "insufficient impressions"). Consider scaling the
-  in-range score by sample size instead of a hard step; the execution plan may propose either,
-  Carter picks (decision 5). The rationale text must state the sample size, as it does today.
-- **Verify:** re-rank the 9/11 inputs offline (`outputs/shadow/observations.jsonl` and
-  `selection.json` are on disk; `rankCandidates` is pure) and show the new top 5 next to the old.
-- **Tests:** `select` has fixture tests; one case for the floor. Contract change, qualifies.
-
-### C2. The performance signal is a constant for most candidates
-
-- **Evidence:** performance = 0.50 ("no performance data") for the winner and 150 of 250
-  candidates. `performance_observations` has 884 rows written by reconcile and nothing reads
-  them: `grep -rl performance_observations scripts src` returns only the reconcile files and
-  their test. Selection instead joins the live 28-day Facebook collector (18 posts) to history
-  by `platform_post_id` and uses Search Console CTR (`select.mjs:446-490`).
-- **Required outcome:** decide (decision 6) between (a) the history collector also reading
-  matured 7/28-day rows from `performance_observations` so selection uses the memory layer the
-  rebuild built, or (b) declaring the table post-cutover only and documenting that. Recommended: (a),
-  because it is the only path by which "did last week's post help" reaches next week's choice.
-- **Tests:** if (a), one history-collector fixture case.
-
-### C3. Facebook insights are unavailable for most posts
-
-- **Evidence:** in `performance_observations`, 12 of 19 Facebook posts are `unavailable` for
-  every metric. All 12 have bare numeric ids; all 7 `ok` posts have the `pageid_postid` form.
-  The 9/11 reconcile log: `video fields failed (400): (#100) Tried accessing nonexisting field
-  (views)`.
-- **Cause / anchor:** `weekly_posts.platform_post_id` stores a video id for video rows (the
-  bridge stores it that way, inbox 9/11) and the client requests `{id}/insights` with post
-  metrics (`scripts/lib/facebook-insights.mjs:172,191`); the video fallback in
-  `scripts/weekly/reconcile.mjs:48-58` asks for a field the Graph version rejects.
-- **Required outcome:** every published post yields at least reach/impressions and one
-  engagement metric: use the `pageid_id` form where a bare id is stored, and a video insights
-  path that the page token can read (or record `not_mature`/`unavailable` with the precise
-  reason). Then `node scripts/weekly/reconcile.mjs --retry-unavailable` backfills.
-- **Verify:** after the backfill, `unavailable` rows for the 12 posts are replaced by values.
-- **Tests:** `core-3-notify-reconcile.test.mjs` covers the reconcile writer; add one case only
-  if the id-normalization is a new pure function.
-
-### C4. Plan items never link to performance (post-cutover contract)
-
-- **Evidence:** every `performance_observations.plan_item_id` is null. By design pre-cutover:
-  reconcile links by `plan_items.projected_ref` (`lib/reconcile.mjs:115-118`) and shadow never
-  projects. Search Console rows are always null (`lib/reconcile.mjs:174`).
-- **Required outcome:** the S7 projection must write `projected_ref` in the exact form the
-  reconcile join expects (the Facebook Graph post id as stored by the bridge, the GBP post id
-  once the poster reports one). Search Console page rows should link to website items by
-  `target` URL. This is a cutover-session requirement, not a shadow fix; the execution plan
-  records it so S7 does not miss it.
-
-### C5. Reconcile is not scheduled
-
-- **Evidence:** `outputs/weekly-reconcile-2026-09-11.log`: "manual reconcile (task not
-  registered)". `scripts/setup-scheduled-tasks.ps1:121` registers 'Grizzly SEO Reconcile' but
-  must be run from an elevated shell by Carter.
-- **Required outcome:** Carter runs the setup script once (owner action, decision 7 lists it);
-  until then the execution plan schedules a manual daily run and the watchdog (A3) alerts when
-  the last reconcile is older than 2 days.
-
----
-
-## 5. Findings, group D: generation and validation quality
-
-### D1. Boost over-allocation fails the week instead of being corrected
-
-- **Evidence:** 9/11 attempt 3 failed: "boost YES rows total $90 (day 1 $10x5 + day 5 $40x1),
-  must equal $50" after the single regeneration. The prompt already spells out the arithmetic
-  (`plan.system.md:150-153`). Attempt 4 happened to comply.
-- **Cause / anchor:** the only correction path is one model regeneration (`run.mjs:641-660`,
-  `generate.mjs:453-463`). Money arithmetic is left to the model.
-- **Required outcome:** code owns the arithmetic. A deterministic normalizer runs before
-  `validatePlan`: keep the model's YES decisions (at most `FB_MAX_YES_ROWS`), then set
-  `daily_usd` and `days` so the YES rows sum exactly to `policy.boost_weekly_usd` (for n YES
-  rows: `budget / n` per day for 1 day, or an allocation table in policy); clear dollars on
-  MAYBE/NO rows; write a validation warning "boost normalized from $X" so the summary shows it
-  happened. The validator stays as the backstop. Regeneration is reserved for non-arithmetic
-  errors.
-- **Verify:** feed the attempt-3 plan (`plan_revisions` `...fbeb8b-r1`) through the normalizer
-  offline and confirm it validates.
-- **Tests:** one unit case for the normalizer with the $90 example (silent-failure guard:
-  without it a whole Friday is lost). Qualifies.
-
-### D2. Invented job anecdotes in Facebook copy
-
-- **Evidence:** 9/11 plan, FB day 3 hook: "We opened a panel in Rowlett last week and found
-  three breakers labeled with nothing but a Sharpie squiggle." FB day 5 hook: "Before: a
-  Garland bedroom with one outlet behind the dresser. After: outlets where the furniture
-  actually goes." Neither job exists in the facts or the photos. `plan.system.md:66-68`
-  already forbids "we just finished" stories the photos do not show, so this is a compliance
-  failure, not a missing rule.
-- **Required outcome:** (a) the prompt names the pattern explicitly with a forbidden and an
-  allowed example ("We opened a panel in Rowlett last week..." forbidden; "When a panel has
-  breakers labeled with a Sharpie squiggle..." allowed), and states that Before/After format
-  requires photos that show before and after; (b) `validate.mjs` gains a text rule that flags
-  first-person past-tense job claims ("we opened", "we found", "we added", "last week",
-  "yesterday", "Before:" without two photos) as an error, so the regeneration path corrects it;
-  (c) optional and off by default: a cheap LLM-judge pass. Whether any anecdote is ever
-  acceptable voice is decision 8.
-- **Verify:** the 9/11 plan fails the new rule on days 3 and 5; the 9/06 plan is checked too.
-- **Tests:** one table test for the new text rule (it is a validator contract). Qualifies.
-
-### D3. Carousel with a single photo
-
-- **Evidence:** FB day 5 is `carousel` with one `photo_file`. `FbItemSchema` allows only one
-  photo; the prompt says carousel "when the topic plausibly has 2 or more related job photos"
-  (`plan.system.md:114-115`).
-- **Required outcome:** decision 9: either the validator downgrades `carousel` to `photo` when
-  the inventory has fewer than 2 photos of the service (a warning, not an error), or the schema
-  gains `photo_files[]` for carousels and the cutover projection maps them for
-  `fb-photo-pick.mjs`. Recommended: the downgrade now, the schema later if wanted.
-- **Tests:** covered by the D2 validator table test if implemented as a text/structure rule.
-
-### D4. Website actions ship without drafts and without a blog post
-
-- **Evidence:** all 3 website actions on 9/11 have `draft: null`; legacy produced a blog draft
-  the same week. `WebsiteActionSchema` allows null drafts.
-- **Required outcome:** decision 10: what the projection into `website_tasks` needs at cutover
-  (title and description only, or a draft for `website_blog_post` and
-  `website_service_page_update`). If drafts are required, the prompt must ask for them and the
-  budget ceiling checked, since drafts add output tokens.
-
-### D5. Boost targeting radius ignores the post's city
-
-- **Evidence:** FB day 5 targets Garland in the copy; `boost_targeting` says "15mi Rowlett".
-  The prompt (`plan.system.md:157-159`) says to center on the winner city.
-- **Required outcome:** rule reads "center on the city named in the post; winner city when the
-  post names none". Prompt-only change. No test.
-
----
-
-## 6. Findings, group E: scheduler path and rehearsal
-
-### E1. The scheduled path has never succeeded, and the guard fix has no automated check
-
-- **Evidence:** both successful attempts were manual. The 9/11 no-op was silent for 8 minutes
-  and would have been silent all week without a human reading the log.
-- **Anchor:** `run.mjs:798-802` now realpaths both sides. No test executes `run.mjs` through an
-  alternate path.
-- **Required outcome:** one e2e-offline case spawns `run.mjs --mode offline` via a path that
-  differs from its realpath (a junction or a relative path with `..` segments works on Windows
-  without admin rights) and asserts an attempt was written. Qualifies: it guards a silent
-  Friday failure. Plus a pre-Friday rehearsal step in the runbook: Thursday, run the wrapper's
-  shadow function in `offline` mode via the `C:\Workspace` path the scheduler uses, and read the
-  A2 health block.
-
-### E2. Confirm the scheduled task's action path
-
-- The task launches via `C:\Workspace\Active\SEO-Agents-App` (junction). After A2 and E1 this
-  is safe, but the execution plan should include one read-only check of the registered action
-  (use `Get-CimInstance`-based queries or the task XML; `schtasks` and `Get-ScheduledTask` hang
-  from sandboxed shells, see memory `gbp-driver-needs-unlocked-desktop-or-session0`).
-
-### E3. Freeze window
-
-- After the fixes land for 9/18, only bug fixes until 9/25 so the two Fridays measure the same
-  pipeline. Any change between the two runs is listed in the handoff note with its reason.
-
----
-
-## 7. Decisions needed from Carter
-
-1. **Alert channels.** Hermes only, or also restore one backup (SMTP app password, or a working
-   Slack route)? Hermes-only means a Hermes outage equals silence.
-2. **Review surface.** Markdown summary delivered by alert (recommended), or a dashboard card in
-   Marketing Control (out of scope per rebuild plan section 7).
-3. **SerpApi numbers.** Keep policy (80 calls, 5-day cache) or move to rebuild section 4
-   (60 calls, 7-day cache)?
-4. **Model to pin.** `deepseek-chat` as requested, the `deepseek-flash` the API actually served,
-   or `deepseek-v4-flash` (already priced in policy)? Quality of the two 9/11 plans came from the
-   served model.
-5. **Opportunity floor.** Hard floor at 10 impressions, or sample-size scaling?
-6. **Performance memory.** Wire `performance_observations` into selection now (recommended) or
-   post-cutover?
-7. **Owner actions.** Run `scripts\setup-scheduled-tasks.ps1` elevated to register 'Grizzly SEO
-   Reconcile'; confirm 'Grizzly SEO GBP Worker' is disabled; the GBP re-auth noted in the 9/12
-   inbox.
-8. **Anecdotes.** Never, or allowed when phrased as hypothetical ("When we open a panel and
-   find...")?
-9. **Carousel.** Downgrade to photo when fewer than 2 photos (recommended now), or multi-photo
-   schema?
-10. **Website drafts.** Required at projection or not?
-11. **Repository visibility.** Rebuild plan section 8.3 asked for private before S4. It is
-    still public. Make it private, or keep operational documents (including this one) out.
-12. **Content approval mechanism.** How Carter records "approved" for a shadow week: a reply to
-    the alert, a field on `seo_attempts`, or a line in the handoff note. The cutover criterion
-    needs a record.
-
----
-
-## 8. Proposed timeline anchors (for the execution plan to refine)
-
-| Date | What |
-|---|---|
-| Mon 9/14 to Wed 9/16 | All group A, B, D, E fixes and C1, C3 landed and reviewed. C2 if decision 6 says now. |
-| Thu 9/17 | Offline rehearsal via the scheduler path (E1); reconcile backfill (C3); freeze. |
-| Fri 9/18 08:30 | Scheduled legacy run then shadow run, unattended. Alert arrives (A1). Carter reviews `summary.md`, records approval (decision 12). |
-| 9/19 to 9/24 | Bug fixes only. Handoff note lists every change. |
-| Fri 9/25 08:30 | Second clean Friday. Same review. |
-| Week of 9/28 | Cutover session per rebuild plan S7 (projection, `--pipeline new`, legacy crews disabled, budget ceiling to $5, docs). First production run Fri 10/2. |
-
-If 9/18 is not clean, 9/25 and 10/2 become the pair and cutover slips one week. Say so in the
-handoff note rather than bending the criterion.
-
----
-
-## 9. What the execution plan must contain (instructions for the rewriting agent)
-
-Rewrite this file in place. Keep sections 1 and 7 as reference (they are the evidence and the
-open decisions). Replace sections 2 to 6 and 8 with:
-
-1. **A task list**, one task per finding or per coherent group of findings, each with: id,
-   the finding ids it closes, files to change, the exact required outcome copied or tightened
-   from here, acceptance check, worker model tier from 0.3, reviewer (frontier), and whether a
-   test is added under the 0.3 test rule (name the test file and the single case).
-2. **Dependencies and order.** A2 before A3; A1 before the 9/18 run; D1 and D2 before 9/18
-   because they change plan output; B1 before 9/18 because runtime is a criterion; C2 only if
-   decision 6 says now; C4 and D4 go to the cutover session.
-3. **The decisions block** with Carter's answers filled in once given. Tasks blocked on a
-   decision say so and carry the recommended default so work can start.
-4. **Orca run shape**: how many workers, which terminals, what the coordinator reviews, and the
-   single test command per change set. Check `orca status --json` before dispatch.
-5. **Verification for each Friday** (a checklist an agent can execute Friday 09:30): alert
-   received, health block valid, attempt `succeeded` under 10 min, validation clean, counts 7/4,
-   spend, `compare.md` present, no `unavailable` sources, approval recorded.
-6. **Rollback**: every change is on `main` behind `SEO_PIPELINE=shadow`; the legacy chain is
-   untouched until S7; list the commit range to revert if 9/18 regresses.
-7. **Out of scope** restated: GBP poster session and photo problems, Facebook publisher
-   internals, boosting execution, Thumbtack, dashboards, hosting (rebuild plan section 7).
-
-Do not start execution while rewriting. Do not commit or push unless Carter asks.
-
----
-
-## Appendix: evidence pointers
-
-- Attempt ids (Supabase `seo_attempts`, week 2026-09-14): `2026-09-14-20260911T135204Z-329070`
-  (killed), `2026-09-14-20260911T143357Z-f258a6` (duplicate id), `2026-09-14-20260911T154352Z-fbeb8b`
-  (boost validation), `2026-09-14-20260911T155500Z-65f703` (succeeded, git 297bb82).
-  Week 2026-09-07: `2026-09-07-20260906T115708Z-760a01`.
-- Revisions: `...fbeb8b-r1` (validation.ok false, the $90 boost plan), `...65f703-r2` (ok).
-- Observations for `...65f703`: search_console 2943, facebook 18, serpapi 80, history 216, all ok.
-- `performance_observations`: 884 rows on 2026-09-13; Facebook 7 ok / 12 unavailable posts;
-  Search Console 70 pages (7d) and 88 pages (28d); `plan_item_id` null on every row.
-- Local artifacts (gitignored): `outputs/shadow/{summary,compare}.md`, `plan.json`,
-  `selection.json`, `revision.json`, `observations.jsonl`, `meter.json`;
-  `outputs/weekly-shadow-2026-09-11.log`; `outputs/weekly-runner-health.json`.
-- Memory notes: `scheduled-node-scripts-c-vs-d-junction-guard`,
-  `gbp-driver-needs-unlocked-desktop-or-session0`, `seo-shadow-friday-report-expected`,
-  `workbench-per-user-services-crash-on-session-handoff` (why 9/11 attempts 1-2 stalled).
+**Final status: PROPOSED — integrated plan for Carter's review. Implementation requires his
+separate explicit approval. Inputs unmodified; no checks executed; all verification in this
+document is future work.**
