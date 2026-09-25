@@ -25,6 +25,19 @@ export function loadProjectEnv(projectRoot) {
   }
 }
 
+/**
+ * Canonical Graph node id for a stored `platform_post_id`. A page-scoped id
+ * ("<pageId>_<postId>") passes through unchanged; a bare post id gets the page
+ * prefix only when the page id is known. Nothing is invented: with no page id the
+ * id is used exactly as stored, and Graph decides whether it resolves.
+ */
+export function normalizePostId(postId, pageId) {
+  const id = String(postId == null ? '' : postId).trim();
+  if (!id || id.includes('_')) return id;
+  const page = String(pageId == null ? '' : pageId).trim();
+  return page ? `${page}_${id}` : id;
+}
+
 function dateDaysAgo(days) {
   const date = new Date();
   date.setUTCDate(date.getUTCDate() - days);
@@ -189,7 +202,7 @@ export function createFacebookClient({ pageId, accessToken, apiVersion = 'v22.0'
   }
 
   async function postPerformance({ postId }) {
-    const post = await get(postId, {
+    const post = await get(normalizePostId(postId, pageId), {
       fields: 'id,message,created_time,permalink_url,attachments{media_type,type},comments.limit(0).summary(true),reactions.limit(0).summary(true),shares',
     });
     return summarizePost(post, await postInsights(post));

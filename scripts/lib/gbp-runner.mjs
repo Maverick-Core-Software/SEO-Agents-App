@@ -51,6 +51,17 @@ export function gbpCrashUnverifiedMessage(exitCode) {
   return `GBP poster/verify crashed (exit ${exitCode}) — treat as unverified. Check the live listing before retrying; do not auto-repost.`;
 }
 
+// Exit 5 = the driver's content-policy gate refused the post before the composer
+// opened (policy-check.mjs). It is never a post and never a scheduling success:
+// keep the violation detail so the operator can fix the caption/photo.
+export function gbpPolicyViolationMessage(parsed = {}) {
+  const detail = String(parsed.error || '').trim();
+  if (detail) return detail;
+  const count = Array.isArray(parsed.violations) ? parsed.violations.length : 0;
+  const suffix = count ? ` (${count} violation${count === 1 ? '' : 's'})` : '';
+  return `GBP content policy blocked this post${suffix} — fix the caption/photo before re-posting.`;
+}
+
 // Map a driver exit code to the weekly_posts update intent. `archive: true` means
 // the caller should also run markGbpPostedAndArchive. Exit codes (driver.mjs):
 //   0 = posted+verified, 3 = submitted-unverified, 4 = approval-gate-unset, else = error.
@@ -94,6 +105,9 @@ export function gbpDailyStatusForExit(exitCode, parsed = {}) {
       archive: false,
       platform_post_id: null,
     };
+  }
+  if (exitCode === 5 || result === 'policy_violation') {
+    return { status: 'error', error: gbpPolicyViolationMessage(parsed), archive: false, platform_post_id: null };
   }
   if (exitCode === 0 && result !== 'failed' && result !== 'needs_approval' && result !== 'policy_violation' && result !== 'scheduled_native') {
     // Submitted, not yet confirmed live. archive=false keeps the workbook Posted
@@ -142,6 +156,12 @@ export function gbpScheduleStatusForExit(exitCode, parsed = {}) {
   }
   if (failureReason === 'data') {
     return { status: 'error', error: failureDetail || 'GBP poster rejected the post data before submission.' };
+  }
+  // Content policy is a hard stop, never the legacy daily fallback: a caption that
+  // Google refused once would be rejected again (and the refusal disables posting
+  // profile-wide), so exit 5 must alert with the violation, not look 'scheduled'.
+  if (exitCode === 5 || result === 'policy_violation') {
+    return { status: 'error', error: gbpPolicyViolationMessage(parsed) };
   }
   if (exitCode === 0 || result === 'scheduled_native') {
     return { status: 'scheduled_native', error: null };

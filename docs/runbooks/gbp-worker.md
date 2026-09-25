@@ -49,20 +49,68 @@ in three steps:
 
 The worker imports its code at startup — a merged fix does nothing until restart.
 
-## Verify it's working
+## Session probe (the safe wiring check)
 
-    node C:\Workspace\Active\SEO-Agents-App\scripts\gbp-worker.mjs --once
+    node scripts/gbp-worker.mjs --probe-only
 
-A clean exit with `[gbp-worker] --once complete` and no stack trace means the wiring is
-healthy. Real posting only happens when there are approved/scheduled `gbp` rows.
+Opens the saved profile and runs the same login/interstitial check the poster uses,
+requires the Posts / Add-update control, records `state/gbp-session-health.json`, and
+exits — no approved-row claims, no daily path, no composer, no schedule row, no browser
+left open. Exit 0 = session usable, 2 = not usable; the reason
+(`logged_out` | `captcha` | `timeout` | `unknown`) is in the log and in the health
+record, which carries the timestamp, the probing PID, the worker context
+(`probe-only` / `startup` / `daily`) and the reason — a record from a dead PID or an
+old timestamp is not evidence about the current session.
+
+The long-running worker probes the same way at startup and daily at 08:00 Central,
+under its existing pidfile ownership. A failed probe sends one alert and gates
+approved-row claims, the 9am daily post, and Grok-verdict retries; the worker then
+releases the pidfile — only after the browser and the current pass have settled — and
+idles. An idling worker never touches another process's pidfile, profile, or health
+record, and it resumes only by reacquiring the pidfile exclusively **and** passing a
+fresh probe.
+
+`--once` runs one full poll pass, so it can claim approved rows, post, and retry — use
+it only when you intend that. `--probe-only` is the safe way to check the wiring.
+Tuning knobs: `GBP_SESSION_PROBE_MS` (probe timeout, default 300000) and
+`GBP_SESSION_PROBE_BACKOFF_MS` (minimum gap between retries of a failing probe,
+default 900000).
 
 ## Re-authenticate the Google session
 
-When a GBP post fails with authentication errors (e.g. `invalid_grant`), re-auth via OAuth:
+When a post or the probe reports `session_expired` / `logged_out` (the driver also
+reports this when Google shows the logged-out Business Profile marketing page), sign in
+again interactively in the user session:
 
-    node scripts/authorize-gbp.mjs
+    node scripts/gbp-poster/driver.mjs --auth
 
-Log into the Google Business Profile owner account (`carterbarns@grizzlyelectrical.net`) in the browser tab that opens to refresh `C:\Users\carte\gmail-multi\tokens\grizzly-gbp.json`.
+Sign in as the GBP profile owner in the browser window that opens, then close the
+window. The saved profile directory is `USER_DATA_DIR` in
+`scripts/gbp-poster/driver.mjs` and is shared with the poster — never run `--auth`
+while the worker is posting, and never point another tool at that profile. Confirm the
+fix with the probe:
+
+    node scripts/gbp-worker.mjs --probe-only
+
+`--auth` refreshes the Playwright session. The OAuth/token path
+(`node scripts/authorize-gbp.mjs`) belongs to `GBP_POSTER=api` mode and does not refresh
+the browser session.
+
+## Recovery: stuck pass, or an alerting worker
+
+A `[gbp-worker][alert] ... GBP worker pass stuck` alert means a poll pass has been busy
+past the ceiling. The worker now fails closed: it runs no further pass, claim, or probe
+until that pass settles, because clearing the busy flag while a Playwright browser or a
+driver child could still be alive is how a duplicate post happens. The alert names the
+worker PID — verify the command line before killing anything, then restart the task with
+the three steps above. A restart probes before it posts, so it cannot post on a stale
+session.
+
+A `GBP session probe failed` alert needs no immediate action beyond re-authenticating;
+the worker is gated, not broken, and it resumes on its own once a probe passes. Do not
+force it by deleting the pidfile or restarting into a second instance while the first is
+alive — the pidfile is the mutual exclusion that keeps two browsers off the shared
+profile.
 
 ## Rollback (put GBP back on the service)
 

@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   validatePlan, findPhoneNumbers, findDollarAmounts, dollarValue, findDomains, findTenureClaims,
-  textFactsErrors, normalizeHook, HEADLINE_WARN_CHARS,
+  textFactsErrors, normalizeHook, normalizeBoostPlan, HEADLINE_WARN_CHARS,
 } from '../lib/validate.mjs';
 import { parseFacts, loadFacts } from '../lib/facts.mjs';
 import { weekSpecForWeekOf } from '../lib/week-spec.mjs';
@@ -338,6 +338,76 @@ describe('validatePlan: boost allocation', () => {
   it('fails closed when the policy has no boost budget', () => {
     const result = run(() => {}, { policy: { cities: POLICY.cities } });
     assert.ok(has(result.errors, /^policy\.boost_weekly_usd missing/));
+  });
+});
+
+describe('normalizeBoostPlan (T12: deterministic arithmetic, model YES choices preserved)', () => {
+  const ctx = (policy = POLICY) => ({ facts: FACTS, weekSpec: WEEK, photos: PHOTOS, history: HISTORY, policy });
+  const overbudget = (raw) => {
+    raw.facebook[0].boost = { decision: 'YES', daily_usd: 30, days: 3 };
+    raw.facebook[2].boost = { decision: 'YES', daily_usd: 60, days: 1 };
+    return raw;
+  };
+  const boostErrors = (plan, policy = POLICY) => only(validatePlan(plan, ctx(policy)).errors, /boost/);
+
+  it('rewrites a raw $90 plan to the $50 budget, same YES rows, with a warning', () => {
+    const raw = overbudget(clone(PLAN));
+    assert.ok(has(boostErrors(raw), /must equal \$50/));
+    const { plan, warnings } = normalizeBoostPlan(raw, POLICY);
+    assert.deepEqual(plan.facebook.map((f) => f.boost.decision), ['YES', 'MAYBE', 'YES', 'NO'], 'no row invented, dropped or re-picked');
+    assert.deepEqual(plan.facebook[0].boost, { decision: 'YES', daily_usd: 25, days: 1 });
+    assert.deepEqual(plan.facebook[2].boost, { decision: 'YES', daily_usd: 25, days: 1 });
+    assert.deepEqual(warnings, ['facebook: boost normalized from $150 (day 1 $30×3 + day 5 $60×1) to $50 (day 1 $25 × 1, day 5 $25 × 1): days=1, integer-cent split']);
+    assert.deepEqual(boostErrors(plan), []);
+  });
+
+  it('gives the odd cent to the first YES row, and a single YES row takes the whole budget', () => {
+    const odd = { ...POLICY, boost_weekly_usd: 50.01 };
+    const two = normalizeBoostPlan(overbudget(clone(PLAN)), odd).plan;
+    assert.equal(two.facebook[0].boost.daily_usd, 25.01);
+    assert.equal(two.facebook[2].boost.daily_usd, 25);
+    assert.deepEqual(two.facebook.map((f) => f.boost.days), [1, null, 1, null]);
+    assert.deepEqual(boostErrors(two, odd), []);
+    const single = overbudget(clone(PLAN));
+    single.facebook[2].boost = { decision: 'MAYBE', daily_usd: null, days: null };
+    const one = normalizeBoostPlan(single, { ...POLICY, boost_weekly_usd: 25.01 }).plan;
+    assert.deepEqual(one.facebook[0].boost, { decision: 'YES', daily_usd: 25.01, days: 1 });
+    assert.deepEqual(one.facebook[2].boost, { decision: 'MAYBE', daily_usd: null, days: null });
+  });
+
+  it('leaves zero or more than two YES rows unchanged so validation still fails them', () => {
+    const none = clone(PLAN);
+    for (const f of none.facebook) f.boost = { decision: 'NO', daily_usd: null, days: null };
+    const zero = normalizeBoostPlan(none, POLICY);
+    assert.deepEqual(zero.plan, none);
+    assert.deepEqual(zero.warnings, []);
+    assert.ok(has(boostErrors(none), /^facebook: no boost YES row; \$50 weekly budget is unallocated$/));
+
+    const three = clone(PLAN);
+    three.facebook[1].boost = { decision: 'YES', daily_usd: 10, days: 1 };
+    three.facebook[2].boost = { decision: 'YES', daily_usd: 10, days: 1 };
+    const many = normalizeBoostPlan(three, POLICY);
+    assert.deepEqual(many.plan, three);
+    assert.deepEqual(many.warnings, []);
+    assert.ok(has(boostErrors(three), /^facebook: 3 boost YES rows \(max 2\)$/));
+  });
+
+  it('fails a residual budget it cannot express in whole cents instead of rounding it', () => {
+    const residual = { ...POLICY, boost_weekly_usd: 50.005 };
+    const raw = overbudget(clone(PLAN));
+    const { plan, warnings } = normalizeBoostPlan(raw, residual);
+    assert.deepEqual(plan, raw);
+    assert.ok(has(warnings, /not a positive cent amount; YES rows left unchanged for validation$/));
+    assert.ok(has(boostErrors(raw, residual), /must equal \$50\.005$/));
+  });
+
+  it('clears MAYBE/NO allocations and warns instead of failing the week', () => {
+    const raw = clone(PLAN);
+    raw.facebook[1].boost = { decision: 'MAYBE', daily_usd: 5, days: 2 };
+    const { plan, warnings } = normalizeBoostPlan(raw, POLICY);
+    assert.deepEqual(plan.facebook[1].boost, { decision: 'MAYBE', daily_usd: null, days: null });
+    assert.ok(has(warnings, /^facebook day 3: cleared MAYBE boost allocation \(daily_usd=5, days=2\)$/));
+    assert.deepEqual(boostErrors(plan), []);
   });
 });
 

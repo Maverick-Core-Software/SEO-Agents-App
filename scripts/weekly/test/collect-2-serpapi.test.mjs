@@ -12,6 +12,7 @@ import {
   SERPAPI_URL,
   NOTE_CAP_REACHED,
   NOTE_NO_API_KEY,
+  NOTE_QUOTA_EXHAUSTED,
   buildSerpQueries,
   buildSerpUrl,
   cacheKey,
@@ -584,9 +585,36 @@ describe('collectSerp (errors)', () => {
     assert.equal(obs.geography, 'Wylie');
     assert.match(obs.note, /SerpApi HTTP 429/);
     assert.match(obs.note, /Rate limited for key \[redacted\]/);
+    assert.doesNotMatch(obs.note, /quota_exhausted/, 'a generic 429 is not account exhaustion');
     assert.ok(!obs.note.includes(API_KEY));
     assert.equal(fs.readdirSync(cacheDir).length, 0);
     assert.deepEqual(meter.entries(), []);
+  });
+
+  it('account-exhaustion 429 → the exhausted and every later uncached query go unavailable with the quota_exhausted marker, live calls stop, cache hits survive', async () => {
+    const cacheDir = freshCacheDir();
+    const key = cacheKey(ROCKWALL_Q.query, LOCATION);
+    writeCacheEntry(cacheDir, key, { query: ROCKWALL_Q.query, location: LOCATION, fetched_at: NOW.toISOString(), response: rockwall });
+    const fetchImpl = fakeFetch({ status: 429, body: `Your account has run out of searches. (key ${API_KEY})` });
+    const meter = meterFor();
+    const observations = await collectSerp({
+      attemptId: ATTEMPT, queries: [WYLIE_Q, PLANO_Q, ROCKWALL_Q], cacheDir, cacheDays: 7, maxCalls: 10,
+      apiKey: API_KEY, location: LOCATION, now: NOW, fetchImpl, meter,
+    });
+    assert.equal(fetchImpl.calls.length, 1, 'no live call after the exhausted one');
+    assert.deepEqual(observations.map((o) => [o.scope, o.status]), [
+      [WYLIE_Q.query, 'unavailable'], [PLANO_Q.query, 'unavailable'], [ROCKWALL_Q.query, 'ok'],
+    ]);
+    observations.forEach(assertValidObservation);
+    for (const obs of observations.slice(0, 2)) {
+      assert.match(obs.note, new RegExp(NOTE_QUOTA_EXHAUSTED));
+      assert.ok(!obs.note.includes(API_KEY), 'the key never lands in a note');
+    }
+    assert.equal(observations[1].value, null);
+    assert.equal(observations[2].note, null, 'a surviving cache hit is not marked');
+    assert.equal(observations[2].value.from_cache, true);
+    assert.equal(fs.readdirSync(cacheDir).length, 1, 'nothing new cached, the valid entry kept');
+    assert.deepEqual(meter.entries(), [], 'a 429 is not billed');
   });
 
   it('a rejected fetch (network) → error observation, later queries still attempted', async () => {

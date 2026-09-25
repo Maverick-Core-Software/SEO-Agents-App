@@ -11,9 +11,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   COLLECTOR_NAMES, DEFAULT_FIXTURES_DIR, FIXTURE_FILES, MIRROR_FILES, OFFLINE_MODEL,
   availabilityBySource, collectAll, createFixtureCollectors, createFixtureLlm, formatRunSummary, listPhotoInventory,
@@ -21,13 +21,14 @@ import {
   serpQueriesForWeek, unavailableSources, unusedPhotos,
 } from '../run.mjs';
 import { createFileStore } from '../lib/store.mjs';
+import { CURRENT_ATTEMPT_FILE, createAttempt, finalizeAbandonedAttempt, publishAttemptIdentity, readAttemptIdentity } from '../lib/attempt.mjs';
 import { loadFacts } from '../lib/facts.mjs';
 import { LeaseHeld, ValidationFailed } from '../lib/errors.mjs';
 import {
   AttemptSchema, ModelPlanSchema, ObservationSchema, PlanItemSchema, PlanSchema, RevisionSchema, SelectionSchema, parseOrIssues,
 } from '../lib/schemas.mjs';
 import { addDays, weekSpecForWeekOf } from '../lib/week-spec.mjs';
-import { buildSerpQueries } from '../lib/collectors/serpapi.mjs';
+import { buildSerpQueries, collectSerp } from '../lib/collectors/serpapi.mjs';
 import { POLICY_PATH, OUTPUTS_DIR, SHADOW_DIR, STATE_DIR } from '../lib/paths.mjs';
 // Legacy parsers (supabase-sync.mjs guards its CLI with invokedDirectly; importing only reads .env).
 import { parseFacebookSchedule, parseGbpSchedule, resolveWeekOf } from '../../supabase-sync.mjs';
@@ -187,6 +188,11 @@ describe('offline end to end (fixture collectors, canned plan, no network)', () 
 
   it('validates clean against the fixture facts, photos and history', () => {
     assert.deepEqual(r.validation, { ok: true, errors: [], warnings: [] });
+    // T12: the boost normalizer ran before validation and render, and said so.
+    assert.equal(r.boostWarnings.length, 1);
+    assert.match(r.boostWarnings[0], /boost normalized from/);
+    assert.match(r.summary, /boost +1 boost normalizer warning\(s\)/);
+    for (const f of r.plan.facebook) assert.equal(f.boost.days === null || f.boost.days === 1, true, 'days=1 after normalization');
   });
 
   it('stages one revision with 7 + 4 + website items in the store', () => {
@@ -254,6 +260,14 @@ describe('offline end to end (fixture collectors, canned plan, no network)', () 
     assert.match(report, /Legacy: 0 of 11 slots off-spec/);
     assert.match(report, /Shadow: 0 of 11 slots off-spec/);
     assert.match(report, /### Shadow copy\s+_None\._/);
+    // T4: the report renders the finished attempt, not the pre-finish snapshot.
+    assert.match(report, new RegExp(`Attempt \`${r.attempt.id}\` — mode offline, status succeeded`));
+    assert.match(report, /finished \d{4}-\d{2}-\d{2}T[\d:.]+Z; runtime 0s/);
+    assert.doesNotMatch(report, /status running|not finished at compare time/);
+    assert.match(report, new RegExp(`Spend \\$0\\.00 of \\$${POLICY.budget_usd.toFixed(2)} budget`));
+    assert.match(report, /Legacy runtime and spend: not recorded by the legacy pipeline\./);
+    const attempts = report.match(/^- Attempt `/gm);
+    assert.equal(attempts.length, 1, 'one attempt block, not one per stage');
   });
 
   it('prints a one-screen summary naming the status, topic, counts and paths', () => {
@@ -347,6 +361,26 @@ describe('degraded path (every collector unavailable)', () => {
     assert.deepEqual(unavailableSources(r.availability), ['facebook']);
   });
 
+  it('SerpApi quota exhaustion degrades the plan at both generation call sites (one regeneration)', async () => {
+    const collectors = createFixtureCollectors(FIXTURES);
+    const quota429 = async () => ({ ok: false, status: 429, text: async () => 'Your account has run out of searches.', json: async () => ({}) });
+    collectors.serpapi = ({ attemptId, now }) => collectSerp({
+      attemptId, cacheDir: tmp('serp-quota-cache'), cacheDays: 7, maxCalls: 10, apiKey: 'quota-test-key',
+      location: POLICY.serp.location, now, fetchImpl: quota429,
+      queries: [{ query: 'electrical panel upgrade Rockwall', service_key: 'panel_upgrade', city: 'Rockwall' }],
+    });
+    const llm = scriptedLlm([badPhone, null]);
+    const r = await run({ legacyDir: LEGACY_DIR }, { collectors, llm });
+    assert.deepEqual(llm.labels, ['generate', 'generate'], 'the validation regeneration still ran');
+    assert.equal(r.availability.serpapi.ok, 0);
+    assert.equal(r.selection.degraded, false, 'the selection is not the source of the flag');
+    assert.equal(r.plan.notes.degraded, true);
+    assert.match(r.plan.notes.degraded_reason, /SerpApi quota exhausted/);
+    assert.equal(r.attempt.status, 'degraded');
+    assert.match(r.summary, /\[degraded\]/);
+    assert.equal(r.revision.validation.ok, true);
+  });
+
   it('collectAll drops a schema-invalid fixture row into an unavailable marker', async () => {
     const collectors = createFixtureCollectors(FIXTURES);
     collectors.serpapi = async () => [{ id: 'bad', source: 'serpapi' }];
@@ -399,6 +433,56 @@ describe('validation regeneration', () => {
     assert.equal(fs.existsSync(path.join(outDir, MIRROR_FILES.compare)), false);
     assert.match(result.summary, /status failed/);
     assert.match(result.summary, /validate {2}FAILED — 1 error\(s\)/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('boost normalization call site (T12)', () => {
+  it('normalizes a raw $90 boost plan to the $50 budget before validation and render', async () => {
+    const rawNinety = (plan) => {
+      plan.facebook[0].boost = { decision: 'YES', daily_usd: 30, days: 1 };
+      plan.facebook[1].boost = { decision: 'MAYBE', daily_usd: 10, days: 3 };
+      plan.facebook[2].boost = { decision: 'YES', daily_usd: 60, days: 1 };
+      plan.facebook[3].boost = { decision: 'NO', daily_usd: 5, days: 1 };
+    };
+    const llm = scriptedLlm([rawNinety]);
+    const r = await run({ legacyDir: LEGACY_DIR }, { llm });
+    assert.equal(r.llmCalls, 1, 'the normalizer fixes the budget, so no regeneration is needed');
+    assert.equal(r.validation.ok, true);
+    assert.equal(r.attempt.status, 'succeeded');
+    // The model's YES choices survive; only the arithmetic is rewritten.
+    assert.deepEqual(r.plan.facebook.map((f) => f.boost.decision), ['YES', 'MAYBE', 'YES', 'NO']);
+    assert.deepEqual(r.plan.facebook.map((f) => f.boost.daily_usd), [25, null, 25, null]);
+    assert.deepEqual(r.plan.facebook.map((f) => f.boost.days), [1, null, 1, null]);
+    assert.deepEqual(
+      r.plan.facebook.filter((f) => f.boost.decision === 'YES').map((f) => f.boost.daily_usd * f.boost.days),
+      [25, 25],
+    );
+    assert.match(r.boostWarnings.join(' '), /normalized from \$90/);
+    assert.match(r.boostWarnings.join(' '), /cleared MAYBE boost allocation/);
+    assert.match(r.boostWarnings.join(' '), /cleared NO boost allocation/);
+    assert.match(r.summary, /boost normalizer warning/);
+    // Render and stage see the normalized plan, not the model's raw numbers.
+    const items = readLines(path.join(r.storeDir, 'items', `${r.revision.id}.jsonl`)).map((l) => JSON.parse(l));
+    const fb = items.filter((i) => i.platform === 'facebook');
+    assert.deepEqual(fb.map((i) => i.content.boost.daily_usd), [25, null, 25, null]);
+    const rendered = fs.readFileSync(path.join(r.outDir, 'facebook_posting_schedule.md'), 'utf8');
+    assert.doesNotMatch(rendered, /\$90|\$60|\$30/);
+  });
+
+  it('a plan the normalizer cannot fix still fails validation unchanged (zero YES rows)', async () => {
+    const noYes = (plan) => {
+      for (const f of plan.facebook) f.boost = { decision: 'NO', daily_usd: null, days: null };
+    };
+    const llm = scriptedLlm([noYes]);
+    const storeDir = tmp('store-boost-zero');
+    const outDir = path.join(tmp('out-boost-zero'), 'shadow');
+    let error;
+    await assert.rejects(run({ storeDir, outDir }, { llm }), (e) => { error = e; return e instanceof ValidationFailed; });
+    assert.equal(error.attempt.status, 'failed');
+    assert.ok(error.errors.some((line) => /no boost YES row/.test(line)), 'the unallocated budget is still an error');
+    assert.deepEqual(fs.readdirSync(path.join(storeDir, 'leases')), []);
   });
 });
 
@@ -504,6 +588,115 @@ describe('prior-week winners from stored revisions', () => {
 
 // ---------------------------------------------------------------------------
 
+describe('kill/timeout (T6)', () => {
+  // A child that publishes its identity and then hangs inside generate forever.
+  const HANGING_CHILD = `
+    const { runWeekly } = await import(process.env.KILL_RUN_URL);
+    await runWeekly(
+      { mode: 'offline', now: process.env.KILL_NOW, storeDir: process.env.KILL_STORE, outDir: process.env.KILL_OUT },
+      { env: {}, llm: { model: 'hang', endpoint: 'hang', chatJSON: () => new Promise(() => {}) } },
+    );
+  `;
+
+  async function waitFor(check, label, ms = 30_000) {
+    const deadline = Date.now() + ms;
+    while (Date.now() < deadline) {
+      if (check()) return;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    throw new Error(`timed out waiting for ${label}`);
+  }
+
+  it('a killed run is finalized failed and its lease released by the next run, without touching another attempt', async () => {
+    const storeDir = tmp('kill-store');
+    const outDir = path.join(tmp('kill-out'), 'shadow');
+    const identityFile = path.join(outDir, CURRENT_ATTEMPT_FILE);
+    const child = spawn(process.execPath, ['--input-type=module', '-e', HANGING_CHILD], {
+      cwd: PROJECT_ROOT,
+      stdio: 'ignore',
+      env: { ...process.env, KILL_RUN_URL: pathToFileURL(RUN).href, KILL_NOW: NOW, KILL_STORE: storeDir, KILL_OUT: outDir },
+    });
+    try {
+      await waitFor(() => fs.existsSync(identityFile), 'the published attempt identity');
+      // Published early: the identity is on disk while the run is still hanging,
+      // before anything is staged or exported.
+      const identity = readAttemptIdentity(identityFile);
+      assert.equal(identity.status, 'running');
+      assert.equal(identity.week_of, WEEK_OF);
+      assert.equal(identity.finished_at, null);
+      assert.equal(fs.existsSync(path.join(outDir, 'plan.json')), false, 'nothing staged yet');
+      assert.equal(readJson(path.join(storeDir, 'leases', `${WEEK_OF}.json`)).attempt_id, identity.attempt_id);
+      // Kill at a known point: generate has started and never returns.
+      const attemptPath = path.join(storeDir, 'attempts', `${identity.attempt_id}.json`);
+      await waitFor(() => {
+        const stored = fs.existsSync(attemptPath) ? readJson(attemptPath) : null;
+        return Boolean(stored && stored.stages && stored.stages.generate && stored.stages.generate.status === 'running');
+      }, 'the hanging generate stage');
+    } finally {
+      child.kill('SIGTERM');
+      await new Promise((resolve) => child.on('exit', resolve));
+    }
+    const killed = readAttemptIdentity(identityFile);
+    assert.equal(killed.status, 'running', 'a kill cannot write a final status');
+    const orphan = readJson(path.join(storeDir, 'attempts', `${killed.attempt_id}.json`));
+    assert.equal(orphan.status, 'running');
+    assert.equal(orphan.stages.generate.status, 'running', 'the in-flight stage was still open at the kill');
+
+    // The next run for the same week finalizes the abandoned attempt before it
+    // takes the lease, so the dead attempt no longer refuses the week.
+    const second = await run({ storeDir, outDir, now: '2026-09-04T17:31:00.000Z' });
+    assert.equal(second.attempt.status, 'succeeded');
+    assert.notEqual(second.attempt.id, killed.attempt_id);
+    const reaped = readJson(path.join(storeDir, 'attempts', `${killed.attempt_id}.json`));
+    clean(AttemptSchema, reaped, 'reaped attempt');
+    assert.equal(reaped.status, 'failed');
+    assert.match(reaped.error, /^abandoned: the offline run did not finish \(killed or timed out\)/);
+    assert.equal(reaped.lease_until, null);
+    assert.ok(reaped.finished_at);
+    assert.equal(reaped.stages.generate.status, 'failed', 'the running stage is closed');
+    assert.deepEqual(fs.readdirSync(path.join(storeDir, 'leases')), [], 'every lease released');
+    assert.equal(fs.readdirSync(path.join(storeDir, 'attempts')).length, 2);
+    assert.equal(second.paths.summary, path.join(outDir, 'summary.md'));
+    // The identity now names the run that finished, not the one that was reaped.
+    const final = readAttemptIdentity(identityFile);
+    assert.equal(final.attempt_id, second.attempt.id);
+    assert.equal(final.status, 'succeeded');
+  });
+
+  it('finalizeAbandonedAttempt only touches the attempt its identity names, and only once its lease is dead', async () => {
+    const storeDir = tmp('guard-store');
+    const outDir = tmp('guard-out');
+    const identityFile = path.join(outDir, CURRENT_ATTEMPT_FILE);
+    const store = createFileStore(storeDir);
+    const now = new Date(NOW);
+    const later = new Date('2026-09-04T17:31:00.000Z');
+
+    assert.equal(await finalizeAbandonedAttempt({ store, identityFile, now }), null, 'no identity file, nothing to do');
+
+    const attempt = await createAttempt({ store, week_of: WEEK_OF, mode: 'offline', now, id: 'abandoned-1' });
+    publishAttemptIdentity(identityFile, attempt, now);
+    assert.equal(await finalizeAbandonedAttempt({ store, identityFile, now }), null, 'a live lease owns the attempt');
+    assert.equal((await store.getAttempt('abandoned-1')).status, 'running');
+
+    // A foreign identity (an attempt this store never had) is never patched.
+    publishAttemptIdentity(identityFile, { ...attempt, id: 'foreign-1' }, now);
+    assert.equal(await finalizeAbandonedAttempt({ store, identityFile, now: later }), null);
+    assert.equal((await store.getAttempt('abandoned-1')).status, 'running');
+
+    publishAttemptIdentity(identityFile, attempt, now);
+    const finished = await finalizeAbandonedAttempt({ store, identityFile, now: later });
+    assert.equal(finished.id, 'abandoned-1');
+    assert.equal(finished.status, 'failed');
+    assert.equal(finished.lease_until, null);
+    assert.match(finished.error, /^abandoned: the offline run did not finish/);
+    assert.equal(readAttemptIdentity(identityFile).status, 'failed', 'the guard is refreshed');
+    assert.deepEqual(fs.readdirSync(path.join(storeDir, 'leases')), []);
+    assert.equal(await finalizeAbandonedAttempt({ store, identityFile, now: later }), null, 'idempotent');
+  });
+});
+
+// ---------------------------------------------------------------------------
+
 describe('CLI (subprocess)', () => {
   it('exit 0 with the one-screen summary for --mode offline', async () => {
     const storeDir = tmp('cli-store');
@@ -532,6 +725,51 @@ describe('CLI (subprocess)', () => {
     assert.match(monday.stderr, /--week-of must be a Monday/);
     const help = await execFileP(process.execPath, [RUN, '--help'], { cwd: PROJECT_ROOT, timeout: 60_000 });
     assert.match(help.stdout, /^usage: node scripts\/weekly\/run\.mjs/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('junction alias (the scheduler path: C:\\Workspace -> D:\\Workspace)', () => {
+  const JUNCTION_ROOT = 'C:\\Workspace';
+  const JUNCTION_RUN = path.join(JUNCTION_ROOT, 'Active', 'SEO-Agents-App', 'scripts', 'weekly', 'run.mjs');
+  const skip = fs.existsSync(JUNCTION_RUN) ? false : `no ${JUNCTION_RUN} alias on this machine`;
+
+  it('resolves the module to the real repo path through the alias', { skip }, async () => {
+    const moduleUrl = pathToFileURL(path.join(JUNCTION_ROOT, 'Active', 'SEO-Agents-App', 'scripts', 'weekly', 'lib', 'paths.mjs')).href;
+    const { stdout } = await execFileP(process.execPath, [
+      '--input-type=module', '-e', `const m = await import(${JSON.stringify(moduleUrl)}); console.log(JSON.stringify(m));`,
+    ], { cwd: JUNCTION_ROOT, timeout: 60_000 });
+    const paths = JSON.parse(stdout.trim());
+    assert.equal(paths.PROJECT_ROOT, PROJECT_ROOT, 'the alias resolves to the real repo root');
+    assert.ok(!paths.PROJECT_ROOT.toUpperCase().startsWith('C:\\'), 'never the junction path');
+    assert.equal(paths.STATE_DIR, path.join(PROJECT_ROOT, 'state', 'weekly'));
+    assert.equal(paths.SHADOW_DIR, path.join(PROJECT_ROOT, 'outputs', 'shadow'));
+  });
+
+  it('spawns offline through the alias and writes the attempt to the isolated store and out dirs', { skip }, async () => {
+    const storeDir = tmp('junction-store');
+    const outDir = path.join(tmp('junction-out'), 'shadow');
+    const { stdout } = await execFileP(process.execPath, [
+      JUNCTION_RUN, '--mode', 'offline', '--now', NOW, '--store', storeDir, '--out', outDir, '--legacy-dir', LEGACY_DIR,
+    ], { cwd: JUNCTION_ROOT, timeout: 60_000 });
+    assert.match(stdout, /status succeeded/);
+    const files = fs.readdirSync(path.join(storeDir, 'attempts'));
+    assert.equal(files.length, 1, 'exactly one attempt in the isolated store');
+    const attempt = readJson(path.join(storeDir, 'attempts', files[0]));
+    clean(AttemptSchema, attempt, 'junction attempt');
+    assert.equal(attempt.status, 'succeeded');
+    assert.equal(attempt.mode, 'offline');
+    assert.equal(attempt.week_of, WEEK_OF);
+    assert.ok(attempt.finished_at);
+    assert.equal(attempt.lease_until, null);
+    assert.deepEqual(fs.readdirSync(path.join(storeDir, 'leases')), []);
+    assert.equal(readJson(path.join(outDir, 'attempt.json')).id, attempt.id);
+    assert.equal(readJson(path.join(outDir, 'attempt.json')).status, 'succeeded');
+    for (const name of ['gbp_posting_schedule.md', 'facebook_posting_schedule.md', 'plan.json', 'summary.md', MIRROR_FILES.compare]) {
+      assert.equal(fs.existsSync(path.join(outDir, name)), true, `${name} should exist under the isolated --out`);
+    }
+    assert.match(stdout, new RegExp(outDir.replace(/\\/g, '\\\\')));
   });
 });
 

@@ -10,7 +10,7 @@ import json
 import os
 import subprocess
 import sys
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 # Load .env before anything else so DEEPSEEK_API_KEY, ANTHROPIC_API_KEY etc. are available to the crew
@@ -42,16 +42,41 @@ RUN_LOCK_FILE = OUTPUTS_DIR / "lock.lock.json"
 
 
 def _now_iso() -> str:
-    from datetime import datetime, timezone
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-def log_line(msg: str) -> None:
-    """Print to console (captured by Task Scheduler) and append to the day log."""
+NEG_INF = float("-inf")
+
+
+def _parse_stamp(text) -> float:
+    """Epoch seconds for an ISO instant, ``-inf`` when it is missing or unparseable."""
+    if not text:
+        return NEG_INF
+    try:
+        return datetime.fromisoformat(str(text).replace("Z", "+00:00")).timestamp()
+    except (TypeError, ValueError):
+        return NEG_INF
+
+
+def _read_json_file(path) -> object:
+    """Parsed JSON, or None for a missing/corrupt file."""
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def log_line(msg: str, log_file=None) -> None:
+    """Print to console (captured by Task Scheduler) and append to the day log.
+
+    ``log_file`` redirects the append for the isolated rehearsal seam; the default
+    stays the Friday day log.
+    """
     print(msg, flush=True)
     try:
-        OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
-        with RUNNER_LOG_FILE.open("a", encoding="utf-8") as fh:
+        target = Path(log_file or RUNNER_LOG_FILE)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("a", encoding="utf-8") as fh:
             fh.write(msg.rstrip("\n") + "\n")
     except Exception:
         pass
@@ -279,51 +304,341 @@ def preflight() -> list[str]:
     return errors
 
 
-def run_shadow_pipeline() -> None:
-    """Run the rebuilt pipeline (scripts/weekly) in shadow mode after a successful
-    legacy run, when SEO_PIPELINE=shadow. Shadow mode writes only to the new
-    Supabase tables and outputs/shadow/; it never touches weekly_posts,
-    website_tasks, or the legacy outputs, so a failure here is logged and
-    reported but never changes this wrapper's exit code or health status.
-    See docs/rebuild/2026-09-06-weekly-pipeline-rebuild-plan.md."""
-    mode = (os.environ.get("SEO_PIPELINE") or "legacy").strip().lower()
-    if mode != "shadow":
-        return
+# ---------------------------------------------------------------------------
+# Rebuilt pipeline (scripts/weekly) — launch seam and attempt-derived health
+# ---------------------------------------------------------------------------
+
+PIPELINE_MODES = ("shadow", "offline")
+SHADOW_TIMEOUT_S = int(os.environ.get("SEO_SHADOW_TIMEOUT_MIN", "30")) * 60
+
+
+def pipeline_paths(mode: str) -> dict:
+    """Where one rebuilt-pipeline mode reads and writes.
+
+    `shadow` uses the real store, exports, log and Friday health file. `offline`
+    is the rehearsal mode and is isolated under SEO_REHEARSAL_DIR
+    (default outputs/rehearsal) so a rehearsal can never touch the legacy store,
+    the shadow exports, or the health marker the monitor reads.
+    """
+    if mode == "offline":
+        base = Path(os.environ.get("SEO_REHEARSAL_DIR") or (OUTPUTS_DIR / "rehearsal"))
+        return {
+            "store": base / "state",
+            "out": base / "shadow",
+            "health": base / "weekly-runner-health.json",
+            "log": base / f"rehearsal-{date.today().isoformat()}.log",
+        }
+    return {
+        "store": PROJECT_ROOT / "state" / "weekly",
+        "out": OUTPUTS_DIR / "shadow",
+        "health": RUNNER_HEALTH_FILE,
+        "log": OUTPUTS_DIR / f"weekly-shadow-{date.today().isoformat()}.log",
+    }
+
+
+def pipeline_cmd(mode: str, paths: dict, week_of=None) -> list:
+    """The `node scripts/weekly/run.mjs` command for one mode.
+
+    `--store`/`--out` are always explicit so a mode can never drift onto the other
+    mode's directory. Rehearsal gets no `--notify`: an offline rehearsal never
+    touches an alert channel.
+    """
     runner = PROJECT_ROOT / "scripts" / "weekly" / "run.mjs"
-    if not runner.exists():
-        log_line(f"[run-weekly-seo] SEO_PIPELINE=shadow but {runner} is missing; skipping shadow run")
-        return
-    cmd = ["node", str(runner), "--mode", "shadow"]
-    week_spec = OUTPUTS_DIR / "week_spec.json"
+    cmd = ["node", str(runner), "--mode", mode, "--store", str(paths["store"]), "--out", str(paths["out"])]
+    if mode == "shadow":
+        cmd.append("--notify")
+    if week_of:
+        cmd += ["--week-of", week_of]
+    return cmd
+
+
+def _spawn_pipeline(cmd: list, log_file, timeout_s: int) -> dict:
+    """Run the rebuilt pipeline child with its output streamed to `log_file`.
+
+    Returns ``{returncode, error, timed_out}``. A child killed at the deadline is
+    only reported here; finalizing the attempt it was running is the caller's job.
+    """
+    log_file = Path(log_file)
     try:
-        week_of = json.loads(week_spec.read_text(encoding="utf-8")).get("week_of")
-        if week_of:
-            cmd += ["--week-of", week_of]
-    except Exception:
-        pass  # run.mjs computes the same WeekSpec itself
-    shadow_log = OUTPUTS_DIR / f"weekly-shadow-{date.today().isoformat()}.log"
-    log_line(f"[run-weekly-seo] Shadow pipeline -> {shadow_log}")
-    try:
-        with shadow_log.open("a", encoding="utf-8") as fh:
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        with log_file.open("a", encoding="utf-8") as fh:
             fh.write(f"\n=== {_now_iso()} launching: {cmd}\n")
             fh.flush()
             r = subprocess.run(cmd, cwd=str(PROJECT_ROOT), env=os.environ.copy(),
-                               stdout=fh, stderr=subprocess.STDOUT, timeout=30 * 60)
-        status = "success" if r.returncode == 0 else f"failed (exit {r.returncode})"
+                               stdout=fh, stderr=subprocess.STDOUT, timeout=timeout_s)
+        return {"returncode": r.returncode, "error": None, "timed_out": False}
     except subprocess.TimeoutExpired:
-        status = "failed (timeout 30 min)"
-    except Exception as e:  # never let the shadow run break the legacy result
-        status = f"failed ({e})"
-    log_line(f"[run-weekly-seo] Shadow pipeline {status}")
+        return {"returncode": None, "error": f"timeout after {timeout_s // 60} min", "timed_out": True}
+    except Exception as e:
+        return {"returncode": None, "error": str(e), "timed_out": False}
+
+
+def attempt_records(paths: dict) -> list:
+    """Every attempt record this run could have written, newest first.
+
+    Two copies exist: in the store (`<store>/attempts/<id>.json`, authoritative but
+    empty in shadow mode when Supabase is the store) and at the `--out` mirror
+    (`attempt.json`, written by stage.mjs and refreshed at the end). Neither is
+    trusted alone; the health block filters both by mode, week_of and launch time.
+    """
+    records = []
+    folder = Path(paths["store"]) / "attempts"
     try:
-        payload = json.loads(RUNNER_HEALTH_FILE.read_text(encoding="utf-8"))
-        payload["shadow"] = {"status": status, "at": _now_iso(), "log_file": str(shadow_log)}
-        RUNNER_HEALTH_FILE.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        names = sorted(folder.glob("*.json")) if folder.is_dir() else []
+    except OSError:
+        names = []
+    for path in names:
+        data = _read_json_file(path)
+        if isinstance(data, dict) and data.get("id"):
+            records.append(data)
+    mirror = _read_json_file(Path(paths["out"]) / "attempt.json")
+    if isinstance(mirror, dict) and mirror.get("id"):
+        records.append(mirror)
+    records.sort(key=lambda a: _parse_stamp(a.get("started_at")), reverse=True)
+    return records
+
+
+def read_attempt_identity(paths: dict) -> dict | None:
+    """The engine's `<out>/current-attempt.json` (T6 publication, lane B).
+
+    It names the attempt a run is on — refreshed at creation and at finish, left at
+    `running` when a run is killed — so the wrapper can tell its own attempt from a
+    foreign one instead of guessing from whatever record happens to be on disk.
+    """
+    data = _read_json_file(Path(paths["out"]) / "current-attempt.json")
+    return data if isinstance(data, dict) and data.get("attempt_id") else None
+
+
+def pipeline_health_block(mode: str, paths: dict, *, launched_at: str,
+                          expected_week_of=None, child: dict | None = None) -> dict:
+    """The structured `shadow` health block, derived from the attempt record.
+
+    `status` is the record's own status; the child's exit code is carried only as
+    context, never as the verdict. The attempt is identified by the published
+    identity when this launch published one, else by a record that started after
+    this launch for this mode and week. Anything else is not this run's evidence:
+    ``failed (no attempt written)`` when there is nothing at all, ``failed (stale
+    attempt)`` when only an earlier same-week record exists.
+    """
+    block = {
+        "status": "failed (no attempt written)",
+        "mode": mode,
+        "source": "attempt",
+        "launched_at": launched_at,
+        "at": _now_iso(),
+        "week_of": expected_week_of,
+        "log_file": str(paths["log"]),
+    }
+    if child:
+        block["child"] = child
+    launch_ts = _parse_stamp(launched_at)
+    records = attempt_records(paths)
+    identity = read_attempt_identity(paths)
+    ours = bool(identity) and identity.get("mode") == mode \
+        and _parse_stamp(identity.get("started_at")) >= launch_ts \
+        and (not expected_week_of or identity.get("week_of") == expected_week_of)
+    if ours:
+        # Finalized copies first: a record the engine finished beats a mid-run mirror.
+        fresh = sorted([a for a in records if a.get("id") == identity["attempt_id"]],
+                       key=lambda a: a.get("status") == "running")
+        if not fresh:
+            fresh = [identity]  # remote store and no mirror yet: the identity is the record
+    else:
+        fresh = [a for a in records if a.get("mode") == mode
+                 and _parse_stamp(a.get("started_at")) >= launch_ts
+                 and (not expected_week_of or a.get("week_of") == expected_week_of)]
+    if not fresh:
+        stale = [a for a in records if a.get("mode") == mode
+                 and expected_week_of and a.get("week_of") == expected_week_of]
+        if identity and identity.get("week_of") == expected_week_of:
+            stale.append(identity)
+        if child and child.get("timed_out"):
+            block["status"] = "failed (killed at the deadline)"
+        elif stale:
+            block["status"] = "failed (stale attempt)"
+            block["attempt_id"] = stale[0].get("id") or stale[0].get("attempt_id")
+        return block
+    record = fresh[0]
+    started = _parse_stamp(record.get("started_at"))
+    finished = _parse_stamp(record.get("finished_at"))
+    end = finished if finished != NEG_INF else _parse_stamp(_now_iso())
+    block.update({
+        "status": record.get("status"),
+        "attempt_id": record.get("id") or record.get("attempt_id"),
+        "week_of": record.get("week_of", expected_week_of),
+        "started_at": record.get("started_at"),
+        "finished_at": record.get("finished_at"),
+        "runtime_s": int(max(0, end - started)) if started != NEG_INF and end != NEG_INF else None,
+        "spent_usd": record.get("spent_usd"),
+        "budget_usd": record.get("budget_usd"),
+        "error": record.get("error"),
+    })
+    return block
+
+
+def _merge_shadow_block(paths: dict, block: dict) -> None:
+    """Set `shadow` in the health file, preserving every legacy key already there."""
+    health = Path(paths["health"])
+    try:
+        health.parent.mkdir(parents=True, exist_ok=True)
+        payload = _read_json_file(health)
+        if not isinstance(payload, dict):
+            payload = {}
+        payload["shadow"] = block
+        health.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    except Exception as e:
+        print(f"[run-weekly-seo] WARNING: could not write shadow health ({health}): {e}", flush=True)
+
+
+def run_pipeline(mode: str, paths: dict | None = None, week_of=None, *,
+                 cmd: list | None = None, timeout_s: int | None = None) -> dict:
+    """Launch one rebuilt-pipeline mode and record what actually happened.
+
+    Writes the pre-launch `running` marker, runs the child, then replaces the
+    marker with the structured block from the attempt record. Never changes this
+    wrapper's own status or exit code. `cmd` and `paths` are the injectable seam
+    the offline rehearsal and its tests use.
+    """
+    if mode not in PIPELINE_MODES:
+        raise ValueError(f"unknown pipeline mode {mode!r} (expected one of {PIPELINE_MODES})")
+    paths = paths or pipeline_paths(mode)
+    launched_at = _now_iso()
+    _merge_shadow_block(paths, {
+        "status": "running",
+        "mode": mode,
+        "launched_at": launched_at,
+        "at": launched_at,
+        "log_file": str(paths["log"]),
+    })
+    log_line(f"[run-weekly-seo] {mode} pipeline -> {paths['log']}", log_file=paths["log"])
+    child = _spawn_pipeline(cmd or pipeline_cmd(mode, paths, week_of), paths["log"],
+                            timeout_s or SHADOW_TIMEOUT_S)
+    # A child killed at the deadline, or one that died without finishing, leaves its
+    # attempt at `running` with the lease held. Finalize it (identity-guarded) before
+    # the health block reads the record, so the block never reports a stuck run.
+    if child["timed_out"] or child["returncode"] not in (0, None):
+        finalize_killed_attempt(paths, mode, launched_at)
+    block = pipeline_health_block(mode, paths, launched_at=launched_at,
+                                  expected_week_of=week_of, child=child)
+    _merge_shadow_block(paths, block)
+    log_line(f"[run-weekly-seo] {mode} pipeline: attempt status {block['status']}", log_file=paths["log"])
+    return block
+
+
+def finalize_killed_attempt(paths: dict, mode: str, launched_at: str) -> bool:
+    """Mark the attempt this launch left running as failed and release its lease.
+
+    Covers a child killed at the deadline and one that died without finishing. The
+    identity guard is what keeps this from touching a foreign attempt: the attempt
+    must be the one named in the engine's published identity, for this mode, started
+    after this launch, and still `running` in both the identity and its own store
+    record. A shadow run whose store is Supabase has no local record, and an
+    ambiguous or already-finished attempt is left alone; both are logged and
+    reported, never patched.
+    """
+    attempt_id = None
+    identity = read_attempt_identity(paths)
+    if not identity:
+        log_line("[run-weekly-seo] no published attempt identity; nothing to finalize",
+                 log_file=paths["log"])
+        return False
+    attempt_id = identity["attempt_id"]
+    store_file = Path(paths["store"]) / "attempts" / f"{attempt_id}.json"
+    attempt = _read_json_file(store_file)
+    if identity.get("mode") != mode or _parse_stamp(identity.get("started_at")) < _parse_stamp(launched_at):
+        log_line(f"[run-weekly-seo] identity {attempt_id} is not this launch's attempt; not patching",
+                 log_file=paths["log"])
+        return False
+    if isinstance(attempt, dict) and attempt.get("status") != "running":
+        log_line(f"[run-weekly-seo] attempt {attempt_id} already {attempt.get('status')}; not patching",
+                 log_file=paths["log"])
+        return False
+    if identity.get("status") != "running":
+        log_line(f"[run-weekly-seo] identity {attempt_id} already {identity.get('status')}; not patching",
+                 log_file=paths["log"])
+        return False
+    if not isinstance(attempt, dict) or attempt.get("id") != attempt_id:
+        log_line(f"[run-weekly-seo] attempt {attempt_id} has no local store record "
+                 f"(Supabase store); nothing to finalize here", log_file=paths["log"])
+        return False
+    now = _now_iso()
+    stages = {}
+    for name, stage in (attempt.get("stages") or {}).items():
+        if isinstance(stage, dict) and stage.get("status") == "running":
+            stages[name] = {**stage, "finished_at": now, "status": "failed",
+                            "error": stage.get("error") or "wrapper killed the pipeline while this stage was running"}
+        else:
+            stages[name] = stage
+    patched = {**attempt, "stages": stages, "finished_at": now, "status": "failed",
+               "error": attempt.get("error") or "wrapper killed the pipeline at the shadow timeout",
+               "lease_until": None}
+    try:
+        tmp = store_file.with_name(f"{store_file.name}.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(patched, indent=2) + "\n", encoding="utf-8")
+        os.replace(tmp, store_file)
+    except OSError as e:
+        log_line(f"[run-weekly-seo] WARNING: could not finalize killed attempt {attempt_id}: {e}",
+                 log_file=paths["log"])
+        return False
+    released = False
+    lease_file = Path(paths["store"]) / "leases" / f"{attempt.get('week_of')}.json"
+    lease = _read_json_file(lease_file)
+    if isinstance(lease, dict) and lease.get("attempt_id") == attempt_id:
+        try:
+            lease_file.unlink()
+            released = True
+        except OSError as e:
+            log_line(f"[run-weekly-seo] WARNING: could not release lease {lease_file}: {e}",
+                     log_file=paths["log"])
+    log_line(f"[run-weekly-seo] killed attempt {attempt_id} finalized failed; "
+             f"lease {'released' if released else 'left alone (not held by this attempt)'}",
+             log_file=paths["log"])
+    return True
+
+
+def run_rehearsal() -> int:
+    """`--rehearsal`: the offline pipeline through this wrapper, in isolation.
+
+    No preflight, no legacy crew, no network, no alert channel: store, exports, log
+    and health file all live under SEO_REHEARSAL_DIR, so it proves the launch seam
+    without touching Friday's state. See FRIDAY-RUNBOOK.md.
+    """
+    paths = pipeline_paths("offline")
+    log_line(f"[run-weekly-seo] Rehearsal (offline, isolated under {paths['out'].parent})",
+             log_file=paths["log"])
+    block = run_pipeline("offline", paths)
+    print(json.dumps(block, indent=2), flush=True)
+    log_line(f"[run-weekly-seo] Rehearsal health -> {paths['health']}", log_file=paths["log"])
+    return 0 if block.get("status") in ("succeeded", "degraded") else 1
+
+
+def run_shadow_pipeline() -> None:
+    """Run the rebuilt pipeline (scripts/weekly) after a successful legacy run when
+    SEO_PIPELINE is `shadow` (live collectors, real store) or `offline` (the
+    isolated rehearsal). Shadow mode writes only to the new tables and to
+    outputs/shadow/; it never touches weekly_posts, website_tasks, or the legacy
+    outputs, so a failure here is logged and recorded but never changes this
+    wrapper's exit code or health status.
+    See docs/rebuild/2026-09-06-weekly-pipeline-rebuild-plan.md."""
+    mode = (os.environ.get("SEO_PIPELINE") or "legacy").strip().lower()
+    if mode not in PIPELINE_MODES:
+        return
+    runner = PROJECT_ROOT / "scripts" / "weekly" / "run.mjs"
+    if not runner.exists():
+        log_line(f"[run-weekly-seo] SEO_PIPELINE={mode} but {runner} is missing; skipping")
+        return
+    week_of = None
+    try:
+        week_of = (_read_json_file(OUTPUTS_DIR / "week_spec.json") or {}).get("week_of")
     except Exception:
-        pass
+        pass  # run.mjs computes the same WeekSpec itself
+    run_pipeline(mode, week_of=week_of)
 
 
 def main() -> None:
+    if "--rehearsal" in sys.argv[1:]:
+        sys.exit(run_rehearsal())
+
     # Mark "started" immediately so the monitor can tell a real run from a no-show,
     # even if topic selection or the crew launch fails below.
     write_runner_health("started")

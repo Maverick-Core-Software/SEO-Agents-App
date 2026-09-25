@@ -18,9 +18,9 @@
  * be seeded into the cache.
  *
  * One `serpapi` observation per query: `ok` with the parsed SERP value,
- * `unavailable` (cap / budget / key) or `error` (HTTP, timeout, SerpApi
- * error payload). Never throws. The API key is never placed on an
- * observation, a note, a cache file or a meter entry.
+ * `unavailable` (cap / budget / key / quota_exhausted) or `error` (HTTP,
+ * timeout, SerpApi error payload). Never throws. The API key is never placed
+ * on an observation, a note, a cache file or a meter entry.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -43,6 +43,21 @@ export const GRIZZLY_DOMAIN = 'grizzlyelectricaltx.com';
 export const GRIZZLY_NAME_PATTERN = /grizzly/i;
 export const NOTE_CAP_REACHED = 'cap reached';
 export const NOTE_NO_API_KEY = 'SERPAPI_API_KEY not configured';
+/** Marker in the note of the exhausted request and every later uncached query (S2). */
+export const NOTE_QUOTA_EXHAUSTED = 'quota_exhausted';
+
+/**
+ * Account-exhaustion wording in a 429 body. SerpApi says "out of searches" /
+ * "quota" when the plan is spent, and "rate limit" / "too many requests" when
+ * it is only throttled; bare `limit` is deliberately not a match, so a generic
+ * 429 stays a per-query error instead of stopping the attempt.
+ */
+export const QUOTA_EXHAUSTION_PATTERN = /(?:out of searches|no searches (?:left|remaining)|searches (?:left|remaining)|quota|monthly (?:search )?limit|search limit reached|exceeded your (?:monthly )?searches|upgrade your plan|account (?:is )?(?:exhausted|depleted))/i;
+
+/** true for the 429 that means the account is out of searches, not throttled. */
+export function isQuotaExhaustedResponse(status, body) {
+  return Number(status) === 429 && QUOTA_EXHAUSTION_PATTERN.test(String(body || ''));
+}
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -399,6 +414,7 @@ export async function fetchSerpJson({ url, fetchImpl = globalThis.fetch, timeout
       try { body = await response.text(); } catch { body = ''; }
       const error = new Error(`SerpApi HTTP ${response.status}: ${String(body).slice(0, 200)}`);
       error.status = response.status;
+      error.quota_exhausted = isQuotaExhaustedResponse(response.status, body);
       throw error;
     }
     if (!settled && typeof onResponse === 'function') onResponse(response);
@@ -549,6 +565,14 @@ export async function collectSerp({
       if (cacheNote) obs.note = redact(cacheNote, settings.apiKey);
       observations.push(obs);
     } catch (err) {
+      if (err && err.quota_exhausted) {
+        // The account is out of searches, not throttled: stop issuing live calls
+        // for this attempt and mark this request plus every later uncached query
+        // with the stable marker. Earlier successes and valid cache hits stand.
+        stopNote = `${NOTE_QUOTA_EXHAUSTED}: ${redact(err && err.message ? err.message : String(err), settings.apiKey)}`;
+        observations.push(failedObservation({ ...base, status: 'unavailable', note: stopNote }));
+        continue;
+      }
       observations.push(failedObservation({
         ...base, status: 'error', note: redact(err && err.message ? err.message : String(err), settings.apiKey),
       }));

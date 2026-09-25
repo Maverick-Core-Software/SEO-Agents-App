@@ -323,3 +323,178 @@ class TestRunWeeklySeo:
         run_weekly_seo = _load_run_weekly_seo()
         cmd = run_weekly_seo.resolve_seo_agents_cmd()
         assert cmd[1:] == ["-m", "seo_agents.main"]
+
+
+# ---------------------------------------------------------------------------
+# 7. Wrapper shadow health (T2) and killed-attempt finalization (T6)
+# ---------------------------------------------------------------------------
+
+
+class TestWrapperShadowHealth:
+    """The health `shadow` block states what the attempt record says, never what
+    the child's exit code was, and a killed child's attempt is finalized."""
+
+    def _paths(self, tmp_path: Path) -> dict:
+        run_weekly_seo = _load_run_weekly_seo()
+        return {
+            **run_weekly_seo.pipeline_paths("offline"),
+            "store": tmp_path / "state",
+            "out": tmp_path / "shadow",
+            "health": tmp_path / "health.json",
+            "log": tmp_path / "rehearsal.log",
+        }
+
+    def test_no_op_child_reads_failed_no_attempt_written(self, tmp_path):
+        run_weekly_seo = _load_run_weekly_seo()
+        paths = self._paths(tmp_path)
+        # Legacy keys the monitor/watchdog already read must survive the merge.
+        paths["health"].write_text(
+            json.dumps({"status": "success", "date": "2026-09-25", "crew_log_file": "crew.log"}),
+            encoding="utf-8",
+        )
+
+        block = run_weekly_seo.run_pipeline(
+            "offline", paths, week_of="2026-09-21",
+            cmd=[sys.executable, "-c", ""], timeout_s=60,
+        )
+
+        assert block["status"] == "failed (no attempt written)"
+        health = json.loads(paths["health"].read_text(encoding="utf-8"))
+        assert health["shadow"]["status"] == "failed (no attempt written)"
+        assert health["status"] == "success"
+        assert health["crew_log_file"] == "crew.log"
+
+    def test_running_marker_then_fresh_record_sets_status(self, tmp_path):
+        run_weekly_seo = _load_run_weekly_seo()
+        paths = self._paths(tmp_path)
+        seen = tmp_path / "child-saw.json"
+        attempts_dir = paths["store"] / "attempts"
+        attempt_id = "2026-09-21T120000Z-abcdef"
+        child_script = (
+            "import json, pathlib\n"
+            "from datetime import datetime, timezone, timedelta\n"
+            f"health = pathlib.Path({str(paths['health'])!r})\n"
+            f"seen = pathlib.Path({str(seen)!r})\n"
+            "seen.write_text(health.read_text(encoding='utf-8'), encoding='utf-8')\n"
+            f"attempts = pathlib.Path({str(attempts_dir)!r})\n"
+            f"out = pathlib.Path({str(paths['out'])!r})\n"
+            "attempts.mkdir(parents=True, exist_ok=True)\n"
+            "out.mkdir(parents=True, exist_ok=True)\n"
+            "now = datetime.now(timezone.utc)\n"
+            f"attempt_id = {attempt_id!r}\n"
+            "started = now.isoformat().replace('+00:00', 'Z')\n"
+            "record = {\n"
+            "    'id': attempt_id, 'week_of': '2026-09-21', 'mode': 'offline',\n"
+            "    'status': 'succeeded', 'error': None, 'spent_usd': 0.42, 'budget_usd': 20,\n"
+            "    'started_at': started,\n"
+            "    'finished_at': (now + timedelta(seconds=61)).isoformat().replace('+00:00', 'Z'),\n"
+            "    'stages': {},\n"
+            "}\n"
+            "(attempts / (attempt_id + '.json')).write_text(json.dumps(record), encoding='utf-8')\n"
+            "(out / 'current-attempt.json').write_text(json.dumps({\n"
+            "    'attempt_id': attempt_id, 'week_of': '2026-09-21', 'mode': 'offline',\n"
+            "    'status': 'succeeded', 'started_at': started, 'finished_at': record['finished_at']}),\n"
+            "    encoding='utf-8')\n"
+        )
+
+        block = run_weekly_seo.run_pipeline(
+            "offline", paths, week_of="2026-09-21",
+            cmd=[sys.executable, "-c", child_script], timeout_s=60,
+        )
+
+        assert json.loads(seen.read_text(encoding="utf-8"))["shadow"]["status"] == "running"
+        assert block["status"] == "succeeded"
+        assert block["attempt_id"] == attempt_id
+        assert block["week_of"] == "2026-09-21"
+        assert block["runtime_s"] == 61
+        assert block["spent_usd"] == 0.42 and block["budget_usd"] == 20
+
+    def test_earlier_same_week_record_reads_stale(self, tmp_path):
+        run_weekly_seo = _load_run_weekly_seo()
+        paths = self._paths(tmp_path)
+        attempts_dir = paths["store"] / "attempts"
+        attempts_dir.mkdir(parents=True)
+        (attempts_dir / "old.json").write_text(
+            json.dumps({
+                "id": "old", "week_of": "2026-09-21", "mode": "offline",
+                "status": "succeeded", "started_at": "2020-01-01T00:00:00Z",
+                "finished_at": "2020-01-01T00:01:00Z", "stages": {},
+            }),
+            encoding="utf-8",
+        )
+
+        block = run_weekly_seo.run_pipeline(
+            "offline", paths, week_of="2026-09-21",
+            cmd=[sys.executable, "-c", ""], timeout_s=60,
+        )
+
+        assert block["status"] == "failed (stale attempt)"
+
+    @pytest.mark.parametrize("tail,timeout_s", [("time.sleep(30)", 2), ("raise SystemExit(1)", 60)],
+                             ids=["timeout", "nonzero-exit"])
+    def test_child_that_does_not_finish_is_finalized(self, tmp_path, tail, timeout_s):
+        """A child killed at the deadline, or one that dies without finishing, leaves
+        its attempt running with the lease held; the wrapper finalizes exactly the
+        attempt the engine published, so health never reports a stuck run."""
+        run_weekly_seo = _load_run_weekly_seo()
+        paths = self._paths(tmp_path)
+        attempts_dir = paths["store"] / "attempts"
+        leases_dir = paths["store"] / "leases"
+        attempt_id = "2026-09-21T120000Z-abcdef"
+        child_script = (
+            "import json, pathlib, time\n"
+            "from datetime import datetime, timezone\n"
+            f"attempts = pathlib.Path({str(attempts_dir)!r})\n"
+            f"leases = pathlib.Path({str(leases_dir)!r})\n"
+            f"out = pathlib.Path({str(paths['out'])!r})\n"
+            "attempts.mkdir(parents=True, exist_ok=True)\n"
+            "leases.mkdir(parents=True, exist_ok=True)\n"
+            "out.mkdir(parents=True, exist_ok=True)\n"
+            "now = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')\n"
+            f"attempt_id = {attempt_id!r}\n"
+            "record = {'id': attempt_id, 'week_of': '2026-09-21', 'mode': 'offline',\n"
+            "    'status': 'running', 'error': None, 'spent_usd': 0.1, 'budget_usd': 20,\n"
+            "    'started_at': now, 'finished_at': None, 'lease_until': now,\n"
+            "    'stages': {'collect': {'started_at': now, 'finished_at': None, 'status': 'running', 'error': None}}}\n"
+            "(attempts / (attempt_id + '.json')).write_text(json.dumps(record), encoding='utf-8')\n"
+            "(leases / '2026-09-21.json').write_text(json.dumps({\n"
+            "    'attempt_id': attempt_id, 'lease_until': '2099-01-01T00:00:00Z', 'acquired_at': now}), encoding='utf-8')\n"
+            "(out / 'current-attempt.json').write_text(json.dumps({\n"
+            "    'attempt_id': attempt_id, 'week_of': '2026-09-21', 'mode': 'offline',\n"
+            "    'status': 'running', 'started_at': now, 'finished_at': None}), encoding='utf-8')\n"
+            f"{tail}\n"
+        )
+
+        block = run_weekly_seo.run_pipeline(
+            "offline", paths, week_of="2026-09-21",
+            cmd=[sys.executable, "-c", child_script], timeout_s=timeout_s,
+        )
+
+        assert block["status"] == "failed"
+        assert block["attempt_id"] == attempt_id
+        patched = json.loads((attempts_dir / f"{attempt_id}.json").read_text(encoding="utf-8"))
+        assert patched["status"] == "failed"
+        assert patched["finished_at"] and patched["lease_until"] is None
+        assert patched["stages"]["collect"]["status"] == "failed"
+        assert not (leases_dir / "2026-09-21.json").exists()
+
+    def test_kill_without_identity_patches_nothing(self, tmp_path):
+        """A kill with no published identity reports the kill and leaves the store
+        alone — an earlier same-week record is never patched or claimed as ours."""
+        run_weekly_seo = _load_run_weekly_seo()
+        paths = self._paths(tmp_path)
+        attempts_dir = paths["store"] / "attempts"
+        attempts_dir.mkdir(parents=True)
+        foreign = attempts_dir / "foreign.json"
+        foreign.write_text(json.dumps({
+            "id": "foreign", "week_of": "2026-09-21", "mode": "offline", "status": "running",
+            "started_at": "2020-01-01T00:00:00Z", "finished_at": None, "stages": {},
+        }), encoding="utf-8")
+
+        block = run_weekly_seo.run_pipeline(
+            "offline", paths, week_of="2026-09-21",
+            cmd=[sys.executable, "-c", "import time; time.sleep(30)"], timeout_s=2,
+        )
+
+        assert block["status"] == "failed (killed at the deadline)"
+        assert json.loads(foreign.read_text(encoding="utf-8"))["status"] == "running"

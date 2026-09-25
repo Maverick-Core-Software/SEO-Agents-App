@@ -156,8 +156,8 @@ Copy `topic` verbatim from `topic.winner` in the user message (`service_key`, `s
 - YES belongs to content with visual proof or clear educational value (before/after photos,
   slideshows, how-to). NO for text-only posts, generic updates, and greetings.
 - `boost_targeting`: one short hint per post such as "15mi <winner city>, homeowners 28-65,
-  home improvement interests", using the winner city as the radius center. Use an empty string
-  for NO rows if you prefer.
+  home improvement interests". Center the radius on the city that post's own copy names; when a
+  post names no city, center it on the winner city. Use an empty string for NO rows if you prefer.
 
 ## Website actions (0 to 3)
 

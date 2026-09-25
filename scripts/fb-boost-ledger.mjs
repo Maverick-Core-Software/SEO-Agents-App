@@ -73,19 +73,21 @@ function scheduleWeekStart() {
   // Match explicit Start Date field
   let m = text.match(/\*\*Start Date:\*\*\s*(\d{4}-\d{2}-\d{2})/);
   if (m) return m[1];
-  // Match "Week of August 7–12, 2026" in bold OR heading form, including
-  // cross-month ranges such as "Week of August 31 – September 5, 2026":
+  // Match "Week of August 17–22, 2026" (range) or "Week of September 21, 2026"
+  // (single date, as the 9/18 crew run wrote it: "## Week of September 21, 2026
+  // | Focus: Home Generator Installation, DFW"), in bold OR heading form,
+  // including cross-month ranges such as "Week of August 31 – September 5, 2026":
   //   **Week of August 17–22, 2026**
-  //   ## Week of August 17–22, 2026
-  m = text.match(/(?:\*\*|##\s*)Week of\s+(\w+)\s+(\d{1,2})\s*[–-]\s*(?:\w+\s+)?\d{1,2},?\s*(\d{4})/i);
+  //   ## Week of September 21, 2026 | Focus: Home Generator Installation, DFW
+  m = text.match(/(?:\*\*|##\s*)Week of\s+(\w+)\s+(\d{1,2})\s*(?:[–-]\s*(?:\w+\s+)?\d{1,2},?\s*|,\s*)(\d{4})/i);
   if (m) {
     const months = { january:'01', february:'02', march:'03', april:'04', may:'05', june:'06',
                      july:'07', august:'08', september:'09', october:'10', november:'11', december:'12' };
     const mon = months[m[1].toLowerCase()];
     if (mon) return `${m[3]}-${mon}-${String(m[2]).padStart(2, '0')}`;
   }
-  // Fallback: extract from first DAY block's DATE field
-  m = text.match(/DATE:\s*(\d{4}-\d{2}-\d{2})/);
+  // Fallback: the first DAY block's DATE field, bold or plain (**DATE:** 2026-09-21).
+  m = text.match(/\*{0,2}DATE:\*{0,2}\s*(\d{4}-\d{2}-\d{2})/);
   return m ? m[1] : null;
 }
 

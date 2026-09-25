@@ -3,6 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { derivePostServiceType, SERVICE_TYPE_KEYWORDS } from './photo-selection.mjs';
+import { checkImagePolicy, IMAGE_CONVERT_EXTS } from '../gbp-poster/policy-check.mjs';
 
 export const DEFAULT_GBP_LOCAL_CACHE =
   'C:\\Workspace\\Shared\\Assets\\Media\\Grizzly\\GBP Post Photos';
@@ -12,6 +13,33 @@ export const DEFAULT_GBP_CURATED_FOLDER = path.join(DEFAULT_GBP_LOCAL_CACHE, 'Cu
 export const LEGACY_GBP_CURATED_FOLDER = 'E:\\Media\\Grizzly\\Curated';
 
 const IMAGE_NAME_RE = /\.(jpe?g|png|webp)$/i;
+
+const defaultSkipLog = (line) => console.warn(line);
+
+// GBP only accepts the FINAL artifact: JPG/PNG at >= 10 KB. Every path returned
+// here goes to the uploader, so each candidate is judged before it is returned.
+// A source needing conversion (HEIC/HEIF) cannot be converted on this sync path,
+// so it never qualifies — the picker converts it and judges the converted bytes.
+// Unconverted HEIC bytes are never handed back under a .jpg name.
+function photoPolicyViolations(filePath) {
+  const ext = path.extname(String(filePath || '')).toLowerCase();
+  if (IMAGE_CONVERT_EXTS.has(ext)) {
+    return [{
+      rule: 'image-needs-conversion',
+      detail: `Image extension "${ext}" must be converted to JPG/PNG before GBP will accept it.`,
+    }];
+  }
+  return checkImagePolicy(filePath);
+}
+
+function photoPassesPolicy(filePath, log) {
+  const violations = photoPolicyViolations(filePath);
+  if (!violations.length) return true;
+  let size = 'missing';
+  try { size = `${fs.statSync(filePath).size} bytes`; } catch { /* unreadable */ }
+  log(`[gbp-paths] skipped ${path.basename(String(filePath || ''))} (${size}): ${violations.map((v) => `${v.rule} — ${v.detail}`).join(' | ')}`);
+  return false;
+}
 
 export function firstExistingDir(candidates = [], existsSync = (dir) => fs.existsSync(dir)) {
   for (const dir of candidates) {
@@ -126,6 +154,7 @@ export function pickCuratedFallbackPhoto({
   localCache,
   curatedPreferred,
   usedPaths = [],
+  log = defaultSkipLog,
 } = {}) {
   const used = new Set(
     (usedPaths || []).map((p) => path.basename(String(p || '')).toLowerCase()).filter(Boolean),
@@ -145,6 +174,7 @@ export function pickCuratedFallbackPhoto({
     for (const name of listImageNames(dir)) {
       if (used.has(name.toLowerCase())) continue;
       const full = path.join(dir, name);
+      if (!photoPassesPolicy(full, log)) continue;
       any.push(full);
       if (filenameMatchesService(name, serviceType)) matched.push(full);
     }
@@ -162,6 +192,7 @@ export function resolveGbpImagePath(imagePath, {
   localCache,
   curatedPreferred,
   usedPaths,
+  log = defaultSkipLog,
 } = {}) {
   const candidates = [];
   if (imagePath) {
@@ -172,19 +203,23 @@ export function resolveGbpImagePath(imagePath, {
     }
   }
   for (const p of candidates) {
-    if (p && fs.existsSync(p)) return p;
+    if (p && fs.existsSync(p) && photoPassesPolicy(p, log)) return p;
   }
   if (date) {
     const prefix = `${date}-`.toLowerCase();
     for (const dir of existingPhotoSearchDirs({ curatedDir, localCache, curatedPreferred })) {
-      const hit = listImageNames(dir)
-        .filter((f) => f.toLowerCase().startsWith(prefix))[0];
-      if (hit) return path.join(dir, hit);
+      const hits = listImageNames(dir).filter((f) => f.toLowerCase().startsWith(prefix));
+      for (const hit of hits) {
+        const full = path.join(dir, hit);
+        if (photoPassesPolicy(full, log)) return full;
+      }
     }
   }
   const fallback = pickCuratedFallbackPhoto({
-    date, topic, caption, service, curatedDir, localCache, curatedPreferred, usedPaths,
+    date, topic, caption, service, curatedDir, localCache, curatedPreferred, usedPaths, log,
   });
   if (fallback) return fallback;
-  return imagePath || '';
+  // Never return an existing artifact that fails the policy; a path that is not
+  // on disk is left to the caller (it may appear later, e.g. a Drive sync).
+  return fs.existsSync(imagePath || '') ? '' : (imagePath || '');
 }

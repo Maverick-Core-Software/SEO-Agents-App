@@ -13,6 +13,10 @@ const cases = [
   ['## Week of August 31 – September 5, 2026', '2026-08-31'], // cross-month heading
   ['## Week of August 17–22, 2026', '2026-08-17'],            // same-month heading
   ['**Week of August 17–22, 2026**', '2026-08-17'],           // bold form
+  // Real heading from the 2026-09-18 crew run: single date + "| Focus:" suffix.
+  ['## Week of September 21, 2026 | Focus: Home Generator Installation, DFW', '2026-09-21'],
+  // No Week-of heading at all — the bold per-post DATE field is the only source.
+  ['**DATE:** 2026-09-18', '2026-09-18'],
 ];
 
 try {
@@ -26,33 +30,45 @@ try {
     assert.equal(JSON.parse(output).week, expected, heading);
   }
 
-  // ── Scenario block: eligible across the real shape of the 2026-09-07 week ──
-  // Day 1 (2026-09-07) and Day 3 (2026-09-09) boosted $25 x 1d; Day 5/6 NO.
+  // ── Scenario block: eligible across the real shape of a posted week ────────
+  // Day 1 and Day 3 boosted $25 x 1d; Day 5/6 NO. The week is anchored to the
+  // Monday of the CURRENT week rather than a hardcoded date: `eligible` fails
+  // closed on a schedule older than its own 8-day window (the staleness gate in
+  // fb-boost-ledger.mjs), so a pinned week expires and turns every case below
+  // into 'schedule stale'. The offsets preserve the scenario shape exactly.
+  const weekMonday = new Date();
+  weekMonday.setHours(12, 0, 0, 0);
+  weekMonday.setDate(weekMonday.getDate() - ((weekMonday.getDay() + 6) % 7)); // back to Monday
+  const isoDate = (offsetDays = 0) => {
+    const d = new Date(weekMonday);
+    d.setDate(d.getDate() + offsetDays);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  };
   const day1Key = 'day1-whole-home-surge-protection';
   const day3Key = 'day3-ev-charger-installation';
   fs.writeFileSync(schedulePath, [
-    '**Start Date:** 2026-09-07',
+    `**Start Date:** ${isoDate(0)}`,
     '',
     '## DAY 1',
-    '**DATE:** 2026-09-07',
+    `**DATE:** ${isoDate(0)}`,
     '**DAY:** 1',
     '**SERVICE:** Whole-Home Surge Protection',
     '**BOOST:** yes:$25',
     '',
     '## DAY 3',
-    '**DATE:** 2026-09-09',
+    `**DATE:** ${isoDate(2)}`,
     '**DAY:** 3',
     '**SERVICE:** EV Charger Installation',
     '**BOOST:** yes:$25',
     '',
     '## DAY 5',
-    '**DATE:** 2026-09-11',
+    `**DATE:** ${isoDate(4)}`,
     '**DAY:** 5',
     '**SERVICE:** Panel Replacement',
     '**BOOST:** no',
     '',
     '## DAY 6',
-    '**DATE:** 2026-09-12',
+    `**DATE:** ${isoDate(5)}`,
     '**DAY:** 6',
     '**SERVICE:** Ceiling Fan Install',
     '**BOOST:** no',
@@ -78,14 +94,14 @@ try {
     published_at: `${date}T14:01:00.000Z`,
   });
   const scenarios = [
-    ['2026-09-07', [], true, 'day1-'],
-    ['2026-09-08', [published(day1Key, '2026-09-07')], false, 'no eligible boosts'],
-    ['2026-09-08', [], true, 'day1-'],
-    ['2026-09-09', [published(day1Key, '2026-09-07')], true, 'day3-'],
-    ['2026-09-10', [published(day1Key, '2026-09-07'), published(day3Key, '2026-09-09')], false, 'no eligible boosts'],
+    [isoDate(0), [], true, 'day1-'],
+    [isoDate(1), [published(day1Key, isoDate(0))], false, 'no eligible boosts'],
+    [isoDate(1), [], true, 'day1-'],
+    [isoDate(2), [published(day1Key, isoDate(0))], true, 'day3-'],
+    [isoDate(3), [published(day1Key, isoDate(0)), published(day3Key, isoDate(2))], false, 'no eligible boosts'],
   ];
   for (const [today, boosts, wantEligible, want] of scenarios) {
-    fs.writeFileSync(ledgerPath, `${JSON.stringify({ weeks: { '2026-09-07': { boosts } } }, null, 2)}\n`);
+    fs.writeFileSync(ledgerPath, `${JSON.stringify({ weeks: { [isoDate(0)]: { boosts } } }, null, 2)}\n`);
     const output = execFileSync(process.execPath, [script, 'eligible'], {
       encoding: 'utf8',
       env: {

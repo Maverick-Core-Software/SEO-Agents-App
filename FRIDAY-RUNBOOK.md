@@ -84,12 +84,44 @@ or the legacy `outputs/*.md`, and it never publishes.
 |---|---|
 | `SEO_PIPELINE=shadow` in `.env` | `run-weekly-seo.py` launches the shadow run after a successful legacy run; result lands in `outputs/weekly-runner-health.json` under `shadow` and in `outputs/weekly-shadow-<date>.log`. Default `legacy` = nothing new runs. |
 | `node scripts/weekly/run.mjs --mode shadow [--week-of YYYY-MM-DD]` | Manual shadow run for a week (Monday). Prints a one-screen summary; files under `outputs/shadow/`. |
-| `node scripts/weekly/run.mjs --mode offline` | No network; fixture inputs and a canned plan. This is the end-to-end test and the pre-Friday rehearsal. |
+| `node scripts/weekly/run.mjs --mode offline [--store <dir> --out <dir>]` | No network; fixture inputs and a canned plan. This is the end-to-end test and the pre-Friday rehearsal. |
+| `run-weekly-seo.py --rehearsal` | The offline pipeline through the wrapper's own launch seam, in isolation (see below). No preflight, no legacy crew, no network, no alert channel. Exit 0 only when the attempt record says `succeeded` or `degraded`. |
+| `SEO_SHADOW_TIMEOUT_MIN` | Minutes the wrapper gives one shadow/rehearsal attempt (default 30). A child killed at the deadline is reported, and the attempt it was on is marked `failed` with its lease released. |
 | `node scripts/weekly/reconcile.mjs` | Daily memory pass: 7/28-day Facebook metrics per published post and page-level Search Console metrics into `performance_observations`; publish status copied to plan items. Idempotent. Registered as 'Grizzly SEO Reconcile' (daily 10:10) by `setup-scheduled-tasks.ps1`. |
 | `WEEKLY_MODEL`, `WEEKLY_BUDGET_USD` | Generation model id (default `deepseek-chat`) and per-attempt ceiling (default 20). An attempt refuses to start past the ceiling. |
 
-Compare a shadow week with the legacy output in `outputs/shadow/comparison.md` (topic, counts, dates,
-facts violations in the legacy copy, runtime, spend). Cutover criteria are in the rebuild plan section 5.
+Compare a shadow week with the legacy output in `outputs/shadow/compare.md`: the finished attempt (status,
+`finished_at`, runtime, spend) beside a two-sided legacy comparison (topic, counts, dates, facts
+violations in the legacy copy). Cutover criteria are in the rebuild plan section 5.
+
+### Offline rehearsal (before Friday, or after any wrapper change)
+
+Run the offline pipeline through the wrapper's own launch seam, isolated under `SEO_REHEARSAL_DIR`
+(`outputs/rehearsal` by default) so it cannot touch the legacy crew, the real shadow exports, or the
+Friday health marker:
+
+```powershell
+$env:SEO_REHEARSAL_DIR = "$env:TEMP\seo-rehearsal"
+.\.venv\Scripts\python.exe scripts\run-weekly-seo.py --rehearsal
+```
+
+It prints the `shadow` health block and writes the same block to
+`$env:SEO_REHEARSAL_DIR\weekly-runner-health.json`:
+
+| `shadow.status` | Means |
+|---|---|
+| `running` | The wrapper wrote the pre-launch marker / read the record before it finished |
+| `succeeded` / `degraded` | The attempt record finished; rehearsal passes (exit 0) |
+| `failed` | The attempt record says the run failed |
+| `failed (no attempt written)` | The child exited without writing any attempt for this launch |
+| `failed (stale attempt)` | Only an earlier attempt for this week exists — not this run's evidence |
+| `failed (killed at the deadline)` | The wrapper killed the child at `SEO_SHADOW_TIMEOUT_MIN` |
+
+`status` is always read from the attempt record (or from the engine's published
+`outputs/shadow/current-attempt.json` when the store is remote), never from the child's exit code — the
+exit code is carried only as `child.returncode` context. On a kill the wrapper finalizes the attempt
+named in `current-attempt.json` (marked `failed`, running stages closed, lease released) and never
+patches a foreign attempt.
 
 ## What the monitor now catches
 

@@ -41,6 +41,7 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { normalizePhotoFile } from './lib/schedule-text.mjs';
 import { defaultGbpPhotoDirs, resolveWritableCuratedFolder } from './lib/gbp-paths.mjs';
+import { checkImagePolicy, IMAGE_CONVERT_EXTS } from './gbp-poster/policy-check.mjs';
 import {
   derivePostServiceType,
   serviceSlug,
@@ -108,6 +109,25 @@ const SUPPORTED_EXTS = new Set(['.jpg', '.jpeg', '.png', '.heic', '.heif', '.web
 const dryRun = process.argv.includes('--dry-run');
 const rescan = process.argv.includes('--rescan');
 const noSync = process.argv.includes('--no-sync');
+
+// ── GBP media policy (10 KB, JPG/PNG only) ─────────────────────────────────
+// The pool may only offer artifacts GBP accepts. HEIC sources are judged by
+// their CONVERTED bytes (checked again at copy time, after the conversion), so
+// they are pooled only while a converter exists — and an unconvertible source is
+// skipped rather than copied unconverted under a .jpg name.
+function statSize(filePath) {
+  try { return `${fs.statSync(filePath).size} bytes`; } catch { return 'unreadable'; }
+}
+
+function poolPolicyViolations(entry) {
+  const ext = path.extname(entry.filename).toLowerCase();
+  if (IMAGE_CONVERT_EXTS.has(ext)) {
+    return heicConvert ? [] : [
+      { rule: 'image-needs-conversion', detail: `Image extension "${ext}" must be converted to JPG/PNG before GBP will accept it.` },
+    ];
+  }
+  return checkImagePolicy(entry.filePath);
+}
 
 // ── Cache helpers ──────────────────────────────────────────────────────────
 
@@ -553,7 +573,13 @@ async function main() {
     .filter(e => e && e.score >= MIN_SCORE)
     .filter(e => !usedBefore.has(String(e.filename || '').toLowerCase()))
     .map(e => ({ ...e, effectiveScore: e.score + recencyBonus(e) }))
-    .sort((a, b) => b.effectiveScore - a.effectiveScore);
+    .sort((a, b) => b.effectiveScore - a.effectiveScore)
+    .filter((e) => {
+      const violations = poolPolicyViolations(e);
+      if (!violations.length) return true;
+      console.warn(`  skipped ${e.filename} (${statSize(e.filePath)}): ${violations.map(v => v.detail).join(' ')}`);
+      return false;
+    });
 
   console.log(`\nUsable photos (score >= ${MIN_SCORE}): ${usable.length} of ${allFiles.length}`);
 
@@ -631,21 +657,67 @@ async function main() {
   console.log('');
   for (let i = 0; i < postsToMatch.length; i++) {
     const post = postsToMatch[i];
-    let photo = matches[i];
-
     const postType = derivePostServiceType(post);
 
     // Enforce the service boundary after GPT returns. The old code trusted the
     // model's best-effort pick and then renamed the file to the post service,
     // which is how a generator-panel image became a panel-upgrade image.
+    let photo = matches[i];
     if (photo && (usedFilenames.has(photo.filename) || photo.service_type !== postType)) {
       photo = null;
     }
-    if (!photo) {
-      photo = usable.find(p => !usedFilenames.has(p.filename) && p.service_type === postType) || null;
-    }
 
-    if (!photo) {
+    // Candidate order — GPT's pick first, then the ranked pool of the right type.
+    // Each candidate is judged as the FINAL artifact, so one that fails the
+    // media policy cascades to the next usable photo instead of leaving the post
+    // image-less.
+    const ordered = [
+      ...(photo ? [photo] : []),
+      ...usable.filter(p => p !== photo && p.service_type === postType),
+    ];
+
+    let ship = null;
+    const rejected = [];
+    for (const cand of ordered) {
+      if (usedFilenames.has(cand.filename)) continue;
+      const srcExt = path.extname(cand.filename);
+      const isHeic = IMAGE_CONVERT_EXTS.has(srcExt.toLowerCase());
+      const ext = isHeic ? '.jpg' : srcExt;
+      const destFilename = `${post.date}-${serviceSlug(post.service)}${ext}`;
+      const destPath = path.join(CURATED_FOLDER, destFilename);
+
+      // GBP's uploader rejects HEIC/HEIF, so the artifact that must pass is the
+      // CONVERTED JPEG. A source that cannot be converted is skipped — unconverted
+      // HEIC bytes are never copied under a .jpg name.
+      let jpegBuf = null;
+      if (isHeic) {
+        if (!heicConvert) {
+          rejected.push(`${cand.filename} (${statSize(cand.filePath)}): heic-convert unavailable — cannot convert to the JPG GBP accepts`);
+          continue;
+        }
+        try {
+          jpegBuf = Buffer.from(await heicConvert({
+            buffer: fs.readFileSync(cand.filePath), format: 'JPEG', quality: 0.9,
+          }));
+        } catch (e) {
+          rejected.push(`${cand.filename} (${statSize(cand.filePath)}): heic decode failed — ${e.message.slice(0, 60)}`);
+          continue;
+        }
+      }
+
+      const violations = jpegBuf
+        ? checkImagePolicy(destPath, { sizeBytes: jpegBuf.length })
+        : checkImagePolicy(cand.filePath);
+      if (violations.length) {
+        rejected.push(`${cand.filename} (${jpegBuf ? `${jpegBuf.length} bytes converted` : statSize(cand.filePath)}): ${violations.map(v => v.detail).join(' ')}`);
+        continue;
+      }
+      ship = { chosen: cand, destPath, destFilename, jpegBuf };
+      break;
+    }
+    for (const line of rejected) console.warn(`  skipped ${line}`);
+
+    if (!ship) {
       console.log(`  ${post.date} [${post.service}] → NO PHOTO AVAILABLE`);
       noPhotoCount++;
       const nextSchedule = updateSchedulePhotoFile(scheduleText, post.date, '');
@@ -656,31 +728,16 @@ async function main() {
 
     // GBP's uploader rejects HEIC/HEIF — curated copies must be JPEG (2026-07-31:
     // Day-1 post went out image-less because the winner was copied as .HEIC).
-    const srcExt = path.extname(photo.filename);
-    const isHeic = /^\.hei[cf]$/i.test(srcExt);
-    const ext = isHeic ? '.jpg' : srcExt;
-    const destFilename = `${post.date}-${serviceSlug(post.service)}${ext}`;
-    const destPath = path.join(CURATED_FOLDER, destFilename);
+    const { chosen, destPath, destFilename, jpegBuf } = ship;
 
-    const bonus = (photo.effectiveScore ?? photo.score) - photo.score;
-    const scoreStr = bonus > 0 ? `${photo.score}+${bonus}=${photo.effectiveScore}` : `${photo.score}`;
-    console.log(`  ${post.date} [${post.service}] → ${photo.filename} (score: ${scoreStr}, type: ${photo.service_type})`);
+    const bonus = (chosen.effectiveScore ?? chosen.score) - chosen.score;
+    const scoreStr = bonus > 0 ? `${chosen.score}+${bonus}=${chosen.effectiveScore}` : `${chosen.score}`;
+    console.log(`  ${post.date} [${post.service}] → ${chosen.filename} (score: ${scoreStr}, type: ${chosen.service_type})`);
     console.log(`    → ${destFilename}`);
 
     if (!dryRun) {
-      if (isHeic) {
-        if (!heicConvert) {
-          console.log(`    ⚠ heic-convert unavailable — copying original ${srcExt} (GBP will reject it)`);
-          fs.copyFileSync(photo.filePath, destPath);
-        } else {
-          const jpegBuf = Buffer.from(await heicConvert({
-            buffer: fs.readFileSync(photo.filePath), format: 'JPEG', quality: 0.9,
-          }));
-          fs.writeFileSync(destPath, jpegBuf);
-        }
-      } else {
-        fs.copyFileSync(photo.filePath, destPath);
-      }
+      if (jpegBuf) fs.writeFileSync(destPath, jpegBuf);
+      else fs.copyFileSync(chosen.filePath, destPath);
       const nextSchedule = updateSchedulePhotoFile(scheduleText, post.date, destPath);
       scheduleChanged ||= nextSchedule !== scheduleText;
       scheduleText = nextSchedule;
@@ -689,16 +746,16 @@ async function main() {
         postService: post.service,
         postServiceType: postType,
         photoPath: destPath,
-        sourcePath: photo.filePath,
-        sourceFilename: photo.filename,
-        photoServiceType: photo.service_type,
-        score: photo.score,
-        tags: photo.tags || [],
+        sourcePath: chosen.filePath,
+        sourceFilename: chosen.filename,
+        photoServiceType: chosen.service_type,
+        score: chosen.score,
+        tags: chosen.tags || [],
         selectedAt: new Date().toISOString(),
       });
     }
 
-    usedFilenames.add(photo.filename);
+    usedFilenames.add(chosen.filename);
     successCount++;
   }
 

@@ -86,11 +86,12 @@ async function detectBlockingInterstitial(page) {
 }
 
 function parseArgs(argv) {
-    const args = { dryRun: false, auth: false, headless: false, date: null, schedule: false, config: DEFAULT_CONFIG };
+    const args = { dryRun: false, auth: false, checkSession: false, headless: false, date: null, schedule: false, config: DEFAULT_CONFIG };
     for (let i = 0; i < argv.length; i += 1) {
         const arg = argv[i];
         if (arg === '--dry-run') args.dryRun = true;
         else if (arg === '--auth') args.auth = true;
+        else if (arg === '--check-session') args.checkSession = true;
         else if (arg === '--headless') args.headless = true;
         else if (arg === '--date') args.date = argv[++i];
         else if (arg.startsWith('--date=')) args.date = arg.slice('--date='.length);
@@ -200,6 +201,59 @@ async function assertLoggedIn(page) {
     if (await loggedOutMarketing.isVisible({ timeout: 1000 }).catch(() => false)) {
         throw new Error('GBP session expired (logged-out Business Profile marketing page shown). Re-authenticate with: node driver.mjs --auth');
     }
+}
+
+// Map a session-check failure to the bounded reason vocabulary the callers (and
+// state/gbp-session-health.json) read.
+const SESSION_CHECK_REASON = {
+    session_expired: 'logged_out',
+    captcha: 'captcha',
+    ui_changed_or_timeout: 'timeout',
+};
+
+function sessionCheckReason(message) {
+    return SESSION_CHECK_REASON[classifyFailure(message)] || 'unknown';
+}
+
+// G3 session probe: open the existing profile and run the same login/interstitial
+// checks the posting path runs, then require the Posts / Add-update control the
+// poster clicks. No workbook, no schedule row, no composer, no submit. Prints one
+// bounded JSON line — {"ok":true,"reason":"ok"} or a failure reason from
+// captcha|logged_out|timeout|unknown — and exits 0 (usable) or 2 (not usable).
+async function checkSession({ headless = false } = {}) {
+    let context;
+    let page;
+    let reason = null;
+    try {
+        context = await chromium.launchPersistentContext(USER_DATA_DIR, { headless, viewport: VIEWPORT });
+        page = await context.newPage();
+    } catch (e) {
+        reason = sessionCheckReason(e.message);
+        console.error(`[gbp-driver] session check could not start: ${e.message || e}`);
+    }
+    if (!reason) {
+        try {
+            await page.goto('https://business.google.com/', { waitUntil: 'domcontentloaded', timeout: 30000 });
+            await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+            await detectBlockingInterstitial(page);
+            await assertLoggedIn(page);
+            // A page that merely loads is not proof of a usable session — success
+            // needs the same control openUpdateComposer waits on.
+            const control = page.locator('button:has-text("Add update")')
+                .or(page.locator('button:has-text("Posts")')).first();
+            await control.waitFor({ timeout: 20000 });
+        } catch (e) {
+            reason = sessionCheckReason(e.message);
+            console.error(`[gbp-driver] session check failed: ${e.message || e}`);
+        }
+    }
+    try {
+        await context?.close();
+    } catch (closeErr) {
+        console.error(`browser context close failed: ${closeErr.message || closeErr}`);
+    }
+    emitResult(reason ? { ok: false, reason } : { ok: true, reason: 'ok' });
+    process.exitCode = reason ? 2 : 0;
 }
 
 async function openUpdateComposer(page) {
@@ -503,6 +557,12 @@ async function composeAndSubmit(page, payload, schedule = false) {
 
 async function main() {
     const args = parseArgs(process.argv.slice(2));
+
+    // Session probe: no config, no workbook, no schedule row.
+    if (args.checkSession) {
+        await checkSession({ headless: args.headless });
+        return;
+    }
 
     const config = readJson(args.config);
 
