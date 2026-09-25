@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   ALLOWED_LABELS,
   CAPTION_CHECK_MAX_CANDIDATES,
@@ -30,6 +32,27 @@ import {
 } from './photo-selection.mjs';
 
 const tmpDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'photo-selection-'));
+const moduleUrl = pathToFileURL(path.join(path.dirname(fileURLToPath(import.meta.url)), 'photo-selection.mjs')).href;
+
+/** Reserve from its own process, so two writers can actually race on the lock. */
+function reserveInChild(manifestPath, { platform, hash, photoPath }) {
+  const args = { manifestPath, platform, hashes: [hash], meta: { postDate: '2026-09-25', photoPath } };
+  const code = `import(${JSON.stringify(moduleUrl)}).then(({ reservePhotoHashes }) => {
+    process.stdout.write(JSON.stringify(reservePhotoHashes(${JSON.stringify(args)})));
+  }).catch((e) => { console.error(e); process.exit(1); });`;
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ['-e', code], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '';
+    let err = '';
+    child.stdout.on('data', (d) => { out += d; });
+    child.stderr.on('data', (d) => { err += d; });
+    child.on('error', reject);
+    child.on('close', (status) => {
+      if (status !== 0) reject(new Error(`reserve child failed (${status}): ${err}`));
+      else resolve(JSON.parse(out));
+    });
+  });
+}
 const writeJson = (file, value) => fs.writeFileSync(file, JSON.stringify(value, null, 2));
 function writeFile(text, ext = '.jpg') {
   const file = path.join(tmpDir(), `fixture-${Math.random().toString(36).slice(2, 8)}${ext}`);
@@ -329,6 +352,37 @@ test('manifest lock: a held lock blocks, a stale lock is reclaimed', () => {
   fs.utimesSync(lockPath, new Date(stale), new Date(stale));
   assert.equal(withManifestLock(file, () => 'reclaimed', { staleMs: 60000 }), 'reclaimed');
   assert.equal(fs.existsSync(lockPath), false);
+});
+
+test('manifest lock: concurrent writers cannot double-reserve or drop the other platform', async () => {
+  const file = path.join(tmpDir(), 'manifest.json');
+  // The foreign bucket that must survive every concurrent write.
+  saveSelectionManifest(file, {
+    version: 1,
+    platforms: { gbp: [{ postDate: '2026-09-01', postService: 'Panel Upgrade', photoPath: 'C:/curated/gbp-old.jpg', photoHash: 'gbp-old' }] },
+  });
+
+  // Round 1: same hash from two platforms — exactly one writer may reserve it.
+  const first = await Promise.all([
+    reserveInChild(file, { platform: 'facebook', hash: 'race-1', photoPath: 'C:/curated/fb-1.jpg' }),
+    reserveInChild(file, { platform: 'gbp', hash: 'race-1', photoPath: 'C:/curated/gbp-1.jpg' }),
+  ]);
+  assert.equal(first.filter((r) => r.ok).length, 1, 'one writer reserves, the other is refused');
+  assert.equal(first.filter((r) => !r.ok && r.conflicts.some((c) => c.hash === 'race-1')).length, 1, 'the loser sees the conflict');
+
+  // Round 2: different hashes — neither concurrent write may be lost.
+  const second = await Promise.all([
+    reserveInChild(file, { platform: 'facebook', hash: 'race-2', photoPath: 'C:/curated/fb-2.jpg' }),
+    reserveInChild(file, { platform: 'gbp', hash: 'race-3', photoPath: 'C:/curated/gbp-3.jpg' }),
+  ]);
+  assert.ok(second.every((r) => r.ok), JSON.stringify(second));
+
+  const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+  const hashes = loadSelectionManifest(file).map((e) => e.photoHash).sort();
+  assert.ok(hashes.includes('race-2') && hashes.includes('race-3'), `no reservation lost: ${hashes}`);
+  assert.ok(raw.platforms.gbp.some((e) => e.photoHash === 'gbp-old'), 'the other platform bucket was kept');
+  assert.ok(raw.platforms.facebook.some((e) => e.photoHash === 'race-2'), 'the FB bucket took its own write');
+  assert.equal(fs.existsSync(`${file}.lock`), false, 'lock released');
 });
 
 test('caption-photo check: 3 candidates max, then allowlist photo or text-only', async () => {

@@ -631,10 +631,28 @@ export function saveSelectionManifest(filePath, manifest, { platform = 'gbp' } =
 }
 
 /**
+ * Identity of the lock file as it exists right now: stat fields plus the pid
+ * written inside it. A reclaim unlinks exactly one snapshot, so a waiter that
+ * measured the dead lock cannot delete the fresh one the winner just created.
+ */
+function lockSnapshot(fsImpl, lockPath) {
+  try {
+    const st = fsImpl.statSync(lockPath);
+    let owner = '';
+    try { owner = String(fsImpl.readFileSync(lockPath, 'utf8')).trim(); } catch { /* unreadable owner */ }
+    return { mtimeMs: st.mtimeMs, size: st.size, owner };
+  } catch { return null; }
+}
+
+function sameLock(a, b) {
+  return Boolean(a && b && a.mtimeMs === b.mtimeMs && a.size === b.size && a.owner === b.owner);
+}
+
+/**
  * Small local reservation lock: worker and bridge call the pickers
  * independently, so the manifest read-check-write must be serialized. The lock
- * is a 'wx' sentinel next to the manifest; a stale one (dead process, >staleMs)
- * is reclaimed. fs is injectable for tests.
+ * is a 'wx' sentinel next to the manifest, holding the owner pid; a stale one
+ * (dead process, >staleMs) is reclaimed owner-checked. fs is injectable for tests.
  */
 export function withManifestLock(manifestPath, fn, {
   timeoutMs = 5000,
@@ -656,9 +674,17 @@ export function withManifestLock(manifestPath, fn, {
       acquired = true;
     } catch (e) {
       if (e.code !== 'EEXIST') throw e;
-      let age = 0;
-      try { age = now() - fsImpl.statSync(lockPath).mtimeMs; } catch { age = 0; }
-      if (age > staleMs) { try { fsImpl.unlinkSync(lockPath); } catch { /* raced */ } continue; }
+      const snapshot = lockSnapshot(fsImpl, lockPath);
+      if (!snapshot) continue; // lock vanished between open and stat: retry now
+      if (now() - snapshot.mtimeMs > staleMs) {
+        // Reclaim the lock we measured and nothing else: a fresh lock created in
+        // the meantime has a different owner pid/mtime, and unlinking it would
+        // leave two holders.
+        if (sameLock(snapshot, lockSnapshot(fsImpl, lockPath))) {
+          try { fsImpl.unlinkSync(lockPath); } catch { /* raced */ }
+        }
+        continue;
+      }
       if (now() > deadline) throw new Error(`manifest lock busy: ${lockPath}`);
       sleep(sleepMs);
     }
@@ -690,15 +716,17 @@ export function reservePhotoHashes({
     const history = loadSelectionManifest(manifestPath);
     const { conflicts, unknown } = hashConflicts({ hashes: wanted, history, now, weeks });
     if (conflicts.length) return { ok: false, reserved: [], conflicts, unknownHistory: unknown.unverifiedHistory };
-    const keyed = (() => {
-      let parsed = null;
-      try { parsed = JSON.parse(fs.readFileSync(manifestPath, 'utf8')); } catch { parsed = null; }
-      return manifestIsKeyed(parsed) ? { version: parsed.version || 1, platforms: { ...parsed.platforms } } : emptyManifest();
-    })();
-    const bucket = keyed.platforms[platform] || [];
-    bucket.push({ ...meta, platform, photoHash: wanted[0], sourceHash: meta.sourceHash || wanted[0], reservedAt: new Date(now).toISOString() });
-    keyed.platforms[platform] = bucket;
-    atomicWrite(manifestPath, `${JSON.stringify(keyed, null, 2)}\n`);
+    // Re-key through saveSelectionManifest so a legacy flat-array file keeps its
+    // rows instead of being rewritten as an empty keyed manifest, and a keyed
+    // file keeps every other platform's bucket. Legacy rows carry no platform,
+    // so tag them the way the pickers do before re-keying.
+    const rows = history.map((entry) => (
+      entry && entry.platform
+        ? entry
+        : { ...entry, platform: entry && entry.selectedBy === 'fb-photo-pick' ? 'fb' : platform }
+    ));
+    rows.push({ ...meta, photoHash: wanted[0], sourceHash: meta.sourceHash || wanted[0], reservedAt: new Date(now).toISOString() });
+    saveSelectionManifest(manifestPath, rows, { platform });
     return { ok: true, reserved: wanted, conflicts: [], unknownHistory: unknown.unverifiedHistory };
   }, lock);
 }

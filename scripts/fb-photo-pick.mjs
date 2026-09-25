@@ -41,7 +41,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defaultGbpPhotoDirs } from './lib/gbp-paths.mjs';
-import { derivePostServiceType, serviceSlug, loadSelectionManifest, saveSelectionManifest, selectionIdentityKeys } from './lib/photo-selection.mjs';
+import { derivePostServiceType, serviceSlug, loadSelectionManifest, saveSelectionManifest, selectionIdentityKeys, withManifestLock } from './lib/photo-selection.mjs';
 
 let heicConvert = null;
 try { heicConvert = (await import('heic-convert')).default; } catch { /* optional */ }
@@ -348,13 +348,19 @@ async function main() {
   const bareDate = (value) => String(value || '').replace(/\s*\(.*$/, '').trim();
   const dates = new Set(selections.map((s) => bareDate(s.postDate)));
   const ownsEntry = (e) => e && (e.platform === 'facebook' || e.selectedBy === 'fb-photo-pick');
-  const manifest = loadSelectionManifest(SELECTION_MANIFEST)
-    .filter((e) => !(ownsEntry(e) && dates.has(bareDate(e.postDate))))
-    // Pre-platform FB entries live in the legacy flat array; tag them before the
-    // keyed write or they would land in the GBP bucket.
-    .map((e) => ({ ...e, platform: e.platform || (ownsEntry(e) ? 'facebook' : 'gbp') }))
-    .concat(selections);
-  saveSelectionManifest(SELECTION_MANIFEST, manifest, { platform: 'facebook' });
+  // The manifest is shared with gbp-photo-pick, so the read-merge-write runs
+  // under the same reservation lock it takes: a lock only one side takes
+  // excludes nobody, and the later writer's blind write would drop the other's
+  // new entries (lost update → a shipped photo can be re-picked).
+  withManifestLock(SELECTION_MANIFEST, () => {
+    const manifest = loadSelectionManifest(SELECTION_MANIFEST)
+      .filter((e) => !(ownsEntry(e) && dates.has(bareDate(e.postDate))))
+      // Pre-platform FB entries live in the legacy flat array; tag them before the
+      // keyed write or they would land in the GBP bucket.
+      .map((e) => ({ ...e, platform: e.platform || (ownsEntry(e) ? 'facebook' : 'gbp') }))
+      .concat(selections);
+    saveSelectionManifest(SELECTION_MANIFEST, manifest, { platform: 'facebook' });
+  });
 
   console.log(`\n${matched} day(s) updated, ${short} short of the ideal count.`);
   console.log(`Schedule rewritten: ${SCHEDULE}`);
