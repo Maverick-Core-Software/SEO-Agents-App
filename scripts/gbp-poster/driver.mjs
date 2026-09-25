@@ -3,6 +3,7 @@ import xlsx from 'xlsx';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { execFileSync } from 'child_process';
 import { fileURLToPath, pathToFileURL } from 'url';
 import assert from 'node:assert/strict';
 import { checkPostPolicy, formatViolations } from './policy-check.mjs';
@@ -14,6 +15,12 @@ const __filename = fileURLToPath(import.meta.url);
 const DEFAULT_CONFIG = 'C:\\Workspace\\Active\\SEO-Agents-App\\config\\gbp-poster.config.json';
 const DEFAULT_WORKBOOK_FALLBACK = 'C:\\Workspace\\Active\\SEO-Agents-App\\outputs\\gbp_posting_schedule.xlsx';
 const USER_DATA_DIR = path.join(os.homedir(), '.claude', 'gbp-session');
+// P2.8: the exported cookies/cf-clearance token live beside the profile — outside
+// Git and outside every log — and are written atomically (temp + rename) so a failed
+// refresh can never truncate a good copy.
+export const STORAGE_STATE_PATH = process.env.GBP_STORAGE_STATE
+    || path.join(USER_DATA_DIR, 'storage-state.json');
+const AUTH_STATE_INTERVAL_MS = 5000;
 const VIEWPORT = { width: 1365, height: 900 };
 const DEBUG_DIR = 'C:\\Workspace\\Active\\SEO-Agents-App\\outputs\\gbp-debug';
 // Pre-submit compose steps may be retried (nothing has been posted yet). Once the
@@ -69,6 +76,84 @@ function logStep(step, extra) {
     console.error(`[gbp-driver ${stamp}] ${step}${extra ? ' ' + JSON.stringify(extra) : ''}`);
 }
 
+// Restrict the exported session file to its owner. It carries live Google cookies,
+// so it is as sensitive as the profile it came from; the path is already outside Git
+// and logs, so a failed icacls is not fatal.
+export function restrictStorageStateAcl(filePath, {
+    exec = execFileSync,
+    platform = process.platform,
+    user = process.env.USERNAME || process.env.USER || '',
+} = {}) {
+    if (platform !== 'win32' || !user) return false;
+    try {
+        exec('icacls', [filePath, '/inheritance:r', '/grant:r', `${user}:F`], { stdio: 'ignore' });
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+// Export the context's cookies/tokens. Returns counts only — never the contents.
+let exportSeq = 0;
+export async function exportSessionState(context, {
+    statePath = STORAGE_STATE_PATH,
+    mkdir = (p) => fs.mkdirSync(p, { recursive: true }),
+    writeFile = (p, contents) => fs.writeFileSync(p, contents, { mode: 0o600 }),
+    rename = (from, to) => fs.renameSync(from, to),
+    restrictAcl = restrictStorageStateAcl,
+} = {}) {
+    const state = await context.storageState();   // throws once the browser is gone
+    // Unique temp name: --auth refreshes on an interval while an immediate export may
+    // still be in flight, and two writers must never share one temp file.
+    const tmp = `${statePath}.tmp-${process.pid}-${++exportSeq}`;
+    mkdir(path.dirname(statePath));
+    writeFile(tmp, JSON.stringify(state));
+    rename(tmp, statePath);
+    restrictAcl(statePath);
+    return { ok: true, statePath, cookies: Array.isArray(state.cookies) ? state.cookies.length : 0 };
+}
+
+// Prefer the exported state (non-persistent context, same worker identity); fall back
+// to the interactive persistent profile when it is missing or unreadable, and always
+// when GBP_SESSION_MODE=persistent. Either way the login/interstitial checks stay the
+// gate — this only decides which context the page is opened in.
+export async function launchSessionContext({
+    browserType = chromium,
+    statePath = STORAGE_STATE_PATH,
+    persistentDir = USER_DATA_DIR,
+    headless = false,
+    viewport = VIEWPORT,
+    exists = (p) => fs.existsSync(p),
+    readFile = (p) => fs.readFileSync(p, 'utf8'),
+    persistentOnly = (process.env.GBP_SESSION_MODE || 'auto').toLowerCase() === 'persistent',
+    log = logStep,
+} = {}) {
+    if (exists(statePath) && !persistentOnly) {
+        let browser = null;
+        try {
+            const state = JSON.parse(readFile(statePath));
+            browser = await browserType.launch({ headless });
+            const context = await browser.newContext({ storageState: state, viewport });
+            log('session context', { mode: 'storage_state' });
+            return {
+                context,
+                mode: 'storage_state',
+                close: async () => {
+                    try { await context.close(); } catch { /* already closed */ }
+                    try { await browser.close(); } catch { /* already closed */ }
+                },
+            };
+        } catch (e) {
+            try { await browser?.close(); } catch { /* never started */ }
+            log('exported session state unusable, using the persistent profile', { message: String(e.message || e) });
+        }
+    }
+    const context = await browserType.launchPersistentContext(persistentDir, { headless, viewport });
+    const mode = persistentOnly ? 'persistent_profile_forced' : 'persistent_profile';
+    log('session context', { mode });
+    return { context, mode, close: () => context.close() };
+}
+
 // Detect Google anti-bot interstitials early and fail with a clear, categorizable
 // message instead of letting a downstream "could not find <button>" timeout hide it.
 async function detectBlockingInterstitial(page) {
@@ -86,12 +171,13 @@ async function detectBlockingInterstitial(page) {
 }
 
 function parseArgs(argv) {
-    const args = { dryRun: false, auth: false, checkSession: false, headless: false, date: null, schedule: false, config: DEFAULT_CONFIG };
+    const args = { dryRun: false, auth: false, checkSession: false, exportSession: false, headless: false, date: null, schedule: false, config: DEFAULT_CONFIG };
     for (let i = 0; i < argv.length; i += 1) {
         const arg = argv[i];
         if (arg === '--dry-run') args.dryRun = true;
         else if (arg === '--auth') args.auth = true;
         else if (arg === '--check-session') args.checkSession = true;
+        else if (arg === '--export-session') args.exportSession = true;
         else if (arg === '--headless') args.headless = true;
         else if (arg === '--date') args.date = argv[++i];
         else if (arg.startsWith('--date=')) args.date = arg.slice('--date='.length);
@@ -221,12 +307,12 @@ function sessionCheckReason(message) {
 // bounded JSON line — {"ok":true,"reason":"ok"} or a failure reason from
 // captcha|logged_out|timeout|unknown — and exits 0 (usable) or 2 (not usable).
 async function checkSession({ headless = false } = {}) {
-    let context;
+    let session = null;
     let page;
     let reason = null;
     try {
-        context = await chromium.launchPersistentContext(USER_DATA_DIR, { headless, viewport: VIEWPORT });
-        page = await context.newPage();
+        session = await launchSessionContext({ headless });
+        page = await session.context.newPage();
     } catch (e) {
         reason = sessionCheckReason(e.message);
         console.error(`[gbp-driver] session check could not start: ${e.message || e}`);
@@ -248,12 +334,30 @@ async function checkSession({ headless = false } = {}) {
         }
     }
     try {
-        await context?.close();
+        await session?.close();
     } catch (closeErr) {
         console.error(`browser context close failed: ${closeErr.message || closeErr}`);
     }
     emitResult(reason ? { ok: false, reason } : { ok: true, reason: 'ok' });
     process.exitCode = reason ? 2 : 0;
+}
+
+// Worker-invoked refresh of the exported state from the live profile (no posting, no
+// claims). The worker only calls this after a passing probe, while it holds the
+// pidfile, so the export is refreshed under exclusive ownership.
+async function exportSessionOnly({ headless = false } = {}) {
+    let context;
+    try {
+        context = await chromium.launchPersistentContext(USER_DATA_DIR, { headless, viewport: VIEWPORT });
+        const exported = await exportSessionState(context);
+        emitResult({ ok: true, cookies: exported.cookies });
+        process.exitCode = 0;
+    } catch (e) {
+        emitResult({ ok: false, error: String(e.message || e) });
+        process.exitCode = 1;
+    } finally {
+        try { await context?.close(); } catch { /* already gone */ }
+    }
 }
 
 async function openUpdateComposer(page) {
@@ -564,6 +668,13 @@ async function main() {
         return;
     }
 
+    // Refresh the exported session state without posting (the worker calls this under
+    // its pidfile after a passing probe).
+    if (args.exportSession) {
+        await exportSessionOnly({ headless: args.headless });
+        return;
+    }
+
     const config = readJson(args.config);
 
     if (args.auth) {
@@ -574,7 +685,15 @@ async function main() {
         const page = await context.newPage();
         console.log('AUTH MODE: Log into Google Business Profile, then close this browser window.');
         await page.goto('https://business.google.com/', { waitUntil: 'domcontentloaded' });
+        // The profile only yields its cookies while a context is still open, and closing
+        // the window takes the profile with it — there is no "export on exit" moment, so
+        // refresh on a short interval while the sign-in window is up. Writes are atomic,
+        // so a failed later attempt leaves the last good copy in place.
+        const exportTimer = setInterval(() => { exportSessionState(context).catch(() => {}); }, AUTH_STATE_INTERVAL_MS);
+        const first = await exportSessionState(context).catch((e) => ({ ok: false, error: String(e.message || e) }));
+        logStep('auth mode session export', { ok: Boolean(first?.ok), cookies: first?.cookies ?? 0 });
         await page.waitForEvent('close', { timeout: 0 }).catch(() => {});
+        clearInterval(exportTimer);
         await context.close();
         return;
     }
@@ -656,10 +775,8 @@ async function main() {
         return;
     }
 
-    const context = await chromium.launchPersistentContext(USER_DATA_DIR, {
-        headless: args.headless,
-        viewport: VIEWPORT,
-    });
+    const session = await launchSessionContext({ headless: args.headless });
+    const context = session.context;
     const page = await context.newPage();
 
     try {
@@ -728,7 +845,7 @@ async function main() {
         }
     } finally {
         try {
-            await context.close();
+            await session.close();
         } catch (closeErr) {
             console.error(`browser context close failed: ${closeErr.message || closeErr}`);
         }

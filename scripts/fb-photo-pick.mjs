@@ -24,7 +24,13 @@
  *     - record the choice in state/photo-selection-manifest.json so the
  *       selection is auditable, same as the GBP path
  *
- *   No photo is used twice in the same week.
+ *   No photo is used twice in the same week, and a photo is recognised by ALL
+ *   of its paths (source, classifier copy, curated copy) so a re-run cannot
+ *   re-pick one that was already used.
+ *
+ *   The selection manifest is shared with GBP, so the re-run purge touches only
+ *   entries this picker owns (platform: facebook) — a date purge must never drop
+ *   a GBP selection for the same date.
  *
  * USAGE
  *   node scripts/fb-photo-pick.mjs              Pick and write.
@@ -35,7 +41,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defaultGbpPhotoDirs } from './lib/gbp-paths.mjs';
-import { derivePostServiceType, serviceSlug } from './lib/photo-selection.mjs';
+import { derivePostServiceType, serviceSlug, loadSelectionManifest, saveSelectionManifest, selectionIdentityKeys } from './lib/photo-selection.mjs';
 
 let heicConvert = null;
 try { heicConvert = (await import('heic-convert')).default; } catch { /* optional */ }
@@ -59,12 +65,18 @@ function argValue(flag) {
 const MIN_SCORE = parseInt(argValue('--min') || process.env.FB_PHOTO_MIN_SCORE || '60', 10);
 
 const { curatedPreferred: CURATED_FOLDER } = defaultGbpPhotoDirs(process.env);
-const SCHEDULE = path.join(PROJECT_ROOT, 'outputs', 'facebook_posting_schedule.md');
-const SELECTION_MANIFEST = path.join(PROJECT_ROOT, 'state', 'photo-selection-manifest.json');
-const POOLS = [
-  path.join(PROJECT_ROOT, 'state', 'electrical-classified.json'),
-  path.join(PROJECT_ROOT, 'state', 'electrical-backfill.json'),
-];
+const SCHEDULE = process.env.FB_SCHEDULE_PATH
+  || path.join(PROJECT_ROOT, 'outputs', 'facebook_posting_schedule.md');
+const SELECTION_MANIFEST = process.env.GBP_PHOTO_SELECTION_MANIFEST
+  || path.join(PROJECT_ROOT, 'state', 'photo-selection-manifest.json');
+// Classified-photo pools. FB_PHOTO_POOLS (comma-separated) is the isolated-test
+// seam; production always reads the classifier's two manifests.
+const POOLS = (process.env.FB_PHOTO_POOLS
+  ? process.env.FB_PHOTO_POOLS.split(',')
+  : [
+    path.join(PROJECT_ROOT, 'state', 'electrical-classified.json'),
+    path.join(PROJECT_ROOT, 'state', 'electrical-backfill.json'),
+  ]).map((p) => p.trim()).filter(Boolean);
 
 // How many photos each post type wants.
 const WANTED = { slideshow: 4, carousel: 3, photo: 1 };
@@ -93,6 +105,20 @@ const allowFallback = !process.argv.includes('--no-fallback');
 const CURATED_NAME_RE = /^(\d{4}-\d{2}-\d{2})-(panel|lighting|wiring|ev-charger|outlet|generator)(?:-\d+)?\.(?:jpe?g|png|webp)$/i;
 const CURATED_SEED_SCORE = parseInt(process.env.FB_CURATED_SEED_SCORE || process.env.GBP_CURATED_SEED_SCORE || '70', 10);
 
+// One photo can sit at several paths (classified source, the classifier's
+// converted copy) and is known to the manifest by any of them. The used-set used
+// to be keyed on the pool's copy path while the manifest recorded the source
+// path, so a photo was handed out twice (2026-09-25). Key every pool entry by all
+// of its identities via the shared contract.
+function poolIdentityKeys({ srcPath, usable }) {
+  return selectionIdentityKeys({
+    sourcePath: srcPath,
+    photoPath: usable,
+    sourceFilename: srcPath ? path.basename(srcPath) : '',
+    photoFilename: usable ? path.basename(usable) : '',
+  });
+}
+
 function curatedPool(seen) {
   const out = [];
   let names;
@@ -107,12 +133,13 @@ function curatedPool(seen) {
     if (stems.has(stem)) continue;
     stems.add(stem);
     const full = path.join(CURATED_FOLDER, name);
-    const key = full.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
+    const keys = poolIdentityKeys({ srcPath: full, usable: full });
+    if (keys.some((k) => seen.has(k))) continue;
+    for (const k of keys) seen.add(k);
     out.push({
       srcPath: full,
       usable: full,
+      keys,
       score: CURATED_SEED_SCORE,
       serviceType: m[2].toLowerCase(),
       tags: [m[2].toLowerCase()],
@@ -134,12 +161,14 @@ function loadPool() {
       // Prefer the already-converted copy the classifier made; fall back to source.
       const usable = e.copiedTo && fs.existsSync(e.copiedTo) ? e.copiedTo : srcPath;
       if (!fs.existsSync(usable)) continue;
-      const key = usable.toLowerCase();
-      if (seen.has(key)) continue;
-      seen.add(key);
+      // Both paths, so a manifest that recorded either one still blocks the photo.
+      const keys = poolIdentityKeys({ srcPath, usable });
+      if (keys.some((k) => seen.has(k))) continue;
+      for (const k of keys) seen.add(k);
       out.push({
         srcPath,
         usable,
+        keys,
         score: Number(e.score) || 0,
         serviceType: e.service_type || 'other',
         tags: e.tags || [],
@@ -222,11 +251,9 @@ async function main() {
   const posts = parseSchedule(text);
   const used = new Set();
   // Never hand out a photo that an earlier week already used (GBP or FB).
-  try {
-    for (const e of JSON.parse(fs.readFileSync(SELECTION_MANIFEST, 'utf8'))) {
-      for (const k of [e.sourcePath, e.photoPath]) if (k) used.add(String(k).toLowerCase());
-    }
-  } catch { /* no manifest yet */ }
+  for (const e of loadSelectionManifest(SELECTION_MANIFEST)) {
+    for (const k of selectionIdentityKeys(e)) used.add(k);
+  }
   const selections = [];
   let matched = 0, short = 0;
 
@@ -237,7 +264,7 @@ async function main() {
     const slug = serviceSlug(post.service);
 
     const pickFor = (type) => pool
-      .filter((p) => p.score >= MIN_SCORE && p.serviceType === type && !used.has(p.usable.toLowerCase()))
+      .filter((p) => p.score >= MIN_SCORE && p.serviceType === type && !p.keys.some((k) => used.has(k)))
       .slice(0, want);
 
     let picks = pickFor(wantType);
@@ -262,7 +289,7 @@ async function main() {
     const destPaths = [];
     for (let i = 0; i < picks.length; i++) {
       const pick = picks[i];
-      used.add(pick.usable.toLowerCase());
+      for (const k of pick.keys) used.add(k);
       const destName = `${post.date}-${slug}-${i + 1}${extFor(pick.usable)}`;
       const destPath = path.join(CURATED_FOLDER, destName);
       if (!dryRun) {
@@ -271,6 +298,9 @@ async function main() {
       }
       destPaths.push(destPath);
       selections.push({
+        // This picker owns `platform: facebook` entries only; the purge below
+        // keys off it so GBP selections survive an FB re-run.
+        platform: 'facebook',
         // Bare YYYY-MM-DD, same as gbp-photo-pick: fb-photo-rewrite and
         // facebook-poster compare manifest dates against the parsed day date.
         postDate: post.date,
@@ -311,14 +341,20 @@ async function main() {
 
   fs.writeFileSync(SCHEDULE, text);
 
-  let manifest = [];
-  try { manifest = JSON.parse(fs.readFileSync(SELECTION_MANIFEST, 'utf8')); } catch { manifest = []; }
-  // Drop prior entries for the same dates so re-runs do not stack up.
-  const dates = new Set(selections.map((s) => s.postDate));
-  manifest = manifest.filter((e) => !dates.has(e.postDate));
-  manifest.push(...selections);
-  fs.mkdirSync(path.dirname(SELECTION_MANIFEST), { recursive: true });
-  fs.writeFileSync(SELECTION_MANIFEST, JSON.stringify(manifest, null, 2));
+  // Drop prior FB entries for the same dates so re-runs do not stack up. Scoped
+  // to this picker's own entries: an unscoped date purge also dropped the GBP
+  // selection for that date, and GBP then posted with an unaudited photo. Older
+  // FB entries stored DATE with its human parenthetical, so compare bare dates.
+  const bareDate = (value) => String(value || '').replace(/\s*\(.*$/, '').trim();
+  const dates = new Set(selections.map((s) => bareDate(s.postDate)));
+  const ownsEntry = (e) => e && (e.platform === 'facebook' || e.selectedBy === 'fb-photo-pick');
+  const manifest = loadSelectionManifest(SELECTION_MANIFEST)
+    .filter((e) => !(ownsEntry(e) && dates.has(bareDate(e.postDate))))
+    // Pre-platform FB entries live in the legacy flat array; tag them before the
+    // keyed write or they would land in the GBP bucket.
+    .map((e) => ({ ...e, platform: e.platform || (ownsEntry(e) ? 'facebook' : 'gbp') }))
+    .concat(selections);
+  saveSelectionManifest(SELECTION_MANIFEST, manifest, { platform: 'facebook' });
 
   console.log(`\n${matched} day(s) updated, ${short} short of the ideal count.`);
   console.log(`Schedule rewritten: ${SCHEDULE}`);

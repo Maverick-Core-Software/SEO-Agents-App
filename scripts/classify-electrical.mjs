@@ -13,10 +13,15 @@
  *   --dest <dir>    : override destination folder.
  *   --rescan        : reprocess everything in source (ignore "done" manifest).
  *   --dry-run       : no copy, no delete.
+ *   --relabel-curated: label the curated pool for the pickers (P2.1). Reuses this
+ *                     transport at the APPROVED hosted endpoint (gpt-4o) — never the
+ *                     local default — and checkpoints by sha256 so an interrupted
+ *                     (paid) run resumes. Writes state/curated-labels.json.
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { defaultGbpPhotoDirs } from './lib/gbp-paths.mjs';
 import { serviceSlug } from './lib/photo-selection.mjs';
@@ -43,6 +48,7 @@ const doDelete = process.argv.includes('--delete');
 const dryRun = process.argv.includes('--dry-run');
 const rescan = process.argv.includes('--rescan');
 const curate = process.argv.includes('--curate');
+const relabelMode = process.argv.includes('--relabel-curated');
 function argValue(flag) {
   const i = process.argv.indexOf(flag);
   return (i >= 0 && process.argv[i + 1] && !process.argv[i + 1].startsWith('--')) ? process.argv[i + 1] : null;
@@ -184,7 +190,17 @@ async function resizeJpeg(buf) {
   } catch { return buf; }
 }
 
-async function classifyPhoto(imagePath) {
+// One vision call: normalise the image, post it, and return the parsed JSON body plus
+// the model the endpoint reported it served. Shared by the weekly classifier (local
+// backend) and the approved-endpoint relabel pass below.
+async function visionJson(imagePath, {
+  prompt,
+  maxTokens = 200,
+  url = VISION_URL,
+  model = VISION_MODEL,
+  apiKey = VISION_API_KEY,
+  extraBody = {},
+} = {}) {
   const ext = path.extname(imagePath).toLowerCase();
   let buf = fs.readFileSync(imagePath);
   let mime = detectMime(buf);
@@ -200,20 +216,20 @@ async function classifyPhoto(imagePath) {
 
   const dataUrl = 'data:' + mime + ';base64,' + buf.toString('base64');
 
-  const res = await fetch(VISION_URL + '/chat/completions', {
+  const res = await fetch(url + '/chat/completions', {
     method: 'POST',
-    headers: VISION_API_KEY
-      ? { 'Content-Type': 'application/json', Authorization: 'Bearer ' + VISION_API_KEY }
+    headers: apiKey
+      ? { 'Content-Type': 'application/json', Authorization: 'Bearer ' + apiKey }
       : { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      model: VISION_MODEL,
-      max_tokens: 200,
+      model,
+      max_tokens: maxTokens,
       temperature: 0,
-      chat_template_kwargs: { enable_thinking: false },
+      ...extraBody,
       messages: [{
         role: 'user',
         content: [
-          { type: 'text', text: PROMPT },
+          { type: 'text', text: prompt },
           { type: 'image_url', image_url: { url: dataUrl } },
         ],
       }],
@@ -229,11 +245,19 @@ async function classifyPhoto(imagePath) {
   const s = text.indexOf('{');
   const e = text.lastIndexOf('}');
   if (s >= 0 && e > s) text = text.slice(s, e + 1);
-  try {
-    return JSON.parse(text);
-  } catch {
-    return { score: 0, service_type: 'other', tags: [], reject_reason: 'parse error' };
-  }
+  let label = null;
+  try { label = JSON.parse(text); } catch { label = null; }
+  return { label, model: data.model || '' };
+}
+
+async function classifyPhoto(imagePath) {
+  const { label } = await visionJson(imagePath, {
+    prompt: PROMPT,
+    maxTokens: 200,
+    // llama.cpp-only knob; the hosted endpoint rejects unknown request fields.
+    extraBody: { chat_template_kwargs: { enable_thinking: false } },
+  });
+  return label || { score: 0, service_type: 'other', tags: [], reject_reason: 'parse error' };
 }
 
 function uniqueDest(relPath, destDir) {
@@ -248,6 +272,179 @@ function uniqueDest(relPath, destDir) {
     n++;
   }
   return candidate;
+}
+
+// ── P2.1 curated labels (--relabel-curated) ──────────────────────────────
+// The weekly pass answers "is this postable"; the pickers need the label taxonomy
+// below instead. The relabel pass reuses the same transport but pins the approved
+// hosted endpoint explicitly: this file's backend defaults to a LOCAL model, and a
+// relabel silently aimed at it would burn the GPU seat and write labels nobody asked
+// for. The API key is read from env only and never logged or written.
+const RELABEL_URL = 'https://api.openai.com/v1';
+const RELABEL_MODEL = 'gpt-4o';
+const RELABEL_OUT = path.join(PROJECT_ROOT, 'state', 'curated-labels.json');
+
+export const LABEL_TAXONOMY = Object.freeze({
+  panel: ['upgrade', 'replacement', 'subpanel', 'meter-service'],
+  generator: ['standby', 'inlet-interlock', 'transfer-switch'],
+  'ev-charger': [],
+  lighting: ['recessed', 'ceiling-fan', 'outdoor', 'fixture'],
+  outlet: ['gfci', 'standard'],
+  wiring: ['rewire', 'conduit', 'junction'],
+  surge: [],
+  'smoke-co': [],
+  other: [],
+});
+export const LABEL_QUALITIES = Object.freeze(['ok', 'tiny', 'logo_or_graphic', 'non_electrical', 'people']);
+
+export const RELABEL_PROMPT = [
+  'Label this photo for a curated pool of Google Business Profile post images for an electrical contractor.',
+  '',
+  'Reply ONLY with JSON:',
+  '{"service_type":"<type>","subtype":"<subtype or empty>","tags":["tag"],"what_is_visible":"<one sentence>","quality":"<quality>","score":<0-100>}',
+  '',
+  'service_type, and the only subtypes that belong to it (empty subtype when none fits):',
+  '  panel: upgrade, replacement, subpanel, meter-service',
+  '  generator: standby, inlet-interlock, transfer-switch',
+  '  ev-charger: (no subtypes)',
+  '  lighting: recessed, ceiling-fan, outdoor, fixture',
+  '  outlet: gfci, standard',
+  '  wiring: rewire, conduit, junction',
+  '  surge: (no subtypes)',
+  '  smoke-co: (no subtypes)',
+  '  other: (not electrical work)',
+  '',
+  'quality — exactly one of:',
+  '  ok               usable: electrical work, clean, no faces',
+  '  tiny             too small / low resolution to use',
+  '  logo_or_graphic  logo, illustration, screenshot, or text graphic',
+  '  non_electrical   a real photo, but not electrical work (family, food, landscape)',
+  '  people           any person or face is visible',
+  '',
+  'score: 0-100 for use as a GBP post image; faces/PII or non-electrical work score below 40.',
+  'what_is_visible: one sentence describing only what is actually in the frame.',
+  'tags: free-form lowercase keywords (e.g. conduit, breaker-box, outdoor).',
+].join('\n');
+
+// The pickers select on these labels, so a plausible-but-unlisted service_type or
+// subtype is a miss, not a near-match: a subtype outside the taxonomy can never match
+// a service key, and an unknown quality is a schema drift. Reject rather than store.
+export function validateLabel(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { ok: false, reason: 'not_an_object' };
+  const service = String(raw.service_type || '').trim();
+  if (!Object.prototype.hasOwnProperty.call(LABEL_TAXONOMY, service)) return { ok: false, reason: 'unknown_service_type' };
+  const subtype = String(raw.subtype || '').trim();
+  if (subtype && !LABEL_TAXONOMY[service].includes(subtype)) return { ok: false, reason: 'unknown_subtype' };
+  const quality = String(raw.quality || '').trim();
+  if (!LABEL_QUALITIES.includes(quality)) return { ok: false, reason: 'unknown_quality' };
+  const score = Number(raw.score);
+  if (!Number.isFinite(score) || score < 0 || score > 100) return { ok: false, reason: 'bad_score' };
+  const whatIsVisible = String(raw.what_is_visible || '').trim();
+  if (!whatIsVisible) return { ok: false, reason: 'missing_what_is_visible' };
+  if (!Array.isArray(raw.tags)) return { ok: false, reason: 'bad_tags' };
+  const tags = raw.tags.map((t) => String(t).trim()).filter(Boolean);
+  return {
+    ok: true,
+    label: { service_type: service, subtype, tags, what_is_visible: whatIsVisible, quality, score },
+  };
+}
+
+// Checkpoints by sha256 (one write per accepted label) so an interrupted paid run
+// resumes at the first photo it has not already labelled. `model` is what we asked
+// for, `model_reported` what the endpoint said it served; neither is a secret.
+export async function relabelCurated({
+  items,
+  transport,
+  outPath = RELABEL_OUT,
+  readLabels = (p) => { try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch { return {}; } },
+  writeLabels = (p, labels) => {
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p + '.tmp', JSON.stringify(labels, null, 2));
+    fs.renameSync(p + '.tmp', p);
+  },
+  modelRequested = RELABEL_MODEL,
+  rescan = false,
+  now = () => new Date(),
+  log = () => {},
+} = {}) {
+  const labels = readLabels(outPath) || {};
+  let added = 0, skipped = 0, rejected = 0, failed = 0;
+  for (const item of items) {
+    const existing = labels[item.sha256];
+    if (existing?.service_type && !rescan) { skipped++; continue; }
+    let out;
+    try {
+      out = await transport({ file: item.file, sha256: item.sha256, model: modelRequested });
+    } catch (e) {
+      failed++;
+      log('  ' + path.basename(item.file) + ' transport error: ' + (e.message || e));
+      continue;
+    }
+    const check = validateLabel(out?.label ?? out);
+    if (!check.ok) {
+      rejected++;
+      log('  ' + path.basename(item.file) + ' label rejected (' + check.reason + ') — not stored');
+      continue;
+    }
+    labels[item.sha256] = {
+      filenames: [...new Set([...(existing?.filenames || []), path.basename(item.file)])],
+      ...check.label,
+      model: modelRequested,
+      model_reported: String(out?.model || '').trim().slice(0, 60) || null,
+      date: now().toISOString().slice(0, 10),
+    };
+    added++;
+    writeLabels(outPath, labels);   // checkpoint per hash so an interrupt is resumable
+  }
+  writeLabels(outPath, labels);
+  return { added, skipped, rejected, failed, stored: Object.keys(labels).length };
+}
+
+async function relabelCuratedMode() {
+  const dir = sourceOverride || path.join(GBP_CACHE, 'Curated');
+  const model = argValue('--model') || RELABEL_MODEL;
+  // Deliberately not VISION_API_KEY: that is derived from VISION_URL, which defaults
+  // to the local endpoint and would hand the wrong (empty) key to the paid one.
+  const apiKey = process.env.ELECTRICAL_VISION_API_KEY || process.env.OPENAI_API_KEY || '';
+  console.log('=== Curated relabel (P2.1) ===');
+  console.log('Source:   ' + dir);
+  console.log('Endpoint: ' + RELABEL_URL + ' (pinned; the local default is never used here)');
+  console.log('Model:    ' + model + (apiKey ? ' (authenticated)' : ''));
+  console.log('Output:   ' + RELABEL_OUT);
+
+  const files = discoverPhotos(dir);
+  const items = files.map((file) => ({
+    file,
+    sha256: createHash('sha256').update(fs.readFileSync(file)).digest('hex'),
+  }));
+
+  if (dryRun) {
+    let labelled = 0;
+    try { labelled = Object.keys(JSON.parse(fs.readFileSync(RELABEL_OUT, 'utf8'))).length; } catch { /* no store yet */ }
+    console.log('(dry run) ' + items.length + ' photo(s) in ' + dir + '; ' + labelled + ' hash(es) already labelled');
+    return;
+  }
+  if (!apiKey) {
+    throw new Error('--relabel-curated needs ELECTRICAL_VISION_API_KEY (or OPENAI_API_KEY) for ' + RELABEL_URL + '; refusing to fall back to the local model');
+  }
+
+  const summary = await relabelCurated({
+    items,
+    rescan,
+    modelRequested: model,
+    transport: ({ file, model: requested }) => visionJson(file, {
+      prompt: RELABEL_PROMPT,
+      maxTokens: 400,
+      url: RELABEL_URL,
+      model: requested,
+      apiKey,
+    }),
+    log: (message) => console.log(message),
+  });
+  console.log('Relabel done. labelled: ' + summary.added + ' | resumed/skipped: ' + summary.skipped
+    + ' | rejected: ' + summary.rejected + ' | errors: ' + summary.failed
+    + ' | stored hashes: ' + summary.stored);
+  console.log('Carter spot-checks 50 labels before any full paid run.');
 }
 
 async function curateStaging() {
@@ -399,8 +596,13 @@ async function main() {
   }
 }
 
-if (curate) {
-  curateStaging().catch((e) => { console.error(e.message || e); process.exit(1); });
-} else {
-  main().catch((e) => { console.error(e.message || e); process.exit(1); });
+// Import-safe (the label-schema test imports validateLabel/relabelCurated): run only
+// when this file is the entry point.
+const invokedDirectly = process.argv[1]
+  && pathToFileURL(fs.realpathSync(process.argv[1])).href
+    === pathToFileURL(fs.realpathSync(fileURLToPath(import.meta.url))).href;
+
+if (invokedDirectly) {
+  const run = relabelMode ? relabelCuratedMode : (curate ? curateStaging : main);
+  run().catch((e) => { console.error(e.message || e); process.exit(1); });
 }

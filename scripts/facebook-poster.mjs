@@ -103,6 +103,19 @@ const GBP_PHOTO_PATH = process.env.GBP_PHOTO_PATH
 const PHOTO_SELECTION_MANIFEST = process.env.GBP_PHOTO_SELECTION_MANIFEST
   || path.join(PROJECT_ROOT, 'state', 'photo-selection-manifest.json');
 const photoSelectionManifest = loadPhotoSelectionManifest(PHOTO_SELECTION_MANIFEST);
+
+/**
+ * P2.5 poster guard. The selection manifest is the only source of truth for a
+ * photo this poster may publish: an entry must name this exact file for this
+ * post's date and service. The crew's guessed filenames — IMG_####.JPG and other
+ * raw library paths — have no entry and are rejected. An empty/missing manifest
+ * keeps the pre-manifest trust boundary (nothing publishes without the pick
+ * pipeline recording it first).
+ */
+export function auditPhotosInManifest({ date, service, photoPath, manifest = photoSelectionManifest }) {
+  if (!manifest?.length) return { ok: true, reason: 'no selection manifest' };
+  return isManifestSelectionCompatible({ date, service, photoPath, manifest });
+}
 const SCHEDULE_FILE = path.join(PROJECT_ROOT, 'outputs', 'facebook_posting_schedule.md');
 const LOGO_PATH = process.env.GRIZZLY_LOGO_PATH || path.join(PROJECT_ROOT, 'assets', 'grizzly-logo.png');
 const ENDCARD_PATH = process.env.GRIZZLY_ENDCARD_PATH || path.join(PROJECT_ROOT, 'assets', 'grizzly-endcard.jpg');
@@ -562,24 +575,21 @@ function curatedPhotoForDate(date, service) {
   } catch { return null; }
 }
 
-function resolvePhotoPath(post) {
-  // Explicit PHOTO_FILE from the schedule is trusted when the file exists on disk
-  // in curated/GBP libraries (crew/human-picked). Manifest audit is a soft
-  // warning only for those explicit picks so carousel/slideshow weeks don't
-  // collapse to text when the pick pipeline hasn't re-manifested every file.
+export function resolvePhotoPath(post) {
+  // Explicit PHOTO_FILE from the schedule is accepted only when the selection
+  // manifest audits it (the crew's keyword guesses are not). Rejected photos fall
+  // through to the same-date curated winner — or the post ships text-only.
   const acceptExplicit = (candidate) => {
     if (!candidate || !fs.existsSync(candidate)) return null;
-    if (photoSelectionManifest?.length) {
-      const audit = isManifestSelectionCompatible({
-        date: post.date,
-        service: post.service,
-        photoPath: candidate,
-        manifest: photoSelectionManifest,
-      });
-      if (!audit.ok) {
-        hopLog('facebook-poster', 'warn',
-          `[photo-guard] explicit PHOTO_FILE not in manifest (${audit.reason}) — allowing ${path.basename(candidate)}`);
-      }
+    const audit = auditPhotosInManifest({
+      date: post.date,
+      service: post.service,
+      photoPath: candidate,
+    });
+    if (!audit.ok) {
+      hopLog('facebook-poster', 'warn',
+        `[photo-guard] rejected ${path.basename(candidate)} (${audit.reason})`);
+      return null;
     }
     return candidate;
   };
@@ -663,24 +673,14 @@ function curatedPhotosForPost(post, max = 4) {
     for (const file of files) {
       if (out.length >= max) break;
       const candidate = path.join(GBP_CURATED_FOLDER, file);
-      if (manifestEmpty) {
-        out.push(candidate);
-        continue;
-      }
-      const audit = isManifestSelectionCompatible({
+      // Without a manifest, date-prefixed curated files are the pre-manifest
+      // trust boundary (they only land here via the pick pipeline). With one,
+      // an unaudited file is exactly what the guard rejects — no fill fallback.
+      if (manifestEmpty || auditPhotosInManifest({
         date: post.date,
         service: post.service,
         photoPath: candidate,
-        manifest: photoSelectionManifest,
-      });
-      if (audit.ok) out.push(candidate);
-    }
-    // Date-prefixed curated files with no matching manifest entry: still allow
-    // them for slideshow (same trust boundary as pre-manifest video fallback).
-    if (!out.length && files.length) {
-      for (const file of files.slice(0, max)) {
-        out.push(path.join(GBP_CURATED_FOLDER, file));
-      }
+      }).ok) out.push(candidate);
     }
     return out;
   } catch {

@@ -17,6 +17,7 @@ import {
   createGbpPollGuard,
   parseSessionProbe,
 } from './gbp-worker.mjs';
+import { exportSessionState, launchSessionContext, restrictStorageStateAcl, STORAGE_STATE_PATH } from './gbp-poster/driver.mjs';
 
 describe('grokVerdictDecision (Grok-verdict reconciliation policy)', () => {
   it('confirms a live verdict', () => {
@@ -137,11 +138,18 @@ describe('parseSessionProbe (driver --check-session contract)', () => {
 // The handoff under test: failed probe → release → interactive takeover → background
 // stays idle (including retries) → resumption needs exclusive reacquisition PLUS a
 // passing probe. `tick` mirrors one poll pass with every side effect recorded.
-function makeSessionHarness({ probeResult, pid = 4242, startClock = 1_700_000_000_000 }) {
+function makeSessionHarness({
+  probeResult,
+  pid = 4242,
+  startClock = 1_700_000_000_000,
+  refreshState = async () => ({ ok: true, reason: 'ok' }),
+}) {
   const health = [];
   const released = [];
   const alerts = [];
   const probeCalls = [];
+  const refreshCalls = [];
+  const logs = [];
   const state = { holder: null, probe: probeResult, clock: startClock };
   const session = createGbpSessionState({
     pid,
@@ -150,9 +158,10 @@ function makeSessionHarness({ probeResult, pid = 4242, startClock = 1_700_000_00
       : { ok: true, existingPid: null }),
     release: () => { released.push(state.clock); },
     probe: async (context) => { probeCalls.push(context); return state.probe(); },
+    refreshState: async () => { refreshCalls.push(state.clock); return refreshState(); },
     recordHealth: (record) => { health.push(record); },
     alert: async (reason) => { alerts.push(reason); },
-    log: async () => {},
+    log: async (message) => { logs.push(message); },
     now: () => state.clock,
     backoffMs: 15 * 60 * 1000,
   });
@@ -167,7 +176,7 @@ function makeSessionHarness({ probeResult, pid = 4242, startClock = 1_700_000_00
     await session.settle();   // the worker releases here, after the pass settles
     return { idle: false, posted };
   };
-  return { session, tick, health, released, alerts, probeCalls, state };
+  return { session, tick, health, released, alerts, probeCalls, refreshCalls, logs, state };
 }
 
 describe('gbp session handoff (G3)', () => {
@@ -259,6 +268,136 @@ describe('gbp session handoff (G3)', () => {
     await session.tryAcquire();
     assert.equal(session.probeDue({ cstHour: 9, todayDate: '2026-09-26' }), null);
     assert.equal(session.canPost(), true, 'API mode posts without a browser session');
+  });
+});
+
+describe('exported session state (P2.8, no browser)', () => {
+  it('refreshes the export only after a passing probe, never from a logged-out one', async () => {
+    const pass = makeSessionHarness({ probeResult: () => ({ ok: true, reason: 'ok' }) });
+    const passTick = await pass.tick();
+    assert.equal(passTick.posted, true);
+    assert.equal(pass.refreshCalls.length, 1, 'a passing probe refreshes the durable export');
+
+    const fail = makeSessionHarness({ probeResult: () => ({ ok: false, reason: 'logged_out' }) });
+    await fail.tick();
+    assert.equal(fail.refreshCalls.length, 0, 'a logged-out profile must never be exported');
+  });
+
+  it('a failed refresh cannot turn a passing probe into a gated worker', async () => {
+    const throwing = makeSessionHarness({
+      probeResult: () => ({ ok: true, reason: 'ok' }),
+      refreshState: async () => { throw new Error('browser gone'); },
+    });
+    assert.equal((await throwing.tick()).posted, true, 'posting still follows a passing probe');
+    assert.equal(throwing.session.sessionOk, true);
+
+    const failing = makeSessionHarness({
+      probeResult: () => ({ ok: true, reason: 'ok' }),
+      refreshState: async () => ({ ok: false, reason: 'exit 1' }),
+    });
+    assert.equal((await failing.tick()).posted, true);
+    assert.equal(failing.session.sessionOk, true);
+    assert.ok(failing.logs.some((m) => /session state export skipped \(exit 1\)/.test(m)),
+      'the operator can see the export is stale while the session stays usable');
+  });
+
+  it('writes the export atomically through a temp file, owner-only, and never at a repo path', async () => {
+    const events = [];
+    const state = { cookies: [{ name: 'SID', value: 'secret-value' }], origins: [] };
+    const result = await exportSessionState({ storageState: async () => state }, {
+      statePath: 'C:/profile/storage-state.json',
+      mkdir: (p) => events.push(['mkdir', p]),
+      writeFile: (p, c) => events.push(['write', p, c]),
+      rename: (from, to) => events.push(['rename', from, to]),
+      restrictAcl: (p) => events.push(['acl', p]),
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.cookies, 1);
+    const tmpPath = events[1][1];
+    assert.ok(String(tmpPath).startsWith('C:/profile/storage-state.json.tmp-'),
+      'each export writes its own temp file: concurrent exports never share one');
+    assert.deepEqual(events.map((e) => e[0]), ['mkdir', 'write', 'rename', 'acl']);
+    assert.equal(events[1][2], JSON.stringify(state));
+    assert.deepEqual(events[2], ['rename', tmpPath, 'C:/profile/storage-state.json'],
+      'temp write then rename: a failed export cannot truncate the last good copy');
+    assert.deepEqual(events[3], ['acl', 'C:/profile/storage-state.json']);
+    assert.equal(JSON.stringify(result).includes('secret-value'), false, 'the result never carries cookie values');
+    assert.equal(STORAGE_STATE_PATH.includes('SEO-Agents-App'), false, 'the export lives outside the repo (and every log)');
+    assert.equal(STORAGE_STATE_PATH.endsWith('storage-state.json'), true);
+  });
+
+  it('restricts the export to its owner and never throws when it cannot', () => {
+    const calls = [];
+    assert.equal(restrictStorageStateAcl('C:/profile/state.json', {
+      platform: 'win32', user: 'carte', exec: (cmd, args) => calls.push([cmd, args]),
+    }), true);
+    assert.deepEqual(calls, [['icacls', ['C:/profile/state.json', '/inheritance:r', '/grant:r', 'carte:F']]]);
+
+    const boom = () => { throw new Error('icacls missing'); };
+    assert.equal(restrictStorageStateAcl('C:/x', { platform: 'linux', user: 'carte', exec: boom }), false);
+    assert.equal(restrictStorageStateAcl('C:/x', { platform: 'win32', user: '', exec: boom }), false);
+    assert.equal(restrictStorageStateAcl('C:/x', { platform: 'win32', user: 'carte', exec: boom }), false);
+  });
+
+  it('launches from the exported state, and falls back to the interactive profile', async () => {
+    const events = [];
+    const state = { cookies: [], origins: [] };
+    const browser = {
+      newContext: async (opts) => {
+        events.push(['newContext', JSON.stringify(opts.storageState) === JSON.stringify(state)]);
+        return { close: async () => events.push(['context.close']) };
+      },
+      close: async () => events.push(['browser.close']),
+    };
+    const session = await launchSessionContext({
+      browserType: {
+        launch: async (opts) => { events.push(['launch', opts.headless]); return browser; },
+        launchPersistentContext: async () => { throw new Error('persistent profile must not be used'); },
+      },
+      headless: true,
+      statePath: 'C:/profile/storage-state.json',
+      persistentDir: 'C:/profile',
+      exists: () => true,
+      readFile: () => JSON.stringify(state),
+      log: () => {},
+    });
+    assert.equal(session.mode, 'storage_state', 'a non-persistent context starts from the export');
+    await session.close();
+    assert.deepEqual(events, [['launch', true], ['newContext', true], ['context.close'], ['browser.close']]);
+
+    const fallbackDirs = [];
+    const fallback = await launchSessionContext({
+      browserType: {
+        launch: async () => { throw new Error('must not launch'); },
+        launchPersistentContext: async (dir) => {
+          fallbackDirs.push(dir);
+          return { close: async () => fallbackDirs.push('closed') };
+        },
+      },
+      statePath: 'C:/profile/storage-state.json',
+      persistentDir: 'C:/profile',
+      exists: () => true,
+      readFile: () => '{not json',
+      log: () => {},
+    });
+    assert.equal(fallback.mode, 'persistent_profile', 'an unreadable export falls back to the proven path');
+    assert.deepEqual(fallbackDirs, ['C:/profile']);
+
+    const forcedDirs = [];
+    const forced = await launchSessionContext({
+      browserType: {
+        launch: async () => { throw new Error('must not launch'); },
+        launchPersistentContext: async (dir) => { forcedDirs.push(dir); return { close: async () => {} }; },
+      },
+      statePath: 'C:/profile/storage-state.json',
+      persistentDir: 'C:/profile',
+      exists: () => true,
+      readFile: () => JSON.stringify(state),
+      persistentOnly: true,
+      log: () => {},
+    });
+    assert.equal(forced.mode, 'persistent_profile_forced', 'GBP_SESSION_MODE=persistent is the documented opt-out');
+    assert.deepEqual(forcedDirs, ['C:/profile']);
   });
 });
 

@@ -96,6 +96,35 @@ fix with the probe:
 (`node scripts/authorize-gbp.mjs`) belongs to `GBP_POSTER=api` mode and does not refresh
 the browser session.
 
+### Durable session state (P2.8)
+
+`--auth` also exports Playwright's `storageState` (cookies + tokens) to
+`storage-state.json` beside the profile — outside Git and outside every log, written
+temp-then-rename so a failed write can never truncate a good copy, and ACL-restricted
+to the owner (`GBP_STORAGE_STATE` overrides the path). The export is refreshed every
+5s while the sign-in window is open, because closing the window takes the profile
+(cookies and all) with it: **after signing in, wait a few seconds before closing the
+window** so the last export is the logged-in one.
+
+The poster and the probe now start a non-persistent context from that export when it
+exists, and fall back to the interactive persistent profile when it is missing or
+unreadable. The session probe is still the gate — a stale export shows up as
+`logged_out` and gates posting, it never silently turns into a post.
+
+    node scripts/gbp-poster/driver.mjs --export-session   # refresh the export, no posting
+
+`--export-session` opens the profile, re-exports it atomically, prints one
+`{ok,cookies}` line and exits. The worker runs it automatically after a passing probe,
+while it holds the pidfile, so the export is only ever refreshed under exclusive
+ownership (never from a logged-out profile). If the export ever misbehaves, set
+`GBP_SESSION_MODE=persistent` in the worker's environment to force the persistent
+profile path — that is the fallback, not a permanent state.
+
+Acceptance before the interactive fallback can be retired: validate a fresh export
+under the intended worker identity (`--probe-only`), then validate it again from a
+later fresh context. Carter approves that separately; nothing here retires the profile
+path on its own.
+
 ## Recovery: stuck pass, or an alerting worker
 
 A `[gbp-worker][alert] ... GBP worker pass stuck` alert means a poll pass has been busy
