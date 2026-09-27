@@ -63,6 +63,9 @@ export const ALLOWED_LABELS = {
   other: [],
 };
 
+/** Minimum curated-label score a photo needs to be picked (Carter 2026-09-27). */
+export const LABEL_MIN_SCORE = Number(process.env.PHOTO_LABEL_MIN_SCORE || 45);
+
 /** Caption-photo check budget: 3 candidates TOTAL per post (PLAN 6 P2.4). */
 export const CAPTION_CHECK_MAX_CANDIDATES = 3;
 
@@ -432,6 +435,9 @@ export function selectPhotoCandidatesForPost({
   usedHashes = [],
   usedPaths = [],
   minScore = 0,
+  // Floor on the curated LABEL score (Qwen 3.8 scores strictly; 45 keeps ~62% of
+  // the library). Separate from minScore, which gates the legacy pool score.
+  labelMinScore = LABEL_MIN_SCORE,
 } = {}) {
   const { key: serviceKey, source: serviceFrom } = serviceKeyForPost(post);
   const postContext = postContextOf(post);
@@ -461,6 +467,7 @@ export function selectPhotoCandidatesForPost({
     if (minScore && entry.score < minScore) { reject(`score ${entry.score} below floor ${minScore}`); continue; }
     if (takenPaths.has(normalizePathKey(entry.path))) { reject('file already used by an earlier post in this run'); continue; }
     if (label.quality && label.quality !== 'ok') { reject(`label quality "${label.quality}" is not shippable`); continue; }
+    if (labelMinScore && label.score != null && label.score < labelMinScore) { reject(`label score ${label.score} below floor ${labelMinScore}`); continue; }
     if (hash && reserved.has(hash)) { reject('content hash already used in this run'); continue; }
 
     const sameTopic = label.key === serviceKey;

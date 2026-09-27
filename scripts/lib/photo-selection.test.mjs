@@ -195,6 +195,14 @@ test('unshippable label quality is rejected; missing labels fall back to filenam
   assert.equal(withLabels.status, 'blocked');
   assert.match(withLabels.rejected[0].reason, /quality "people"/);
 
+  const lowScore = selectPhotoCandidatesForPost({
+    post: { service: 'Panel Upgrade' },
+    pool: [photo],
+    labels: loadCuratedLabels(labelsFile({ 'hash-people': { service_type: 'panel', quality: 'ok', score: 30 } })),
+  });
+  assert.equal(lowScore.status, 'blocked');
+  assert.match(lowScore.rejected[0].reason, /label score 30 below floor 45/);
+
   const unlabeled = selectPhotoCandidatesForPost({ post: { service: 'Panel Upgrade' }, pool: [photo] });
   assert.equal(unlabeled.status, 'ok');
   assert.equal(unlabeled.candidates[0].labelSource, 'filename');

@@ -125,7 +125,10 @@ export async function launchSessionContext({
     viewport = VIEWPORT,
     exists = (p) => fs.existsSync(p),
     readFile = (p) => fs.readFileSync(p, 'utf8'),
-    persistentOnly = (process.env.GBP_SESSION_MODE || 'auto').toLowerCase() === 'persistent',
+    // Default stays the proven persistent profile until storageState passes the P2.8
+    // acceptance (fresh export validated in the worker context); opt in with
+    // GBP_SESSION_MODE=auto. A stale export (9/25: 1 cookie) looked logged out.
+    persistentOnly = (process.env.GBP_SESSION_MODE || 'persistent').toLowerCase() === 'persistent',
     log = logStep,
 } = {}) {
     if (exists(statePath) && !persistentOnly) {

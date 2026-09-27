@@ -359,6 +359,7 @@ describe('exported session state (P2.8, no browser)', () => {
       persistentDir: 'C:/profile',
       exists: () => true,
       readFile: () => JSON.stringify(state),
+      persistentOnly: false,
       log: () => {},
     });
     assert.equal(session.mode, 'storage_state', 'a non-persistent context starts from the export');
@@ -378,6 +379,7 @@ describe('exported session state (P2.8, no browser)', () => {
       persistentDir: 'C:/profile',
       exists: () => true,
       readFile: () => '{not json',
+      persistentOnly: false,
       log: () => {},
     });
     assert.equal(fallback.mode, 'persistent_profile', 'an unreadable export falls back to the proven path');
