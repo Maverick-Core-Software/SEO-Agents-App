@@ -43,9 +43,17 @@ import { normalizePhotoFile } from './lib/schedule-text.mjs';
 import { defaultGbpPhotoDirs, resolveWritableCuratedFolder } from './lib/gbp-paths.mjs';
 import { checkImagePolicy, IMAGE_CONVERT_EXTS } from './gbp-poster/policy-check.mjs';
 import {
-  derivePostServiceType,
+  NO_REUSE_WEEKS,
+  hashConflicts,
+  loadCompatAllowlist,
+  loadCuratedLabels,
+  loadSelectionManifest,
+  saveSelectionManifest,
+  selectPhotoCandidatesForPost,
   serviceSlug,
-  loadPhotoSelectionManifest,
+  sha256Buffer,
+  sha256File,
+  withManifestLock,
 } from './lib/photo-selection.mjs';
 
 // heic-convert internally imports its own package.json, which Node ESM rejects
@@ -89,6 +97,16 @@ let CURATED_FOLDER = CURATED_PREFERRED;
 const CACHE_FILE = process.env.GBP_PHOTO_CACHE || path.join(PROJECT_ROOT, 'state', 'photo-cache.json');
 const SELECTION_MANIFEST_FILE = process.env.GBP_PHOTO_SELECTION_MANIFEST
   || path.join(PROJECT_ROOT, 'state', 'photo-selection-manifest.json');
+// P2.1 labels (missing file => filename fallback, every pick flagged unverified)
+// and Carter's cross-topic allowlist (missing/empty => cross-topic blocked).
+const CURATED_LABELS_FILE = process.env.GBP_PHOTO_LABELS
+  || path.join(PROJECT_ROOT, 'state', 'curated-labels.json');
+const COMPAT_ALLOWLIST_FILE = process.env.GBP_PHOTO_COMPAT_ALLOWLIST
+  || path.join(PROJECT_ROOT, 'state', 'photo-compat-allowlist.json');
+const MANIFEST_PLATFORM = 'gbp';
+// The copy loop cascades past photos that fail the GBP media policy, so it
+// considers more than the 3 candidates the caption check is allowed to spend.
+const MAX_PICK_CANDIDATES = 12;
 const SCHEDULE_FILE = path.join(PROJECT_ROOT, 'outputs', 'gbp_posting_schedule.md');
 const MIN_SCORE = parseInt(process.env.GBP_MIN_PHOTO_SCORE || '60');
 // 2026-09-11: the weekly run was scoring the whole 4k-photo Curated library with
@@ -117,6 +135,25 @@ const noSync = process.argv.includes('--no-sync');
 // skipped rather than copied unconverted under a .jpg name.
 function statSize(filePath) {
   try { return `${fs.statSync(filePath).size} bytes`; } catch { return 'unreadable'; }
+}
+
+// Hashing is best-effort: an unreadable file is reported as unhashed, never
+// silently treated as new (photo-selection flags an unhashed pick).
+function safeHash(filePath) {
+  try { return sha256File(filePath); } catch { return ''; }
+}
+
+// Every platform bucket except ours, so an FB rewrite cannot drop GBP entries.
+function otherPlatformBuckets() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(SELECTION_MANIFEST_FILE, 'utf8'));
+    if (raw && !Array.isArray(raw) && raw.platforms && typeof raw.platforms === 'object') {
+      const rest = { ...raw.platforms };
+      delete rest[MANIFEST_PLATFORM];
+      return rest;
+    }
+  } catch { /* no manifest yet */ }
+  return {};
 }
 
 function poolPolicyViolations(entry) {
@@ -352,18 +389,6 @@ function seedCuratedCache(cache, allFiles) {
   return seeded;
 }
 
-// The GPT matcher gets a bounded catalog: the best few of each service type.
-// The full pool (thousands after seeding) would not fit a prompt and the model
-// only needs enough choice to honour the type rule.
-function shortlistForMatching(usable, perType = 12) {
-  const byType = new Map();
-  for (const p of usable) {
-    const list = byType.get(p.service_type) || [];
-    if (list.length < perType) { list.push(p); byType.set(p.service_type, list); }
-  }
-  return [...byType.values()].flat();
-}
-
 function discoverPhotos(folder) {
   if (!fs.existsSync(folder)) return [];
   return fs.readdirSync(folder, { recursive: true, withFileTypes: false })
@@ -381,68 +406,11 @@ function discoverPhotos(folder) {
     });
 }
 
-// ── GPT-4o text-based post-to-photo matching ──────────────────────────────
-
-async function matchPhotosToSchedule(posts, photos) {
-  const catalog = photos.map((p, i) => ({
-    idx: i + 1,
-    filename: path.basename(p.filePath),
-    score: p.effectiveScore ?? p.score,
-    service_type: p.service_type,
-    tags: (p.tags || []).join(', ') || 'electrical work',
-  }));
-
-  const postSummaries = posts.map((p, i) =>
-    `Post ${i + 1} (${p.date}): service="${p.service}", topic="${p.topic}", headline="${p.headline}"` +
-    (p.body ? `, body="${p.body.slice(0, 150)}"` : '')
-  ).join('\n');
-
-  const catalogText = catalog.map(p =>
-    `Photo ${p.idx}: "${p.filename}" score=${p.score} service_type=${p.service_type} tags: ${p.tags}`
-  ).join('\n');
-
-  const res = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: 'gpt-4o',
-      max_tokens: 300,
-      messages: [{
-        role: 'user',
-        content: `Match photos to GBP posts for Grizzly Electrical Solutions. Each post gets exactly one photo, no repeats.
-
-POSTS:
-${postSummaries}
-
-PHOTOS:
-${catalogText}
-
-Rules:
-- Match service_type first: panel post → panel photo, ev-charger post → ev-charger photo, etc.
-- Within matching type, prefer higher score.
-- Never use a mismatched type. If no correct-type photo exists, return null for that post.
-
-Reply ONLY with a JSON array of ${posts.length} photo numbers (1-based), one per post:
-[photoNum1, photoNum2, ...]`,
-      }],
-    }),
-  });
-
-  const data = await res.json();
-  if (data.error) throw new Error(data.error.message);
-  const text = data.choices?.[0]?.message?.content?.trim() || '[]';
-  try {
-    const indices = JSON.parse(text.replace(/```json|```/g, '').trim());
-    return indices.map(i => photos[i - 1] || null);
-  } catch {
-    throw new Error(`Failed to parse GPT match response: ${text}`);
-  }
-}
-
 // ── Main ───────────────────────────────────────────────────────────────────
 
 async function main() {
-  if (!OPENAI_API_KEY) { console.error('OPENAI_API_KEY not set in .env'); process.exit(1); }
+  // --dry-run is a preview: no network (no scoring, no matching) and no writes.
+  if (!OPENAI_API_KEY && !dryRun) { console.error('OPENAI_API_KEY not set in .env'); process.exit(1); }
 
   if (!fs.existsSync(SCHEDULE_FILE)) {
     console.error(`Schedule not found: ${SCHEDULE_FILE}`);
@@ -481,7 +449,10 @@ async function main() {
   // New photos added to the Google Drive folder since the last run get mirrored
   // into the local cache so the picker sees the full library. Skipped silently
   // (--no-sync) or when Drive isn't mounted; the picker then uses the last sync.
-  if (!noSync) {
+  // A dry run never syncs: copying into the cache IS a write.
+  if (dryRun) {
+    console.log('Dry run — skipping Drive sync; using the existing local cache.\n');
+  } else if (!noSync) {
     const sync = syncFromDrive();
     if (!sync.driveMounted) {
       console.log(`Drive not mounted (${DRIVE_FOLDER}) — using existing local cache only.`);
@@ -508,14 +479,21 @@ async function main() {
   // ── Step 2: Score new photos (cache prevents re-scoring) ─────────────────
   const cache = rescan ? {} : loadCache();
   const seeded = seedCuratedCache(cache, allFiles);
-  if (seeded) { saveCache(cache); console.log(`Seeded ${seeded} curated photo(s) from their filenames (no vision call)`); }
+  if (seeded) {
+    if (!dryRun) saveCache(cache);
+    console.log(`Seeded ${seeded} curated photo(s) from their filenames (no vision call)`);
+  }
   const unscored = allFiles.filter(f => !cache[f]);
   const toScore = unscored.slice(0, SCORE_BUDGET);
   if (unscored.length > toScore.length) {
     console.log(`${unscored.length} unscored photo(s); scoring ${toScore.length} this run (GBP_PHOTO_SCORE_BUDGET=${SCORE_BUDGET}), the rest on later runs`);
   }
 
-  if (toScore.length > 0) {
+  if (dryRun && toScore.length > 0) {
+    // A dry run must not call GPT-4o and must not touch the score cache. Only
+    // already-cached photos are eligible; the rest are reported and left alone.
+    console.log(`Dry run — ${toScore.length} unscored photo(s) left unscored (no API calls, cache untouched)`);
+  } else if (toScore.length > 0) {
     console.log(`Scoring ${toScore.length} new photos (${allFiles.length - unscored.length} cached)...`);
     for (const filePath of toScore) {
       const filename = path.basename(filePath);
@@ -565,7 +543,18 @@ async function main() {
     return 0;
   }
 
-  const priorManifest = loadPhotoSelectionManifest(SELECTION_MANIFEST_FILE);
+  const priorManifest = loadSelectionManifest(SELECTION_MANIFEST_FILE);
+  // Cross-platform, 8-week content-hash history: a photo shipped by FB must not
+  // come back through GBP (and vice versa). Legacy path-only entries are
+  // reported as unverified history rather than silently treated as unused.
+  const curatedLabels = loadCuratedLabels(CURATED_LABELS_FILE);
+  const compatAllowlist = loadCompatAllowlist(COMPAT_ALLOWLIST_FILE);
+  if (!curatedLabels.present) {
+    console.warn(`Curated labels unavailable (${CURATED_LABELS_FILE}) — every pick falls back to the filename and is flagged unverified`);
+  }
+  if (!compatAllowlist.present) {
+    console.log(`No cross-topic allowlist (${COMPAT_ALLOWLIST_FILE}) — a post with no photo of its own service goes text-only`);
+  }
   const usedBefore = new Set(priorManifest.flatMap(e => [e.sourceFilename, e.sourcePath && path.basename(e.sourcePath)])
     .filter(Boolean).map(n => n.toLowerCase()));
   const usable = allFiles
@@ -607,35 +596,7 @@ async function main() {
     console.warn(`\nWarning: only ${usable.length} usable photos for ${posts.length} posts — some posts won't get a photo`);
   }
 
-  // ── Step 5: Match photos to posts ────────────────────────────────────────
-  console.log('\nMatching photos to posts...');
-  let matches;
-  try {
-    matches = await matchPhotosToSchedule(postsToMatch, shortlistForMatching(usable));
-  } catch (e) {
-    console.error(`GPT matching failed: ${e.message}`);
-    // Fallback when the vision matcher is unavailable (OpenAI key invalid,
-    // rate-limited, or down). The OLD fallback did usable.find(...) with no
-    // memory of what it had already handed out, so every post of a given type
-    // got the SAME first photo — producing the byte-identical mislabels where,
-    // e.g., a recessed-lighting post shipped with an EV-charger image.
-    //
-    // This fallback rotates through the pool: for each post, prefer the next
-    // UNUSED photo of the right service_type; if none, take the next unused
-    // photo of any type. A photo is handed out at most once per run.
-    const used = new Set();
-    matches = postsToMatch.map(post => {
-      const postType = derivePostServiceType(post);
-      const pick =
-        usable.find(p => !used.has(p.filename) && p.service_type === postType) ||
-        null;
-      if (pick) used.add(pick.filename);
-      return pick;
-    });
-    console.warn(`Fallback assigned ${matches.filter(Boolean).length}/${postsToMatch.length} service-compatible photos (no GPT vision). Posts without an exact type remain text-only.`);
-  }
-
-  // ── Step 6: Copy winners to Curated ──────────────────────────────────────
+  // Copies below need the folder; a dry run creates nothing.
   if (!dryRun) {
     try {
       fs.mkdirSync(CURATED_FOLDER, { recursive: true });
@@ -645,8 +606,16 @@ async function main() {
     }
   }
 
+  // ── Step 5: Select photos per post (the one shared selection path) ──────
+  // The vision matcher that used to rank here is gone: the pool is already
+  // ranked by score + recency, and compatibility (service key, label table,
+  // allowlist, context, hash no-reuse) is decided by photo-selection.mjs — so
+  // there is no second, silently cross-topic selection path left.
   const usedFilenames = new Set();
-  const selectionManifest = loadPhotoSelectionManifest(SELECTION_MANIFEST_FILE)
+  const usedHashes = new Set();
+  const usedSourcePaths = new Set();
+  const selectionManifest = priorManifest
+    .map(entry => (entry.platform ? entry : { ...entry, platform: entry.selectedBy === 'fb-photo-pick' ? 'fb' : MANIFEST_PLATFORM }))
     .filter(entry => !posts.some(post =>
       entry.postDate === post.date && serviceSlug(entry.postService) === serviceSlug(post.service)
     ));
@@ -654,32 +623,55 @@ async function main() {
   let noPhotoCount = 0;
   let scheduleChanged = false;
 
+  // Legacy manifest rows carry paths only; no-reuse cannot be proven for them.
+  if (priorManifest.some(entry => !(entry.photoHash || entry.sourceHash))) {
+    console.warn('Selection manifest history is partly unhashed (legacy rows) — no-reuse for those rows is UNVERIFIED');
+  }
+
   console.log('');
   for (let i = 0; i < postsToMatch.length; i++) {
     const post = postsToMatch[i];
-    const postType = derivePostServiceType(post);
-
-    // Enforce the service boundary after GPT returns. The old code trusted the
-    // model's best-effort pick and then renamed the file to the post service,
-    // which is how a generator-panel image became a panel-upgrade image.
-    let photo = matches[i];
-    if (photo && (usedFilenames.has(photo.filename) || photo.service_type !== postType)) {
-      photo = null;
+    const selection = selectPhotoCandidatesForPost({
+      post,
+      pool: usable,
+      history: priorManifest,
+      platform: MANIFEST_PLATFORM,
+      labels: curatedLabels,
+      allowlist: compatAllowlist,
+      usedHashes: [...usedHashes],
+      usedPaths: [...usedSourcePaths],
+      noReuseWeeks: NO_REUSE_WEEKS,
+      minScore: MIN_SCORE,
+      maxCandidates: MAX_PICK_CANDIDATES,
+    });
+    const postType = selection.serviceKey;
+    for (const view of selection.rejected.slice(0, 5)) {
+      console.warn(`  skipped ${view.filename || view.path}: ${view.reason}`);
     }
 
-    // Candidate order — GPT's pick first, then the ranked pool of the right type.
-    // Each candidate is judged as the FINAL artifact, so one that fails the
-    // media policy cascades to the next usable photo instead of leaving the post
-    // image-less.
-    const ordered = [
-      ...(photo ? [photo] : []),
-      ...usable.filter(p => p !== photo && p.service_type === postType),
-    ];
+    // Candidate order — already the shared selection path's order (ranked pool
+    // of the right label), each judged as the FINAL artifact so one that fails
+    // the media policy cascades to the next instead of leaving the post bare.
+    const ordered = selection.candidates.map(candidate => ({ ...candidate.entry, selection: candidate }));
 
     let ship = null;
     const rejected = [];
     for (const cand of ordered) {
       if (usedFilenames.has(cand.filename)) continue;
+      // Content identity at the copy boundary: the library holds the same shot
+      // under several names (494 duplicate copies in 464 hash groups), so a
+      // filename check alone would ship identical bytes twice. Hash the
+      // candidate here — a handful of files per run, not the whole library —
+      // and refuse anything this run already used or the 8-week history holds.
+      const candidateHash = safeHash(cand.filePath);
+      if (candidateHash && usedHashes.has(candidateHash)) {
+        rejected.push(`${cand.filename}: identical to a photo already used this run (sha256 ${candidateHash.slice(0, 12)})`);
+        continue;
+      }
+      if (candidateHash && hashConflicts({ hashes: [candidateHash], history: priorManifest }).conflicts.length) {
+        rejected.push(`${cand.filename}: content hash already shipped within ${NO_REUSE_WEEKS} weeks (sha256 ${candidateHash.slice(0, 12)})`);
+        continue;
+      }
       const srcExt = path.extname(cand.filename);
       const isHeic = IMAGE_CONVERT_EXTS.has(srcExt.toLowerCase());
       const ext = isHeic ? '.jpg' : srcExt;
@@ -712,7 +704,7 @@ async function main() {
         rejected.push(`${cand.filename} (${jpegBuf ? `${jpegBuf.length} bytes converted` : statSize(cand.filePath)}): ${violations.map(v => v.detail).join(' ')}`);
         continue;
       }
-      ship = { chosen: cand, destPath, destFilename, jpegBuf };
+      ship = { chosen: cand, destPath, destFilename, jpegBuf, sourceHash: candidateHash };
       break;
     }
     for (const line of rejected) console.warn(`  skipped ${line}`);
@@ -728,7 +720,7 @@ async function main() {
 
     // GBP's uploader rejects HEIC/HEIF — curated copies must be JPEG (2026-07-31:
     // Day-1 post went out image-less because the winner was copied as .HEIC).
-    const { chosen, destPath, destFilename, jpegBuf } = ship;
+    const { chosen, destPath, destFilename, jpegBuf, sourceHash: shippedSourceHash } = ship;
 
     const bonus = (chosen.effectiveScore ?? chosen.score) - chosen.score;
     const scoreStr = bonus > 0 ? `${chosen.score}+${bonus}=${chosen.effectiveScore}` : `${chosen.score}`;
@@ -741,28 +733,49 @@ async function main() {
       const nextSchedule = updateSchedulePhotoFile(scheduleText, post.date, destPath);
       scheduleChanged ||= nextSchedule !== scheduleText;
       scheduleText = nextSchedule;
+      // Identity is recorded as content hashes (P2.2): the shipped artifact's
+      // hash plus the library source's hash, so no-reuse survives a rename.
+      const sourceHash = safeHash(chosen.filePath) || shippedSourceHash;
+      const photoHash = safeHash(destPath) || (jpegBuf ? sha256Buffer(jpegBuf) : sourceHash);
       selectionManifest.push({
         postDate: post.date,
         postService: post.service,
         postServiceType: postType,
         photoPath: destPath,
+        photoHash,
         sourcePath: chosen.filePath,
         sourceFilename: chosen.filename,
-        photoServiceType: chosen.service_type,
+        sourceHash,
+        photoServiceType: chosen.selection ? chosen.selection.serviceType : chosen.service_type,
+        labelSource: chosen.selection ? chosen.selection.labelSource : 'none',
+        unverified: chosen.selection ? chosen.selection.unverified : true,
+        allowlistPair: chosen.selection ? chosen.selection.allowlistPair : null,
         score: chosen.score,
         tags: chosen.tags || [],
         selectedAt: new Date().toISOString(),
+        selectedBy: 'gbp-photo-pick',
       });
     }
 
+    const chosenHash = chosen.selection && chosen.selection.hash
+      ? chosen.selection.hash
+      : safeHash(chosen.filePath);
+    if (chosenHash) usedHashes.add(chosenHash);
     usedFilenames.add(chosen.filename);
+    usedSourcePaths.add(chosen.filePath);
     successCount++;
   }
 
   if (!dryRun) {
     if (scheduleChanged) fs.writeFileSync(SCHEDULE_FILE, scheduleText);
-    fs.mkdirSync(path.dirname(SELECTION_MANIFEST_FILE), { recursive: true });
-    fs.writeFileSync(SELECTION_MANIFEST_FILE, JSON.stringify(selectionManifest, null, 2));
+    // Platform-keyed so the FB date purge can never drop GBP entries, written
+    // under the reservation lock with an atomic temp/rename.
+    withManifestLock(SELECTION_MANIFEST_FILE, () => {
+      saveSelectionManifest(SELECTION_MANIFEST_FILE, {
+        version: 1,
+        platforms: { ...otherPlatformBuckets(), [MANIFEST_PLATFORM]: selectionManifest },
+      });
+    });
     console.log(`\n✓ Done: ${successCount}/${postsToMatch.length} posts matched; ${noPhotoCount} left without a compatible photo`);
     console.log(`  Curated folder: ${CURATED_FOLDER}`);
     console.log(`  Schedule ${scheduleChanged ? 'updated' : 'unchanged'}: ${SCHEDULE_FILE}`);

@@ -227,6 +227,9 @@ export function createGbpSessionState({
   acquire = () => acquireGbpWorkerLock(),
   release = () => releaseGbpWorkerLock(WORKER_LOCK_PATH, pid),
   probe = async () => ({ ok: false, reason: 'unknown' }),
+  // P2.8: refresh the exported storageState after a passing probe. Injected so the
+  // handoff stays testable without a browser; production passes the driver child.
+  refreshState = async () => ({ ok: false, reason: 'not_supported' }),
   recordHealth = (record) => writeGbpSessionHealth(record),
   alert = async () => {},
   log = async () => {},
@@ -319,6 +322,18 @@ export function createGbpSessionState({
       if (ok) {
         alerted = false;
         await log(`session probe (${context}) ok`);
+        // Refresh the exported session state now, while this process owns the pidfile
+        // and the probe browser has exited — the only moment a second Chromium may
+        // touch the profile. Best-effort: a failed export never changes a passing
+        // probe, and the persistent profile stays the session source.
+        try {
+          const refreshed = await refreshState();
+          if (!refreshed?.ok && refreshed?.reason !== 'not_supported') {
+            await log(`session state export skipped (${refreshed?.reason || 'unknown'}) — the persistent profile stays the session source`);
+          }
+        } catch (e) {
+          await log(`session state export failed: ${briefErr(e)} — the persistent profile stays the session source`);
+        }
       } else {
         releasePending = true;
         if (!alerted) {
@@ -411,8 +426,20 @@ async function probeGbpSession(context) {
   return { ok, reason };
 }
 
+// P2.8: re-export the profile's cookies to the durable storageState file. Only ever
+// called after a passing probe, so the exported session is never refreshed from a
+// logged-out profile. Never prints the state file's contents or path.
+async function refreshGbpSessionState() {
+  if (!SESSION_PROBE_SUPPORTED) return { ok: false, reason: 'not_supported' };
+  const result = await runPhase(null, 'gbp', 'node', [GBP_POSTER_PATH, '--export-session'], PROJECT_ROOT, { timeoutMs: SESSION_PROBE_TIMEOUT_MS });
+  const ok = result.exitCode === 0;
+  await log(null, 'gbp', ok ? 'info' : 'warn', `session state export → ${ok ? 'ok' : `exit ${result.exitCode}`}`);
+  return { ok, reason: ok ? 'ok' : `exit ${result.exitCode}` };
+}
+
 const session = createGbpSessionState({
   probe: probeGbpSession,
+  refreshState: refreshGbpSessionState,
   alert: alertSessionProbeFailure,
   log: (message) => log(null, 'gbp', 'info', message),
 });
