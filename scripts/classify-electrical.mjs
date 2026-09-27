@@ -280,9 +280,18 @@ function uniqueDest(relPath, destDir) {
 // hosted endpoint explicitly: this file's backend defaults to a LOCAL model, and a
 // relabel silently aimed at it would burn the GPU seat and write labels nobody asked
 // for. The API key is read from env only and never logged or written.
-const RELABEL_URL = 'https://api.openai.com/v1';
+const RELABEL_URL_DEFAULT = 'https://api.openai.com/v1';
+// Carter 2026-09-27: --relabel-url may point the relabel at the local Qwen 3.8 vision
+// seat (via llama-guardian); the default stays the approved hosted endpoint.
+const RELABEL_URL = (argValue('--relabel-url') || RELABEL_URL_DEFAULT).replace(/\/$/, '');
+const RELABEL_LOCAL = !/api\.openai\.com/.test(RELABEL_URL);
 const RELABEL_MODEL = 'gpt-4o';
-const RELABEL_OUT = path.join(PROJECT_ROOT, 'state', 'curated-labels.json');
+// --labels-out lets two GPUs label disjoint shards into separate files (merged after).
+const RELABEL_OUT = argValue('--labels-out') || path.join(PROJECT_ROOT, 'state', 'curated-labels.json');
+// --shard i/n keeps only photos whose sha256 falls in shard i of n; --skip-labels
+// names an existing store whose hashes are already done.
+const RELABEL_SHARD = argValue('--shard');
+const RELABEL_SKIP = argValue('--skip-labels');
 
 export const LABEL_TAXONOMY = Object.freeze({
   panel: ['upgrade', 'replacement', 'subpanel', 'meter-service'],
@@ -424,10 +433,20 @@ async function relabelCuratedMode() {
   console.log('Output:   ' + RELABEL_OUT);
 
   const files = discoverPhotos(dir);
-  const items = files.map((file) => ({
+  let items = files.map((file) => ({
     file,
     sha256: createHash('sha256').update(fs.readFileSync(file)).digest('hex'),
   }));
+  if (RELABEL_SKIP) {
+    let done = {};
+    try { done = JSON.parse(fs.readFileSync(RELABEL_SKIP, 'utf8')); } catch { /* none */ }
+    items = items.filter((it) => !done[it.sha256]?.service_type);
+  }
+  if (RELABEL_SHARD) {
+    const [i, n] = RELABEL_SHARD.split('/').map(Number);
+    items = items.filter((it) => parseInt(it.sha256.slice(0, 8), 16) % n === i);
+  }
+  console.log('Queue:    ' + items.length + ' photo(s)' + (RELABEL_SHARD ? ' in shard ' + RELABEL_SHARD : ''));
 
   if (dryRun) {
     let labelled = 0;
@@ -435,7 +454,7 @@ async function relabelCuratedMode() {
     console.log('(dry run) ' + items.length + ' photo(s) in ' + dir + '; ' + labelled + ' hash(es) already labelled');
     return;
   }
-  if (!apiKey) {
+  if (!apiKey && !RELABEL_LOCAL) {
     throw new Error('--relabel-curated needs ELECTRICAL_VISION_API_KEY (or OPENAI_API_KEY) for ' + RELABEL_URL + '; refusing to fall back to the local model');
   }
 
@@ -448,7 +467,9 @@ async function relabelCuratedMode() {
       maxTokens: 400,
       url: RELABEL_URL,
       model: requested,
-      apiKey,
+      apiKey: RELABEL_LOCAL ? '' : apiKey,
+      // llama.cpp-only knob (thinking off); the hosted endpoint rejects unknown fields.
+      extraBody: RELABEL_LOCAL ? { chat_template_kwargs: { enable_thinking: false } } : {},
     }),
     log: (message) => console.log(message),
   });
