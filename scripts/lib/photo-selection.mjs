@@ -31,16 +31,18 @@ export const SERVICE_TYPE_KEYWORDS = {
   // a generic panel post.
   generator: ['generator', 'standby', 'backup power', 'transfer switch', 'inlet box', 'interlock', 'whole-home generator'],
   'ev-charger': ['ev', 'charger', 'electric vehicle', 'level 2', 'charging station', 'tesla'],
-  lighting: ['light', 'fixture', 'recessed', 'ceiling fan', 'dimmer', 'lamp', 'led', 'illuminat'],
+  'pool-spa': ['pool', 'spa', 'hot tub'],
+  switch: ['light switch', 'switch', 'dimmer', 'smart switch'],
+  lighting: ['light', 'fixture', 'recessed', 'ceiling fan', 'lamp', 'led', 'illuminat', 'landscape'],
   wiring: ['wiring', 'wire', 'conduit', 'romex', 'junction', 'rewir'],
-  outlet: ['outlet', 'gfci', 'receptacle', 'plug', 'usb', 'dedicated circuit'],
+  outlet: ['outlet', 'gfci', 'receptacle', 'plug', 'usb', 'dedicated circuit', 'floor box'],
   surge: ['surge', 'whole-home surge', 'surge protector'],
   'smoke-co': ['smoke detector', 'smoke alarm', 'carbon monoxide', 'smoke-co', 'co detector'],
   panel: ['panel', 'breaker', 'main panel', 'subpanel', 'electrical panel', 'box'],
 };
 
 /** The taxonomy PLAN 6 P2.1 uses for labels. Only these keys are comparable. */
-export const SERVICE_KEYS = ['panel', 'generator', 'ev-charger', 'lighting', 'outlet', 'wiring', 'surge', 'smoke-co', 'other'];
+export const SERVICE_KEYS = ['panel', 'generator', 'ev-charger', 'lighting', 'outlet', 'wiring', 'surge', 'smoke-co', 'switch', 'pool-spa', 'other'];
 
 /**
  * Which curated label keys may illustrate which service key. Same key only:
@@ -56,6 +58,8 @@ export const ALLOWED_LABELS = {
   wiring: ['wiring'],
   surge: ['surge'],
   'smoke-co': ['smoke-co'],
+  switch: ['switch'],
+  'pool-spa': ['pool-spa'],
   other: [],
 };
 

@@ -2,6 +2,7 @@
 //   1. used-path keys  — a photo already used under ANY of its paths is not picked again
 //   2. manifest purge  — re-picking a date drops this picker's FB entries only,
 //                        never the GBP selections sharing the same manifest
+//   3. manifest lock   — the write waits for the lock the GBP picker also takes
 // Runs the real script in a subprocess against isolated os.tmpdir fixtures.
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
@@ -115,6 +116,36 @@ try {
   assert.equal(picked.sourcePath, photoB, 'picked photo recorded with its source identity');
 
   console.log('ok fb-photo-pick');
+
+  // ── 3. the manifest write happens under the shared reservation lock, so a
+  // concurrent writer blocks this run instead of losing its entries.
+  const lockTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'fb-photo-pick-lock-'));
+  try {
+    const lockManifest = path.join(lockTmp, 'manifest.json');
+    const heldByOther = [{ platform: 'gbp', postDate: DATE, postService: SERVICE, photoPath: gbpKept }];
+    fs.writeFileSync(lockManifest, JSON.stringify(heldByOther, null, 2));
+    fs.writeFileSync(`${lockManifest}.lock`, String(process.pid));
+    let blocked = false;
+    try {
+      execFileSync(process.execPath, [script], {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          FB_SCHEDULE_PATH: schedulePath,
+          GBP_PHOTO_SELECTION_MANIFEST: lockManifest,
+          GBP_CURATED_FOLDER: curated,
+          FB_PHOTO_POOLS: poolPath,
+          FB_PHOTO_MIN_SCORE: '60',
+        },
+      });
+    } catch (e) {
+      blocked = String(e.stderr || '').includes('manifest lock busy');
+    }
+    assert.ok(blocked, 'the picker waits for the shared manifest lock');
+    assert.deepEqual(JSON.parse(fs.readFileSync(lockManifest, 'utf8')), heldByOther, 'nothing written while the lock is held');
+  } finally {
+    fs.rmSync(lockTmp, { recursive: true, force: true });
+  }
 } finally {
   fs.rmSync(tmp, { recursive: true, force: true });
 }
