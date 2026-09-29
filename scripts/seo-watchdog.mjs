@@ -87,7 +87,7 @@ function log(level, msg, extra = {}) {
   } catch { /* logging must never kill the watchdog */ }
 }
 
-// Watchdog runs on CartersPC, so local time is already CST/CDT.
+// Watchdog runs on CMB-Workbench, so local time is already CST/CDT.
 function localDateISO(d = new Date()) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
@@ -143,7 +143,7 @@ export function evaluateWatchdog({
       `NO-SHOW: today is ${DOW_NAMES[expectedDow]} (run day), it is past ` +
       `${deadline} local, and the weekly runner never started ` +
       `(health marker ${health ? `is from ${health.date}` : 'does not exist'}). ` +
-      `Check the 'Grizzly SEO Weekly Run' scheduled task on CartersPC.`
+      `Check the 'Grizzly SEO Weekly Run' scheduled task on CMB-Workbench.`
     );
   } else if (isRunDay && health?.date === today && health.status === 'failed') {
     problems.push(
@@ -189,7 +189,7 @@ export function evaluateWatchdog({
       problems.push(
         `STALE: last weekly-runner activity was ${health.date} (${ageDays.toFixed(1)} days ago, ` +
         `threshold ${staleDays}d). The Friday trigger is likely dead or disabled — a full week ` +
-        `has been missed. Check Task Scheduler on CartersPC.`
+        `has been missed. Check Task Scheduler on CMB-Workbench.`
       );
     }
   }
@@ -320,7 +320,7 @@ async function main() {
   }
 
   const subject = 'Weekly SEO run problem detected';
-  const body = problems.join('\n\n') + `\n\nChecked at ${now.toISOString()} by the daily watchdog on CartersPC.`;
+  const body = problems.join('\n\n') + `\n\nChecked at ${now.toISOString()} by the daily watchdog on CMB-Workbench.`;
   log('error', subject, { problems });
   const delivered = await sendAlert(subject, body);
   if (!delivered) {

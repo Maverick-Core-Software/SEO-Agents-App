@@ -359,7 +359,7 @@ async function checkPM2Processes() {
         'FAILED: core PM2 processes missing and pm2 resurrect did not restore them',
         `Still missing after resurrect: ${stillMissing.join(', ') || '(resurrect reported an error)'}\n\n` +
         `This usually means PM2 has no saved dump (run "pm2 save" once after starting everything) or the PM2 daemon is not running.\n\n` +
-        `Recover manually on CartersPC:\n  pm2 resurrect\n  # or, if there is no saved dump:\n  pm2 start C:\\Workspace\\Active\\MCC\\ecosystem.config.cjs\n  pm2 save\n\nMonitor log: ${logFile}`);
+        `Recover manually on CMB-Workbench:\n  pm2 resurrect\n  # or, if there is no saved dump:\n  pm2 start C:\\Workspace\\Active\\MCC\\ecosystem.config.cjs\n  pm2 save\n\nMonitor log: ${logFile}`);
     }
   }
 
@@ -494,7 +494,7 @@ async function checkPostStatuses(runId) {
 
 // ── No-show detection ───────────────────────────────────────────────────────
 function localHHMM(d) {
-  // Monitor runs on CartersPC, so getHours() is already local (CST/CDT).
+  // Monitor runs on CMB-Workbench, so getHours() is already local (CST/CDT).
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
