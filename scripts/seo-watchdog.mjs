@@ -132,7 +132,12 @@ export function evaluateWatchdog({
       `RUN FAILED today: ${health.error || 'no error captured'} ` +
       `(see ${health.log_file || 'outputs/'}).`
     );
-  } else if (isRunDay && pastDeadline && health?.date === today && health.status === 'started') {
+  }
+
+  // Hung detection and notify checks are not tied to the run day: a catch-up
+  // run (StartWhenAvailable after a reboot, or a Saturday rerun) reaches this
+  // daily watchdog on a non-run day and must still be judged.
+  if (health?.status === 'started') {
     const ageMin = health.at ? (now - new Date(health.at)) / 60_000 : Infinity;
     if (ageMin >= hungMinutes) {
       problems.push(
@@ -142,7 +147,7 @@ export function evaluateWatchdog({
     }
   }
 
-  if (isRunDay && pastDeadline && health?.date === today && health.status === 'success') {
+  if (pastDeadline && health?.date === today && health.status === 'success') {
     const notified = notify && notify.sent === true;
     if (!notified) {
       problems.push(

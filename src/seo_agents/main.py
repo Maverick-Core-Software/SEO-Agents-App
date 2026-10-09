@@ -619,14 +619,16 @@ def write_executor_skip_outputs(reason: str) -> None:
             md.write_text(f"Executor crew skipped at {stamp}: {reason}\n", encoding="utf-8")
 
 
-def _require_fresh_schedule(path: Path, min_days: int, label: str) -> None:
+def _require_fresh_schedule(path: Path, min_days: int, label: str, since: float) -> None:
+    """`since` is the wall-clock time (time.time()) just before this kickoff began."""
     if not path.exists():
         print(f"❌ {label} schedule missing: {path}")
         sys.exit(1)
-    # st_mtime is wall clock; kickoff just wrote it. Allow 5s of clock skew.
-    age_s = time.time() - path.stat().st_mtime
-    if age_s > 3600:
-        print(f"❌ {label} schedule is stale ({age_s:.0f}s old): {path}")
+    # st_mtime is wall clock; it must be newer than this kickoff, not merely recent,
+    # so a retry cannot accept the previous attempt's file. Allow 5s of clock skew.
+    mtime = path.stat().st_mtime
+    if mtime < since - 5:
+        print(f"❌ {label} schedule was not written by this run ({time.time() - mtime:.0f}s old): {path}")
         sys.exit(1)
     n = _count_day_headers(path)
     if n < min_days:
@@ -840,12 +842,13 @@ def _run_execute_pipeline() -> None:
     print(f"\n{'─'*60}")
     print(f"📅 Auto-running GBP post schedule (starting {start_date}, week_of {week.week_of})...")
     t1 = time.monotonic()
+    kickoff1 = time.time()
     try:
         gbp_crew = build_poster_crew(start_date=start_date, days=7)
         gbp_result = gbp_crew.kickoff()
         print(gbp_result)
         schedule_path = OUTPUT_DIR / "gbp_posting_schedule.md"
-        _require_fresh_schedule(schedule_path, 7, "GBP")
+        _require_fresh_schedule(schedule_path, 7, "GBP", kickoff1)
         photo_path = os.getenv("GBP_PHOTO_PATH", r"C:\Workspace\Shared\Assets\Media\Grizzly\GBP Post Photos")
         archived_photos = archive_used_photos(schedule_path, Path(photo_path))
         if archived_photos:
@@ -869,11 +872,12 @@ def _run_execute_pipeline() -> None:
     print(f"\n{'─'*60}")
     print(f"📘 Auto-running Facebook post schedule (starting {start_date}, week_of {week.week_of})...")
     t2 = time.monotonic()
+    kickoff2 = time.time()
     try:
         fb_crew = build_facebook_crew(start_date=start_date, days=7)
         fb_result = fb_crew.kickoff()
         print(fb_result)
-        _require_fresh_schedule(OUTPUT_DIR / "facebook_posting_schedule.md", 4, "Facebook")
+        _require_fresh_schedule(OUTPUT_DIR / "facebook_posting_schedule.md", 4, "Facebook", kickoff2)
         write_run_health("facebook_schedule", "success", started_at=t2)
         print("✅ Facebook posting schedule saved")
     except SystemExit:
