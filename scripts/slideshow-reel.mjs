@@ -13,6 +13,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { defaultGbpPhotoDirs } from './lib/gbp-paths.mjs';
+import { ffmpegBin, ffprobeBin } from './lib/ffmpeg-bin.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -36,26 +37,38 @@ const MIN_SEG_SEC = Number(process.env.FB_SLIDESHOW_MIN_SEG_SEC || 3.0);
 const TEXT_COLOR = process.env.FB_SLIDESHOW_TEXT_COLOR || '0xFFD166';
 const TEXT_OUTLINE = process.env.FB_SLIDESHOW_TEXT_OUTLINE || 'black';
 
+// Resolve ffmpeg/ffprobe through lib/ffmpeg-bin.mjs, never a bare name: under
+// mav-bridge (PM2) PATH misses the per-user winget build, and bare 'ffmpeg' threw
+// ENOENT so every slideshow day fell back to a still (2026-09-11 to 2026-10-09).
+// Resolved lazily: facebook-poster loads .env (FFMPEG_DIR) after its imports run.
+const ffmpeg = () => ffmpegBin() || 'ffmpeg';
+const ffprobe = () => ffprobeBin() || 'ffprobe';
+
 let FONT_SPEC = `font='${FONT}'`;
 let hasFont = false;
-try {
-  execFileSync('ffmpeg', [
-    '-y', '-f', 'lavfi', '-i',
-    `color=c=black:s=10x10,drawtext=fontfile='${FONT_PATH}':text=x,format=yuv420p`,
-    '-t', '0.1', '-f', 'null', '-',
-  ], { timeout: 10000, stdio: 'pipe' });
-  FONT_SPEC = `fontfile='${FONT_PATH}'`;
-  hasFont = true;
-} catch {
+let fontProbed = false;
+function probeFont() {
+  if (fontProbed) return;
+  fontProbed = true;
   try {
-    execFileSync('ffmpeg', [
+    execFileSync(ffmpeg(), [
       '-y', '-f', 'lavfi', '-i',
-      `color=c=black:s=10x10,drawtext=font='${FONT}':text=x,format=yuv420p`,
+      `color=c=black:s=10x10,drawtext=fontfile='${FONT_PATH}':text=x,format=yuv420p`,
       '-t', '0.1', '-f', 'null', '-',
     ], { timeout: 10000, stdio: 'pipe' });
+    FONT_SPEC = `fontfile='${FONT_PATH}'`;
     hasFont = true;
   } catch {
-    // text overlays skipped when font unavailable
+    try {
+      execFileSync(ffmpeg(), [
+        '-y', '-f', 'lavfi', '-i',
+        `color=c=black:s=10x10,drawtext=font='${FONT}':text=x,format=yuv420p`,
+        '-t', '0.1', '-f', 'null', '-',
+      ], { timeout: 10000, stdio: 'pipe' });
+      hasFont = true;
+    } catch {
+      // text overlays skipped when font unavailable
+    }
   }
 }
 
@@ -118,7 +131,7 @@ function ensureSlideshowBed(audioPath, durationSec) {
   // Layer: warm root + fifth + soft noise pad.
   const dur = Math.max(20, Math.ceil(durationSec || 20) + 2);
   try {
-    execFileSync('ffmpeg', [
+    execFileSync(ffmpeg(), [
       '-y',
       '-f', 'lavfi', '-i', `sine=frequency=130.81:duration=${dur}`,
       '-f', 'lavfi', '-i', `sine=frequency=196.00:duration=${dur}`,
@@ -208,6 +221,7 @@ export function buildSlideshowReel(opts) {
   }
   const outPath = opts.outPath;
   if (!outPath) return { status: 'error', message: 'outPath required' };
+  probeFont();
 
   const workDir = opts.workDir || path.dirname(outPath);
   fs.mkdirSync(workDir, { recursive: true });
@@ -227,7 +241,7 @@ export function buildSlideshowReel(opts) {
   for (let i = 0; i < photos.length; i++) {
     const segPath = path.join(workDir, `_seg-${stamp}-${i}.mp4`);
     // Slightly stronger Ken Burns so stills feel less static
-    execFileSync('ffmpeg', [
+    execFileSync(ffmpeg(), [
       '-y', '-loop', '1', '-t', String(segDur), '-i', photos[i],
       '-vf',
       `scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},`
@@ -246,7 +260,7 @@ export function buildSlideshowReel(opts) {
   fs.writeFileSync(concatFile, concatLines.join('\n'));
 
   const rawPath = path.join(workDir, `_raw-${stamp}.mp4`);
-  execFileSync('ffmpeg', [
+  execFileSync(ffmpeg(), [
     '-y', '-f', 'concat', '-safe', '0', '-i', concatFile,
     '-c', 'copy', rawPath,
   ], { timeout: 30000, stdio: 'pipe' });
@@ -257,7 +271,7 @@ export function buildSlideshowReel(opts) {
       const vfParts = buildDrawtextFilters(textItems);
       if (vfParts.length) {
         const textPath = path.join(workDir, `_text-${stamp}.mp4`);
-        execFileSync('ffmpeg', [
+        execFileSync(ffmpeg(), [
           '-y', '-i', rawPath,
           '-vf', vfParts.join(','),
           '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p',
@@ -280,7 +294,7 @@ export function buildSlideshowReel(opts) {
       }
     }
     if (wantAudio && audioPath && fs.existsSync(audioPath)) {
-      execFileSync('ffmpeg', [
+      execFileSync(ffmpeg(), [
         '-y',
         '-i', videoOnly,
         '-stream_loop', '-1', '-i', audioPath,
@@ -314,7 +328,7 @@ export function buildSlideshowReel(opts) {
   // Probe for audio stream (ffprobe if available)
   let hasAudio = false;
   try {
-    const probe = execFileSync('ffprobe', [
+    const probe = execFileSync(ffprobe(), [
       '-v', 'error', '-select_streams', 'a',
       '-show_entries', 'stream=codec_type', '-of', 'csv=p=0', outPath,
     ], { timeout: 10000, encoding: 'utf8' });

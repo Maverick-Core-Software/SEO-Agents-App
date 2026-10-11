@@ -25,7 +25,8 @@ function candidates(name, env = process.env) {
     }
   } catch { /* no winget packages dir */ }
   out.push(path.join(local, 'Microsoft', 'WinGet', 'Links', `${name}.exe`));
-  out.push(`C:\ffmpeg\bin\${name}.exe`, `C:\Program Files\ffmpeg\bin\${name}.exe`);
+  out.push(path.join('C:/', 'ffmpeg', 'bin', `${name}.exe`),
+    path.join('C:/', 'Program Files', 'ffmpeg', 'bin', `${name}.exe`));
   return out;
 }
 
@@ -45,7 +46,8 @@ export function resolveFfBin(name, env = process.env) {
     if (c && fs.existsSync(c)) { found = c; break; }
   }
   if (!found && tryRun(name)) found = name; // plain PATH lookup
-  resolved.set(name, found);
+  // Cache hits only: a miss before the caller loads .env (FFMPEG_DIR) must not stick.
+  if (found) resolved.set(name, found);
   return found;
 }
 
