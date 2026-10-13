@@ -13,6 +13,17 @@
  * its existing role as the photo *source* — gbp-photo-pick.mjs still mirrors
  * it to the local cache and curates per-post.
  *
+ * Photo rule (G3): the image is resolved ONLY through the audited selection
+ * manifest (state/photo-selection-manifest.json, written by gbp-photo-pick):
+ * no `<date>-` folder scan, no curated fallback, never text-only. The bytes
+ * must match the audited sha256, pass checkImagePolicy (JPG/PNG >= 10 KB; HEIC
+ * is converted with heic-convert or refused), and must not collide with any
+ * manifest hash inside 8 weeks. Refusals are exit 5 with `reason`
+ * (image_missing | image_format | image_policy | hash_conflict | vision_*).
+ * `--dry-run` prints {date,image_path,image_sha256,image_exists,manifest_ok}.
+ * GBP_PHOTO_VISION_CHECK=1 adds one gpt-4o yes/no on the actual bytes.
+ * On success a {postedBy:'gbp-api'} row is appended to the manifest under its lock.
+ *
  * Idempotent create (G2): before creating, the location's localPosts are listed
  * (v4, paginated) and a post whose summary starts with the same first 60
  * characters (whitespace-normalised) created within the last 7 days means the
@@ -41,10 +52,21 @@ import process from 'node:process';
 import xlsx from 'xlsx';
 import { fileURLToPath } from 'node:url';
 import { getGbpAccessToken as realGetGbpAccessToken, gbpFetch as realGbpFetch } from './lib/gbp-api-auth.mjs';
-import { checkPostPolicy, formatViolations } from './gbp-poster/policy-check.mjs';
+import { checkPostPolicy, formatViolations, checkImagePolicy, IMAGE_CONVERT_EXTS } from './gbp-poster/policy-check.mjs';
 import { resolveGbpPosterConfig } from './lib/platform-defaults.mjs';
+import {
+  NO_REUSE_WEEKS,
+  hashConflicts,
+  isManifestSelectionCompatible,
+  loadSelectionManifest,
+  saveSelectionManifest,
+  sha256Buffer,
+  verifyPhotoCandidates,
+  withManifestLock,
+} from './lib/photo-selection.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
+const PROJECT_ROOT = path.resolve(path.dirname(__filename), '..');
 const DEFAULT_CONFIG = resolveGbpPosterConfig();
 
 export const V4 = 'https://mybusiness.googleapis.com/v4';
@@ -93,19 +115,184 @@ export function resolveCtaUrl(payload, config) {
   return config?.default_cta_url || null;
 }
 
-// Curated-folder fallback: gbp-photo-pick.mjs only writes the curated name into
-// the markdown schedule, not the workbook, so the workbook path can lag.
-export function resolveImagePath(payload, config) {
-  if (payload.imagePath && fs.existsSync(payload.imagePath)) return payload.imagePath;
-  const curatedDir = config.curated_photo_folder || '';
-  if (curatedDir && fs.existsSync(curatedDir)) {
-    const prefix = `${payload.date}-`;
-    const hit = fs.readdirSync(curatedDir)
-      .filter(f => f.toLowerCase().startsWith(prefix.toLowerCase()))
-      .sort()[0];
-    if (hit) return path.join(curatedDir, hit);
+// ── Photo rule (G3, memory gbp-check-photos-before-posting, audit 5.3) ──────
+//
+// The image for a date is resolved ONLY through the selection manifest that
+// gbp-photo-pick audited: no `<date>-` prefix scan of the curated folder, no
+// curated fallback, and no text-only post. Anything short of an audited,
+// present, byte-identical, policy-clean, unused image is exit 5
+// policy_violation with a `reason` the runner surfaces as the row error.
+
+/** The shared cross-platform selection manifest (same default as the pickers and the FB poster). */
+export function defaultManifestPath(env = process.env) {
+  return env.GBP_PHOTO_SELECTION_MANIFEST || path.join(PROJECT_ROOT, 'state', 'photo-selection-manifest.json');
+}
+
+const bareDate = (value) => String(value || '').replace(/\s*\(.*$/, '').trim();
+const isGbpEntry = (e) => e && (!e.platform || e.platform === 'gbp') && e.selectedBy !== 'fb-photo-pick';
+
+/**
+ * PURE: the audited selection entry for `date`. When the workbook names a path
+ * it must be the audited one (isManifestSelectionCompatible); otherwise the
+ * newest gbp selection for that date is used. Entries this poster appended
+ * after a post (postedBy 'gbp-api') are a record, never a selection.
+ */
+export function resolveManifestEntry({ date, imagePath = '', manifest = [] }) {
+  const selections = manifest.filter((e) => isGbpEntry(e) && e.postedBy !== 'gbp-api' && bareDate(e.postDate) === bareDate(date));
+  if (!selections.length) return { entry: null, reason: `no audited selection manifest entry for ${date} (run gbp-photo-pick first)` };
+  if (imagePath) {
+    const compat = isManifestSelectionCompatible({ date, photoPath: imagePath, manifest: selections });
+    if (compat.ok) return { entry: compat.entry, via: 'workbook-path' };
+    return { entry: null, reason: `workbook image ${imagePath} is not the audited selection for ${date}: ${compat.reason}` };
   }
-  return payload.imagePath || null;
+  const newest = [...selections].sort((a, b) => Date.parse(b.selectedAt || 0) - Date.parse(a.selectedAt || 0))[0];
+  return { entry: newest, via: 'manifest-date' };
+}
+
+/** The manifest history to check a hash against: every entry except this date's own gbp rows. */
+export function reuseHistory({ date, manifest = [] }) {
+  return manifest.filter((e) => !(isGbpEntry(e) && bareDate(e.postDate) === bareDate(date)));
+}
+
+let heicConvertImpl;
+async function loadHeicConvert() {
+  if (heicConvertImpl !== undefined) return heicConvertImpl;
+  try { heicConvertImpl = (await import('heic-convert')).default; } catch { heicConvertImpl = null; }
+  return heicConvertImpl;
+}
+
+/**
+ * Resolve, audit and prepare the photo for `payload.date`. Returns
+ * `{ ok: true, entry, imagePath, bytes, contentType, uploadName, sha256, sourceSha256, converted }`
+ * or `{ ok: false, reason, detail, imagePath, sha256 }` where reason is one of
+ * image_missing | image_format | image_policy | hash_conflict | vision_rejected | vision_unavailable.
+ */
+export async function preparePhoto({ payload, manifest, now = Date.now(), env = {}, visionClient = null, heicConvert = loadHeicConvert } = {}) {
+  const fail = (reason, detail, extra = {}) => ({ ok: false, reason, detail, imagePath: extra.imagePath || null, sha256: extra.sha256 || null });
+
+  const resolved = resolveManifestEntry({ date: payload.date, imagePath: payload.imagePath, manifest });
+  if (!resolved.entry) return fail('image_missing', resolved.reason);
+  const entry = resolved.entry;
+  const imagePath = entry.photoPath || entry.curatedPath || '';
+  if (!imagePath || !fs.existsSync(imagePath)) return fail('image_missing', `audited image for ${payload.date} is not on disk: ${imagePath || '(no path in manifest)'}`, { imagePath });
+
+  const raw = fs.readFileSync(imagePath);
+  const sourceSha256 = sha256Buffer(raw);
+  const audited = String(entry.photoHash || '').toLowerCase();
+  if (!audited) return fail('image_missing', `manifest entry for ${payload.date} carries no photoHash (unaudited selection)`, { imagePath, sha256: sourceSha256 });
+  if (audited !== sourceSha256) return fail('image_missing', `image bytes differ from the audited selection for ${payload.date} (manifest ${audited.slice(0, 12)}, disk ${sourceSha256.slice(0, 12)})`, { imagePath, sha256: sourceSha256 });
+
+  // HEIC/HEIF → JPEG (the uploader rejects HEIC); fail closed without a converter.
+  const ext = path.extname(imagePath).toLowerCase();
+  let bytes = raw;
+  let uploadName = imagePath;
+  let converted = false;
+  if (IMAGE_CONVERT_EXTS.has(ext)) {
+    const convert = await heicConvert();
+    if (typeof convert !== 'function') return fail('image_format', `${ext} image needs heic-convert, which is not installed; convert ${path.basename(imagePath)} to JPEG first`, { imagePath, sha256: sourceSha256 });
+    try {
+      bytes = Buffer.from(await convert({ buffer: raw, format: 'JPEG', quality: 0.9 }));
+    } catch (e) {
+      return fail('image_format', `HEIC conversion failed for ${path.basename(imagePath)}: ${e.message}`, { imagePath, sha256: sourceSha256 });
+    }
+    uploadName = `${imagePath.slice(0, -ext.length)}.jpg`;
+    converted = true;
+  }
+  const sha256 = sha256Buffer(bytes);
+  const contentType = contentTypeForImage(uploadName);
+
+  const policy = checkImagePolicy(uploadName, { sizeBytes: bytes.length });
+  if (policy.length) return fail('image_policy', policy.map((v) => `[${v.rule}] ${v.detail}`).join(' '), { imagePath, sha256 });
+
+  // 8-week cross-platform no-reuse on the final bytes (and the source bytes when
+  // converted). This date's own gbp rows are the selection itself; every other
+  // date, platform or earlier gbp-api post with this hash is a conflict.
+  const { conflicts } = hashConflicts({ hashes: [sha256, sourceSha256], history: reuseHistory({ date: payload.date, manifest }), now, weeks: NO_REUSE_WEEKS });
+  if (conflicts.length) {
+    const c = conflicts[0].entry || {};
+    return fail('hash_conflict', `image already used within ${NO_REUSE_WEEKS} weeks (${c.platform || 'gbp'} ${bareDate(c.postDate) || 'undated'}${c.postedBy ? `, ${c.postedBy}` : ''})`, { imagePath, sha256 });
+  }
+
+  if (String(env.GBP_PHOTO_VISION_CHECK || '') === '1') {
+    const verdict = await verifyPhotoCandidates({
+      candidates: [{ path: imagePath, hash: sha256 }],
+      hook: payload.topic || payload.caption.slice(0, 120),
+      service: entry.postService || payload.topic || '',
+      platform: 'gbp',
+      visionClient,
+      maxCandidates: 1,
+      imageLoader: () => ({ path: imagePath, hash: sha256, bytes, contentType }),
+    });
+    if (verdict.status !== 'passed') {
+      const reason = verdict.status === 'unverified' ? 'vision_unavailable' : 'vision_rejected';
+      const why = (verdict.verdicts && verdict.verdicts[0] && verdict.verdicts[0].reason) || verdict.reason || verdict.status;
+      return fail(reason, `GBP_PHOTO_VISION_CHECK=1: ${why}`, { imagePath, sha256 });
+    }
+  }
+
+  return { ok: true, entry, imagePath, bytes, contentType, uploadName, sha256, sourceSha256, converted };
+}
+
+/**
+ * One gpt-4o yes/no on the actual bytes (the picker's check, at post time).
+ * Without OPENAI_API_KEY the client reports unavailable, which fails closed.
+ */
+export function makeOpenAiVisionClient({ env = process.env, fetchImpl = (...a) => fetch(...a) } = {}) {
+  const key = env.OPENAI_API_KEY || '';
+  return async ({ image, hook, service }) => {
+    if (!key) return { unavailable: true, reason: 'OPENAI_API_KEY not set' };
+    const res = await fetchImpl('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'gpt-4o',
+        max_tokens: 40,
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'text', text: `Does this photo plausibly illustrate an electrician's "${service}" post with the hook "${hook}"? Answer YES or NO, then one short reason.` },
+            { type: 'image_url', image_url: { url: `data:${image.contentType};base64,${image.bytes.toString('base64')}` } },
+          ],
+        }],
+      }),
+    });
+    if (!res.ok) return { unavailable: true, reason: `vision HTTP ${res.status}` };
+    const json = await res.json();
+    const text = String(json?.choices?.[0]?.message?.content || '').trim();
+    if (/^yes\b/i.test(text)) return { matches: true, model: 'gpt-4o', reason: text };
+    if (/^no\b/i.test(text)) return { matches: false, model: 'gpt-4o', reason: text };
+    return { matches: null, reason: `unclear verdict: ${text.slice(0, 80)}` };
+  };
+}
+
+/**
+ * Record the post in the manifest under the shared lock so FB and next week's
+ * picker see the hash. Appends one gbp row; never rewrites other platforms.
+ */
+export function appendPostedManifestEntry({ manifestPath, entry, photo, date, localPostName, now = Date.now() }) {
+  const iso = new Date(now).toISOString();
+  return withManifestLock(manifestPath, () => {
+    const rows = loadSelectionManifest(manifestPath).map((e) => (
+      e && e.platform ? e : { ...e, platform: e && e.selectedBy === 'fb-photo-pick' ? 'fb' : 'gbp' }
+    ));
+    const row = {
+      platform: 'gbp',
+      postedBy: 'gbp-api',
+      postDate: date,
+      postService: entry.postService || null,
+      postServiceType: entry.postServiceType || null,
+      photoPath: photo.imagePath,
+      photoHash: photo.sha256,
+      sourceHash: entry.sourceHash || photo.sourceSha256,
+      photoServiceType: entry.photoServiceType || entry.serviceType || null,
+      localPostName,
+      postedAt: iso,
+      selectedAt: iso,
+    };
+    rows.push(row);
+    saveSelectionManifest(manifestPath, rows, { platform: 'gbp' });
+    return row;
+  });
 }
 
 /** Whitespace-normalised summary text (runs of whitespace → one space, trimmed). */
@@ -286,9 +473,9 @@ export async function runPoster(args, rawDeps = {}) {
   const deps = resolveDeps(rawDeps);
   const { emit, log, print, env } = deps;
   const config = JSON.parse(fs.readFileSync(args.config, 'utf8'));
-  // Env overrides let a host point at its own workbook and photo mounts without
-  // editing the checked-in config (which carries the PC's Windows paths).
-  if (env.GBP_CURATED_FOLDER) config.curated_photo_folder = env.GBP_CURATED_FOLDER;
+  // Env overrides let a host point at its own workbook without editing the
+  // checked-in config (which carries the PC's Windows paths). The curated folder
+  // is no longer consulted here: the image comes from the manifest only (G3).
   const workbookDir = env.GBP_WORKBOOK_DIR || config.config_dir || '';
   const workbookPath = env.GBP_WORKBOOK_PATH || path.join(workbookDir, config.workbook_path || '');
   if (!workbookPath || !fs.existsSync(workbookPath)) {
@@ -331,21 +518,35 @@ export async function runPoster(args, rawDeps = {}) {
     return 0;
   }
 
-  payload.imagePath = resolveImagePath(payload, config);
-
-  const preview = {
+  // G3: the photo comes from the audited selection manifest or the post does
+  // not happen. The dry-run row is printed first so the operator gate ("view
+  // each one") has the resolved path and hash even when the check refuses.
+  const manifestPath = rawDeps.manifestPath || defaultManifestPath(env);
+  const manifest = loadSelectionManifest(manifestPath);
+  const photo = await preparePhoto({
+    payload, manifest, now: deps.now(), env,
+    visionClient: rawDeps.visionClient || (String(env.GBP_PHOTO_VISION_CHECK || '') === '1' ? makeOpenAiVisionClient({ env, fetchImpl: deps.fetchImpl }) : null),
+    heicConvert: rawDeps.heicConvert || loadHeicConvert,
+  });
+  const dryRow = {
     date: payload.date,
-    status: payload.status,
-    topic: payload.topic,
-    caption_chars: payload.caption.length,
-    image_path: payload.imagePath,
-    image_exists: payload.imagePath ? fs.existsSync(payload.imagePath) : false,
-    cta: payload.ctaUrl || null,
+    image_path: photo.imagePath,
+    image_sha256: photo.sha256,
+    image_exists: Boolean(photo.imagePath && fs.existsSync(photo.imagePath)),
+    manifest_ok: photo.ok,
+    ...(photo.ok ? {} : { reason: photo.reason, detail: photo.detail }),
   };
-  print(JSON.stringify({ mode: args.dryRun ? 'dry-run' : 'live', payload: preview }, null, 2));
+  print(JSON.stringify({ mode: args.dryRun ? 'dry-run' : 'live', topic: payload.topic, caption_chars: payload.caption.length, cta: payload.ctaUrl || null, ...dryRow }));
+
+  if (!photo.ok) {
+    const message = `Post ${payload.date} photo rule (${photo.reason}): ${photo.detail}`;
+    emit({ result: 'policy_violation', status: 'policy_violation', reason: photo.reason, date: payload.date, verified: false, postUrl: null, error: message, ...dryRow });
+    log(message);
+    return 5;
+  }
 
   if (args.dryRun) {
-    emit({ result: 'dry_run', date: payload.date, verified: false, postUrl: null });
+    emit({ result: 'dry_run', date: payload.date, verified: false, postUrl: null, ...dryRow });
     return 0;
   }
 
@@ -368,18 +569,23 @@ export async function runPoster(args, rawDeps = {}) {
     return 0;
   }
 
-  let mediaRef = null;
-  if (payload.imagePath && fs.existsSync(payload.imagePath)) {
-    mediaRef = await uploadMedia(locationName, { buffer: fs.readFileSync(payload.imagePath), contentType: contentTypeForImage(payload.imagePath) }, deps);
-    log(`Media uploaded: ${mediaRef}`);
-  } else {
-    log(`No image for ${args.date} — posting text-only.`);
-  }
+  // The photo is mandatory (G3): preparePhoto returned ok, so the upload always
+  // runs and a create without media cannot be reached from here.
+  const mediaRef = await uploadMedia(locationName, { buffer: photo.bytes, contentType: photo.contentType }, deps);
+  log(`Media uploaded: ${mediaRef} (${path.basename(photo.imagePath)}${photo.converted ? ', HEIC→JPEG' : ''}, sha256 ${photo.sha256.slice(0, 12)})`);
 
   const created = await createLocalPost(locationName, payload, payload.ctaUrl, mediaRef, deps);
   const postName = created.name;
   if (!postName) {
     throw new Error(`Create returned no post name: ${JSON.stringify(created)}`);
+  }
+
+  // The post exists from here on: record the hash before the verify GET so a
+  // crash between create and verify still leaves the manifest truthful.
+  try {
+    appendPostedManifestEntry({ manifestPath, entry: photo.entry, photo, date: payload.date, localPostName: postName, now: deps.now() });
+  } catch (e) {
+    log(`WARNING: post ${postName} created but the manifest append failed: ${e.message}`);
   }
 
   const verified = await verifyPost(postName, deps);

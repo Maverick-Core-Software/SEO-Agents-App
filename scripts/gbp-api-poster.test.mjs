@@ -1,8 +1,8 @@
 // scripts/gbp-api-poster.test.mjs
 // G2 idempotent create + G3 photo-rule guard for the GBP API poster. Every
 // network call is injected (gbpFetch / getGbpAccessToken / fetchImpl), the
-// workbook and config are temp files, and the selection manifest is a temp
-// file under its own lock. Nothing here reaches Google or the real state/.
+// workbook, config, image and selection manifest are temp files. Nothing here
+// reaches Google or the real state/.
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -14,13 +14,17 @@ import {
   findLivePostForSummary,
   summaryPrefix,
   listLocalPosts,
+  resolveManifestEntry,
+  preparePhoto,
   SUMMARY_PREFIX_CHARS,
 } from './gbp-api-poster.mjs';
+import { loadSelectionManifest, sha256Buffer } from './lib/photo-selection.mjs';
 
 const LOCATION = 'accounts/111/locations/222';
 const DATE = '2026-10-16';
 const CAPTION = 'Breakers tripping in Frisco? Our licensed electricians find the fault fast and fix it right the first time.';
 const NOW = Date.parse('2026-10-16T14:05:00Z');
+const NOW_ISO = new Date(NOW).toISOString();
 
 const tmpDirs = [];
 function tmp(prefix) {
@@ -30,9 +34,23 @@ function tmp(prefix) {
 }
 after(() => { for (const d of tmpDirs) fs.rmSync(d, { recursive: true, force: true }); });
 
-/** A workbook with one Approved row for DATE, plus a config pointing at it. */
-function fixture({ caption = CAPTION, status = 'Approved', posted = false, imagePath = '' } = {}) {
+/** A fake JPEG: 12 KB of bytes seeded by `seed` so two images never share a hash. */
+function fakeImage(dir, name, seed = 1, size = 12000) {
+  const file = path.join(dir, name);
+  const buf = Buffer.alloc(size, seed);
+  buf[0] = 0xff; buf[1] = 0xd8;
+  fs.writeFileSync(file, buf);
+  return { file, hash: sha256Buffer(buf) };
+}
+
+/**
+ * Workbook with one Approved row for DATE, a config pointing at it, a 12 KB
+ * image and a keyed selection manifest auditing that image for DATE.
+ */
+function fixture({ caption = CAPTION, status = 'Approved', posted = false, workbookImage = 'audited', manifest = true, extraEntries = [], imageSeed = 7 } = {}) {
   const dir = tmp('fx');
+  const img = fakeImage(dir, `${DATE}-troubleshooting.jpg`, imageSeed);
+  const imagePath = workbookImage === 'audited' ? img.file : (workbookImage || '');
   const workbook = path.join(dir, 'schedule.xlsx');
   const ws = xlsx.utils.aoa_to_sheet([
     ['Date', 'Status', 'Posted', 'Topic', 'CaptionDraft', 'AssetIdOrDescription'],
@@ -43,7 +61,19 @@ function fixture({ caption = CAPTION, status = 'Approved', posted = false, image
   xlsx.writeFile(wb, workbook);
   const config = path.join(dir, 'config.json');
   fs.writeFileSync(config, JSON.stringify({ workbook_path: 'schedule.xlsx', config_dir: dir, default_cta_url: 'https://example.test/' }));
-  return { dir, workbook, config };
+  const manifestPath = path.join(dir, 'state', 'photo-selection-manifest.json');
+  const entry = {
+    postDate: DATE, postService: 'Electrical Troubleshooting & Repair', postServiceType: 'troubleshooting',
+    photoPath: img.file, photoHash: img.hash, sourcePath: img.file, sourceHash: img.hash,
+    photoServiceType: 'troubleshooting', selectedAt: '2026-10-15T20:00:00.000Z', selectedBy: 'gbp-photo-pick',
+  };
+  if (manifest) {
+    fs.mkdirSync(path.dirname(manifestPath), { recursive: true });
+    const keyed = { version: 1, platforms: { gbp: [entry], fb: [] } };
+    for (const e of extraEntries) { (keyed.platforms[e.platform] ||= []).push(e); }
+    fs.writeFileSync(manifestPath, JSON.stringify(keyed, null, 2));
+  }
+  return { dir, workbook, config, image: img, imagePath: img.file, manifestPath, entry };
 }
 
 /**
@@ -53,6 +83,7 @@ function fixture({ caption = CAPTION, status = 'Approved', posted = false, image
 function mockApi({ listed = [], pages = null, createdState = 'LIVE' } = {}) {
   const calls = [];
   const created = [];
+  const uploads = [];
   const listPages = pages || [{ localPosts: listed }];
   let listCall = 0;
   const gbpFetch = async (url, options = {}) => {
@@ -74,18 +105,25 @@ function mockApi({ listed = [], pages = null, createdState = 'LIVE' } = {}) {
     if (url.includes('/localPosts/new-')) return { name: url.split('/v4/')[1], state: createdState };
     throw new Error(`unexpected gbpFetch ${options.method || 'GET'} ${url}`);
   };
-  const fetchImpl = async () => ({ ok: true, status: 200, text: async () => '' });
+  const fetchImpl = async (url, options = {}) => {
+    uploads.push({ url, contentType: options.headers?.['Content-Type'], bytes: options.body?.length || 0 });
+    return { ok: true, status: 200, text: async () => '' };
+  };
   const getGbpAccessToken = async () => 'test-token';
-  return { calls, created, gbpFetch, fetchImpl, getGbpAccessToken };
+  return { calls, created, uploads, gbpFetch, fetchImpl, getGbpAccessToken };
 }
 
-function run(args, api, extra = {}) {
+function run(args, api, fx, extra = {}) {
   const emitted = [];
   const logs = [];
+  const printed = [];
   return runPoster(
-    { dryRun: false, ...args },
-    { ...api, emit: (r) => emitted.push(r), log: (l) => logs.push(l), print: () => {}, now: () => NOW, env: {}, ...extra },
-  ).then((code) => ({ code, emitted, logs, result: emitted[emitted.length - 1] }));
+    { dryRun: false, config: fx.config, date: DATE, ...args },
+    {
+      ...api, manifestPath: fx.manifestPath, emit: (r) => emitted.push(r), log: (l) => logs.push(l), print: (l) => printed.push(l),
+      now: () => NOW, env: {}, ...extra,
+    },
+  ).then((code) => ({ code, emitted, logs, printed, result: emitted[emitted.length - 1] }));
 }
 
 describe('G2 pure helpers', () => {
@@ -121,28 +159,30 @@ describe('G2 idempotent create (runPoster with mocked API)', () => {
   let fx;
   before(() => { fx = fixture(); });
 
-  it('a matching post within 7 days: no create, exit 0, already_live with the resource name', async () => {
+  it('a matching post within 7 days: no create, no upload, exit 0, already_live with the resource name', async () => {
     const api = mockApi({ listed: [
       { name: `${LOCATION}/localPosts/777`, summary: `${CAPTION}`, createTime: '2026-10-16T13:00:00Z', state: 'LIVE' },
     ] });
-    const r = await run({ date: DATE, config: fx.config }, api);
+    const r = await run({}, api, fx);
     assert.equal(r.code, 0);
     assert.equal(r.result.result, 'already_live');
     assert.equal(r.result.status, 'already_live');
     assert.equal(r.result.name, `${LOCATION}/localPosts/777`);
     assert.equal(r.result.postUrl, `${LOCATION}/localPosts/777`, 'platform_post_id = resource name');
     assert.equal(api.created.length, 0, 'no POST localPosts');
+    assert.equal(api.uploads.length, 0, 'no media upload either');
   });
 
-  it('no match: creates once and reports the resource name as postUrl', async () => {
+  it('no match: creates once (with media) and reports the resource name as postUrl', async () => {
     const api = mockApi({ listed: [
       { name: `${LOCATION}/localPosts/1`, summary: 'A different post from last week', createTime: '2026-10-15T13:00:00Z', state: 'LIVE' },
     ] });
-    const r = await run({ date: DATE, config: fx.config }, api);
+    const r = await run({}, api, fx);
     assert.equal(r.code, 0, r.logs.join('\n'));
     assert.equal(r.result.result, 'posted');
     assert.equal(api.created.length, 1, 'exactly one create');
     assert.equal(r.result.postUrl, api.created[0].name);
+    assert.ok(api.created[0].body.media?.[0]?.dataRef?.resourceName, 'the create carries the uploaded media');
     const listIdx = api.calls.findIndex((c) => c.url.includes('localPosts?pageSize='));
     const createIdx = api.calls.findIndex((c) => c.method === 'POST' && c.url.endsWith('/localPosts'));
     assert.ok(listIdx !== -1 && listIdx < createIdx, 'the list runs before the create');
@@ -152,7 +192,7 @@ describe('G2 idempotent create (runPoster with mocked API)', () => {
     const api = mockApi({ listed: [
       { name: `${LOCATION}/localPosts/9`, summary: CAPTION, createTime: '2026-10-16T13:00:00Z', state: 'REJECTED' },
     ] });
-    const r = await run({ date: DATE, config: fx.config }, api);
+    const r = await run({}, api, fx);
     assert.equal(r.code, 5);
     assert.equal(r.result.result, 'policy_violation');
     assert.equal(r.result.reason, 'google_rejected');
@@ -162,7 +202,7 @@ describe('G2 idempotent create (runPoster with mocked API)', () => {
   it('a listing failure propagates instead of creating blind', async () => {
     const api = mockApi();
     const failing = { ...api, gbpFetch: async (url, o) => (url.includes('localPosts?pageSize=') ? Promise.reject(new Error('503 list')) : api.gbpFetch(url, o)) };
-    await assert.rejects(run({ date: DATE, config: fx.config }, failing), /503 list/);
+    await assert.rejects(run({}, failing, fx), /503 list/);
     assert.equal(api.created.length, 0);
   });
 
@@ -172,10 +212,214 @@ describe('G2 idempotent create (runPoster with mocked API)', () => {
       if (url.includes('/localPosts/new-') && (o.method || 'GET') === 'GET') return { name: url.split('/v4/')[1], state: 'REJECTED' };
       return orig(url, o);
     })(api.gbpFetch);
-    const r = await run({ date: DATE, config: fx.config }, api);
+    const r = await run({}, api, fixture());
     assert.equal(r.code, 3);
     assert.equal(r.result.result, 'posted');
     assert.equal(r.result.verified, false);
     assert.equal(r.result.postUrl, api.created[0].name, 'exit 3 reports the name so the runner closes the workbook gate');
+  });
+});
+
+describe('G3 photo rule: manifest-only image, never text-only', () => {
+  it('resolveManifestEntry ignores fb rows and gbp-api records, honours the workbook path', () => {
+    const fx = fixture();
+    const manifest = loadSelectionManifest(fx.manifestPath);
+    assert.equal(resolveManifestEntry({ date: DATE, manifest }).entry.photoHash, fx.image.hash);
+    assert.equal(resolveManifestEntry({ date: DATE, imagePath: fx.imagePath, manifest }).via, 'workbook-path');
+    assert.equal(resolveManifestEntry({ date: '2026-10-17', manifest }).entry, null);
+    const other = path.join(fx.dir, 'other.jpg');
+    assert.match(resolveManifestEntry({ date: DATE, imagePath: other, manifest }).reason, /not the audited selection/);
+    const onlyRecord = [{ platform: 'gbp', postedBy: 'gbp-api', postDate: DATE, photoPath: fx.imagePath, photoHash: fx.image.hash }];
+    assert.equal(resolveManifestEntry({ date: DATE, manifest: onlyRecord }).entry, null, 'a gbp-api record is not a selection');
+  });
+
+  it('text-only is impossible: no manifest entry -> exit 5 image_missing, no API call at all', async () => {
+    const fx = fixture({ workbookImage: '', manifest: false });
+    const api = mockApi();
+    const r = await run({}, api, fx);
+    assert.equal(r.code, 5);
+    assert.equal(r.result.result, 'policy_violation');
+    assert.equal(r.result.reason, 'image_missing');
+    assert.equal(r.result.manifest_ok, false);
+    assert.equal(api.calls.length, 0, 'refused before any network call');
+    assert.equal(api.created.length, 0);
+  });
+
+  it('a `<date>-` file in the folder without a manifest entry is still image_missing (no prefix scan)', async () => {
+    const fx = fixture({ workbookImage: '', manifest: false });
+    const api = mockApi();
+    const r = await run({}, api, fx, { env: { GBP_CURATED_FOLDER: fx.dir } });
+    assert.equal(r.code, 5);
+    assert.equal(r.result.reason, 'image_missing');
+    assert.equal(api.created.length, 0);
+  });
+
+  it('audited entry whose file is gone -> image_missing', async () => {
+    const fx = fixture();
+    fs.unlinkSync(fx.imagePath);
+    const r = await run({}, mockApi(), fx);
+    assert.equal(r.code, 5);
+    assert.equal(r.result.reason, 'image_missing');
+    assert.equal(r.result.image_exists, false);
+  });
+
+  it('bytes that differ from the audited sha256 -> image_missing (unaudited image)', async () => {
+    const fx = fixture();
+    fs.writeFileSync(fx.imagePath, Buffer.alloc(12000, 9));
+    const r = await run({}, mockApi(), fx);
+    assert.equal(r.code, 5);
+    assert.equal(r.result.reason, 'image_missing');
+    assert.match(r.result.error, /differ from the audited selection/);
+  });
+
+  it('duplicate hash within 8 weeks on another platform/date -> exit 5 hash_conflict, no create', async () => {
+    const fx = fixture({ extraEntries: [
+      { platform: 'fb', postDate: '2026-10-02', photoPath: 'C:/elsewhere/x.jpg', photoHash: null, sourceHash: null, selectedAt: '2026-10-01T00:00:00.000Z', selectedBy: 'fb-photo-pick' },
+    ] });
+    // Give the fb row this image's hash (the fixture cannot know it before the image exists).
+    const keyed = JSON.parse(fs.readFileSync(fx.manifestPath, 'utf8'));
+    keyed.platforms.fb[0].photoHash = fx.image.hash;
+    fs.writeFileSync(fx.manifestPath, JSON.stringify(keyed));
+    const api = mockApi();
+    const r = await run({}, api, fx);
+    assert.equal(r.code, 5);
+    assert.equal(r.result.reason, 'hash_conflict');
+    assert.match(r.result.error, /fb 2026-10-02/);
+    assert.equal(api.created.length, 0);
+  });
+
+  it('the same hash used by a gbp-api post for another date in this run -> hash_conflict', async () => {
+    const fx = fixture();
+    const keyed = JSON.parse(fs.readFileSync(fx.manifestPath, 'utf8'));
+    keyed.platforms.gbp.push({ postedBy: 'gbp-api', postDate: '2026-10-15', photoPath: fx.imagePath, photoHash: fx.image.hash, localPostName: 'x', selectedAt: '2026-10-15T14:00:00.000Z' });
+    fs.writeFileSync(fx.manifestPath, JSON.stringify(keyed));
+    const r = await run({}, mockApi(), fx);
+    assert.equal(r.code, 5);
+    assert.equal(r.result.reason, 'hash_conflict');
+  });
+
+  it('a reuse older than 8 weeks does not block', async () => {
+    const fx = fixture();
+    const keyed = JSON.parse(fs.readFileSync(fx.manifestPath, 'utf8'));
+    keyed.platforms.gbp.push({ postDate: '2026-07-01', photoPath: 'C:/old.jpg', photoHash: fx.image.hash, selectedAt: '2026-06-30T00:00:00.000Z', selectedBy: 'gbp-photo-pick' });
+    fs.writeFileSync(fx.manifestPath, JSON.stringify(keyed));
+    const r = await run({}, mockApi(), fx);
+    assert.equal(r.code, 0, r.logs.join('\n'));
+  });
+
+  it('image policy: under 10 KB -> exit 5 image_policy', async () => {
+    const fx = fixture();
+    const small = Buffer.alloc(4000, 3);
+    fs.writeFileSync(fx.imagePath, small);
+    const keyed = JSON.parse(fs.readFileSync(fx.manifestPath, 'utf8'));
+    keyed.platforms.gbp[0].photoHash = sha256Buffer(small);
+    fs.writeFileSync(fx.manifestPath, JSON.stringify(keyed));
+    const r = await run({}, mockApi(), fx);
+    assert.equal(r.code, 5);
+    assert.equal(r.result.reason, 'image_policy');
+    assert.match(r.result.error, /image-too-small/);
+  });
+
+  it('HEIC: converted through heic-convert and uploaded as JPEG; a failed conversion fails closed', async () => {
+    const fx = fixture();
+    const heic = path.join(fx.dir, `${DATE}-shot.heic`);
+    const heicBytes = Buffer.alloc(15000, 5);
+    fs.writeFileSync(heic, heicBytes);
+    const keyed = JSON.parse(fs.readFileSync(fx.manifestPath, 'utf8'));
+    keyed.platforms.gbp[0].photoPath = heic;
+    keyed.platforms.gbp[0].photoHash = sha256Buffer(heicBytes);
+    fs.writeFileSync(fx.manifestPath, JSON.stringify(keyed));
+    fs.writeFileSync(fx.workbook, fs.readFileSync(fixture({ workbookImage: heic }).workbook));
+
+    const jpeg = Buffer.alloc(13000, 6);
+    const api = mockApi();
+    const ok = await run({}, api, fx, { heicConvert: async () => async () => jpeg });
+    assert.equal(ok.code, 0, ok.logs.join('\n'));
+    assert.equal(api.uploads[0].contentType, 'image/jpeg');
+    assert.equal(api.uploads[0].bytes, jpeg.length);
+    assert.equal(ok.result.postUrl, api.created[0].name);
+    const posted = loadSelectionManifest(fx.manifestPath).find((e) => e.postedBy === 'gbp-api');
+    assert.equal(posted.photoHash, sha256Buffer(jpeg), 'manifest records the hash of the final (converted) bytes');
+
+    // Same fixture (its workbook and manifest both name the HEIC): a converter
+    // that throws, or no converter at all, is exit 5 image_format, not a post.
+    const broken = await run({}, mockApi(), fx, { heicConvert: async () => async () => { throw new Error('input buffer is not a HEIC image'); } });
+    assert.equal(broken.code, 5);
+    assert.equal(broken.result.reason, 'image_format');
+    const missing = await run({}, mockApi(), fx, { heicConvert: async () => null });
+    assert.equal(missing.code, 5);
+    assert.equal(missing.result.reason, 'image_format');
+  });
+
+  it('--dry-run prints {date,image_path,image_sha256,image_exists,manifest_ok} and touches no API', async () => {
+    const fx = fixture();
+    const api = mockApi();
+    const r = await run({ dryRun: true }, api, fx);
+    assert.equal(r.code, 0);
+    assert.equal(r.result.result, 'dry_run');
+    const row = JSON.parse(r.printed[0]);
+    assert.deepEqual(
+      { date: row.date, image_path: row.image_path, image_sha256: row.image_sha256, image_exists: row.image_exists, manifest_ok: row.manifest_ok },
+      { date: DATE, image_path: fx.imagePath, image_sha256: fx.image.hash, image_exists: true, manifest_ok: true },
+    );
+    assert.equal(api.calls.length, 0);
+    assert.equal(loadSelectionManifest(fx.manifestPath).some((e) => e.postedBy === 'gbp-api'), false, 'dry-run appends nothing');
+  });
+
+  it('--dry-run on a refused image still prints the row (manifest_ok false) and exits 5', async () => {
+    const fx = fixture({ workbookImage: '', manifest: false });
+    const r = await run({ dryRun: true }, mockApi(), fx);
+    assert.equal(r.code, 5);
+    const row = JSON.parse(r.printed[0]);
+    assert.equal(row.manifest_ok, false);
+    assert.equal(row.reason, 'image_missing');
+  });
+
+  it('success appends a postedBy gbp-api manifest row under the lock and leaves no lock file', async () => {
+    const fx = fixture({ extraEntries: [
+      { platform: 'fb', postDate: '2026-10-09', photoPath: 'C:/elsewhere/fb.jpg', photoHash: 'f'.repeat(64), selectedAt: '2026-10-08T00:00:00.000Z', selectedBy: 'fb-photo-pick' },
+    ] });
+    const api = mockApi();
+    const r = await run({}, api, fx);
+    assert.equal(r.code, 0, r.logs.join('\n'));
+    const rows = loadSelectionManifest(fx.manifestPath);
+    const posted = rows.find((e) => e.postedBy === 'gbp-api');
+    assert.ok(posted, 'gbp-api row appended');
+    assert.equal(posted.platform, 'gbp');
+    assert.equal(posted.postDate, DATE);
+    assert.equal(posted.photoHash, fx.image.hash);
+    assert.equal(posted.localPostName, api.created[0].name);
+    assert.equal(posted.postedAt, NOW_ISO);
+    assert.equal(rows.filter((e) => e.selectedBy === 'gbp-photo-pick').length, 1, 'the selection row is kept');
+    assert.equal(fs.existsSync(`${fx.manifestPath}.lock`), false);
+    // The keyed file keeps the other platform's rows.
+    const keyed = JSON.parse(fs.readFileSync(fx.manifestPath, 'utf8'));
+    assert.equal(keyed.platforms.fb.length, 1, 'fb rows survive the gbp append');
+    assert.equal(keyed.platforms.fb[0].photoHash, 'f'.repeat(64));
+  });
+
+  it('GBP_PHOTO_VISION_CHECK=1: a "no" verdict is exit 5 vision_rejected; unavailable fails closed; yes proceeds', async () => {
+    const no = await run({}, mockApi(), fixture(), { env: { GBP_PHOTO_VISION_CHECK: '1' }, visionClient: async () => ({ matches: false, reason: 'shows a kitchen' }) });
+    assert.equal(no.code, 5);
+    assert.equal(no.result.reason, 'vision_rejected');
+    const down = await run({}, mockApi(), fixture(), { env: { GBP_PHOTO_VISION_CHECK: '1' }, visionClient: async () => ({ unavailable: true, reason: 'OPENAI_API_KEY not set' }) });
+    assert.equal(down.code, 5);
+    assert.equal(down.result.reason, 'vision_unavailable');
+    const seen = [];
+    const yes = await run({}, mockApi(), fixture(), { env: { GBP_PHOTO_VISION_CHECK: '1' }, visionClient: async (q) => { seen.push(q); return { matches: true }; } });
+    assert.equal(yes.code, 0, yes.logs.join('\n'));
+    assert.equal(seen.length, 1);
+    assert.ok(Buffer.isBuffer(seen[0].image.bytes), 'the vision client sees the final bytes');
+  });
+
+  it('preparePhoto never returns ok without an entry, a present file and a matching hash', async () => {
+    const fx = fixture();
+    const manifest = loadSelectionManifest(fx.manifestPath);
+    const ok = await preparePhoto({ payload: { date: DATE, imagePath: '', topic: 't', caption: 'c' }, manifest, now: NOW });
+    assert.equal(ok.ok, true);
+    assert.equal(ok.sha256, fx.image.hash);
+    const none = await preparePhoto({ payload: { date: '2026-10-17', imagePath: '', topic: 't', caption: 'c' }, manifest, now: NOW });
+    assert.equal(none.ok, false);
+    assert.equal(none.reason, 'image_missing');
   });
 });
