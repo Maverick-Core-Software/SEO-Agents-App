@@ -1,0 +1,18 @@
+[Unit]
+Description=Grizzly SEO watchdog (no-show / failed / stale detector)
+Documentation=file:///opt/seo/deploy/aiwa/README.md
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=seo
+WorkingDirectory=/opt/seo
+EnvironmentFile=/opt/seo/.env
+Environment=TZ=America/Chicago
+Environment=NODE_ENV=production
+Environment=PATH=/opt/seo/.venv/bin:/usr/local/bin:/usr/bin:/bin
+NoNewPrivileges=yes
+PrivateTmp=yes
+ExecStart=/usr/bin/node scripts/seo-watchdog.mjs
+TimeoutStartSec=10min
