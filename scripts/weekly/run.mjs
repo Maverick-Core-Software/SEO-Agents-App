@@ -132,6 +132,9 @@ const USAGE = [
   '  --legacy-dir <dir>      legacy outputs to compare against (default: outputs in shadow; new/offline: skip unless given)',
   '  --photos-dir <dir>      photo inventory (default: the GBP photo folders from scripts/lib/gbp-paths.mjs)',
   '  --notify                shadow and new: send the Hermes/SMTP attempt alert',
+  '  --force-replan          new: replace this week\'s pending_approval rows (refused otherwise when',
+  '                          seo_runs(week_of) exists; never overrides approved/executing/done runs',
+  '                          or non-pending weekly_posts rows)',
   '  -h, --help              this text',
 ].join('\n');
 
@@ -153,7 +156,7 @@ const VALUE_FLAGS = {
   '--legacy-dir': 'legacyDir',
   '--photos-dir': 'photosDir',
 };
-const BOOL_FLAGS = { '--notify': 'notify', '--help': 'help', '-h': 'help' };
+const BOOL_FLAGS = { '--notify': 'notify', '--force-replan': 'forceReplan', '--help': 'help', '-h': 'help' };
 
 /** Parse argv (without node and the script path). Throws on an unknown or valueless flag. */
 export function parseArgs(argv = []) {
@@ -195,6 +198,7 @@ export function resolveOptions(options = {}) {
     legacyDir: options.legacyDir ? path.resolve(options.legacyDir) : ((offline || live) ? null : OUTPUTS_DIR),
     photosDir: options.photosDir ? path.resolve(options.photosDir) : null,
     notify: Boolean(options.notify),
+    forceReplan: Boolean(options.forceReplan),
   };
 }
 
@@ -495,6 +499,67 @@ export function selectStore({ mode, storeDir, env = process.env, deps = {}, warn
   return { store: createFileStore(storeDir), kind: 'file', supabase: deps.supabase || null };
 }
 
+/** seo_runs statuses a `new` run must never replan over, --force-replan or not. */
+export const RERUN_BLOCKING_RUN_STATUSES = Object.freeze(['approved', 'executing', 'done']);
+
+/** Thrown by checkRerunGuard; the CLI exits 2 (refused) before any attempt record exists. */
+export class RerunRefused extends Error {
+  constructor(message, details = {}) {
+    super(message);
+    this.name = 'RerunRefused';
+    Object.assign(this, details);
+  }
+}
+
+/**
+ * V4 rerun guard (new mode). Refuses — always — when seo_runs(week_of) is
+ * approved/executing/done or when any non-pending weekly_posts row exists for
+ * that week's run(s); refuses an existing pending run unless --force-replan,
+ * which only lets projectPlan replace the pending_approval rows (it deletes
+ * nothing else). A week with no seo_runs row passes. Runs before the attempt
+ * record is created, so a refused rerun leaves no trace in the store.
+ */
+export async function checkRerunGuard({ supabase, weekOf, forceReplan = false, log = noop }) {
+  if (!supabase) throw new TypeError('checkRerunGuard: supabase client is required');
+  const runsRes = await supabase.from('seo_runs').select('id, status').eq('week_of', weekOf);
+  if (runsRes.error) throw new Error(`rerun guard: seo_runs lookup failed: ${runsRes.error.message || runsRes.error}`);
+  const runs = Array.isArray(runsRes.data) ? runsRes.data : [];
+  if (!runs.length) return { weekOf, runs: 0, pending: 0, nonPending: 0, replan: false };
+
+  const blocking = runs.filter((r) => RERUN_BLOCKING_RUN_STATUSES.includes(String(r.status || '').toLowerCase()));
+  if (blocking.length) {
+    throw new RerunRefused(
+      `seo_runs ${blocking[0].id} for week ${weekOf} is ${blocking[0].status}; a replan would duplicate an approved week (--force-replan does not override this)`,
+      { code: 'run_status', weekOf, runs },
+    );
+  }
+  let pending = 0;
+  const nonPending = [];
+  for (const run of runs) {
+    const rowsRes = await supabase.from('weekly_posts').select('id, status, platform, post_date').eq('run_id', run.id);
+    if (rowsRes.error) throw new Error(`rerun guard: weekly_posts lookup failed: ${rowsRes.error.message || rowsRes.error}`);
+    for (const row of (Array.isArray(rowsRes.data) ? rowsRes.data : [])) {
+      if (String(row.status || '').toLowerCase() === 'pending_approval') pending += 1;
+      else nonPending.push(row);
+    }
+  }
+  if (nonPending.length) {
+    const seen = [...new Set(nonPending.map((r) => r.status))].join(', ');
+    throw new RerunRefused(
+      `week ${weekOf} already has ${nonPending.length} weekly_posts row(s) past pending_approval (${seen}); refusing to replan over approved or published posts (--force-replan does not override this)`,
+      { code: 'rows', weekOf, runs, nonPending: nonPending.length },
+    );
+  }
+  if (!forceReplan) {
+    throw new RerunRefused(
+      `seo_runs ${runs[0].id} for week ${weekOf} already exists (${runs[0].status}, ${pending} pending_approval row(s)); pass --force-replan to replace the pending rows`,
+      { code: 'exists', weekOf, runs, pending },
+    );
+  }
+  log(`rerun guard: --force-replan for week ${weekOf}: ${pending} pending_approval row(s) will be replaced by the projection; no approved or published rows exist`);
+  return { weekOf, runs: runs.length, pending, nonPending: 0, replan: true };
+}
+
 /** Winners of the last `weeks` weeks from stored revisions (validation.ok only), newest revision per week. */
 export async function priorWinners(store, weekOf, weeks = PRIOR_WINNER_WEEKS) {
   const out = [];
@@ -633,6 +698,14 @@ export async function runWeekly(options = {}, deps = {}) {
   // Store first: a mode that must use Supabase is refused here, before the
   // model key is checked and before the metered preflight probe spends anything.
   const { store, kind: storeKind, supabase } = selectStore({ mode: opts.mode, storeDir: opts.storeDir, env, deps, warn });
+
+  // V4: a live week that already reached the publisher tables is not replanned
+  // by accident. Runs before the attempt exists; RerunRefused exits 2.
+  if (opts.mode === 'new') {
+    if (!supabase) throw new StoreRefused('--mode new needs the Supabase client for the rerun guard and the projection; none was configured or injected');
+    const guard = await checkRerunGuard({ supabase, weekOf: weekSpec.week_of, forceReplan: opts.forceReplan, log });
+    if (guard.replan) warn(`replanning week ${weekSpec.week_of}: ${guard.pending} pending_approval row(s) will be replaced`);
+  }
 
   let llm = deps.llm || null;
   if (!llm) {
@@ -1006,7 +1079,7 @@ export async function main(argv = process.argv.slice(2)) {
     console.log(result.summary);
     return 0;
   } catch (e) {
-    if (e instanceof StoreRefused) {
+    if (e instanceof StoreRefused || e instanceof RerunRefused) {
       console.error(`[weekly] refused: ${e.message}`);
       return 2;
     }

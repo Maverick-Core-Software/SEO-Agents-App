@@ -16,8 +16,8 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import {
-  DEFAULT_FIXTURES_DIR, FIXTURE_FILES, LIVE_MODES, MIRROR_FILES, MODES, NOTIFY_MODES, StoreRefused,
-  SUPABASE_REQUIRED_MODES, createFixtureCollectors, createFixtureLlm, main, resolveOptions, runWeekly, selectStore,
+  DEFAULT_FIXTURES_DIR, FIXTURE_FILES, LIVE_MODES, MIRROR_FILES, MODES, NOTIFY_MODES, RerunRefused, StoreRefused,
+  SUPABASE_REQUIRED_MODES, checkRerunGuard, createFixtureCollectors, createFixtureLlm, main, parseArgs, resolveOptions, runWeekly, selectStore,
 } from '../run.mjs';
 import { createFileStore } from '../lib/store.mjs';
 import { loadFacts } from '../lib/facts.mjs';
@@ -232,8 +232,21 @@ describe('--mode new: projection into the publisher tables (fake store, no netwo
     assert.deepEqual(fbRows.map((p) => p.hook), dbHooks);
   });
 
-  it('a second new-mode run for the same week replaces the pending rows instead of duplicating them', async () => {
-    const again = await runNew({ deps: { supabase: r.supabase }, options: { storeDir: r.storeDir, outDir: r.outDir } });
+  it('a second new-mode run for the same week is refused (exit 2, zero new rows) without --force-replan (V4)', async () => {
+    const before = JSON.stringify(r.supabase.tables);
+    const attemptFiles = () => { try { return fs.readdirSync(path.join(r.storeDir, 'attempts')).length; } catch { return 0; } };
+    const attemptsBefore = attemptFiles();
+    const err = await runNew({ deps: { supabase: r.supabase }, options: { storeDir: r.storeDir, outDir: r.outDir } }).catch((e) => e);
+    assert.ok(err instanceof RerunRefused, String(err && err.stack));
+    assert.equal(err.code, 'exists');
+    assert.match(err.message, /pass --force-replan/);
+    assert.equal(JSON.stringify(r.supabase.tables), before, 'zero new or changed rows');
+    assert.equal(attemptFiles(), attemptsBefore, 'no attempt record for a refused rerun');
+    assert.equal(await main(['--mode', 'new', '--store', r.storeDir, '--out', r.outDir]).catch(() => 'threw'), 2, 'the CLI exits 2 (refused)');
+  });
+
+  it('a second new-mode run with --force-replan replaces the pending rows instead of duplicating them', async () => {
+    const again = await runNew({ deps: { supabase: r.supabase }, options: { storeDir: r.storeDir, outDir: r.outDir, forceReplan: true } });
     assert.equal(again.attempt.status, 'succeeded');
     assert.equal(again.supabase.tables.seo_runs.length, 1, 'seo_runs upsert on week_of');
     assert.equal(again.supabase.tables.weekly_posts.length, 11);
@@ -305,6 +318,58 @@ describe('--mode new: a projection failure is a failed attempt, never a silent s
     assert.ok(fs.existsSync(path.join(outDir, 'attempt.json')), 'attempt.json mirror stays in --out for the wrapper health derivation');
     assert.ok(fs.existsSync(path.join(failedDir, MIRROR_FILES.meter)), 'meter mirrored into the failed dir');
     assert.equal(err.result.paths.plan, path.join(failedDir, EXPORT_FILES.plan));
+  });
+});
+
+describe('--mode new: rerun guard (V4)', () => {
+  it('refuses when seo_runs(week_of) is approved/executing/done, even with --force-replan', async () => {
+    for (const status of ['approved', 'executing', 'done']) {
+      const r = await runNew();
+      r.supabase.tables.seo_runs[0].status = status;
+      const before = JSON.stringify(r.supabase.tables);
+      const err = await runNew({ deps: { supabase: r.supabase }, options: { storeDir: r.storeDir, outDir: r.outDir, forceReplan: true } }).catch((e) => e);
+      assert.ok(err instanceof RerunRefused, `${status}: ${err && err.message}`);
+      assert.equal(err.code, 'run_status');
+      assert.equal(JSON.stringify(r.supabase.tables), before, `${status}: zero new rows`);
+    }
+  });
+
+  it('refuses when any weekly_posts row is past pending_approval, even with --force-replan', async () => {
+    const r = await runNew();
+    r.supabase.tables.weekly_posts[0].status = 'posted';
+    const before = JSON.stringify(r.supabase.tables);
+    const err = await runNew({ deps: { supabase: r.supabase }, options: { storeDir: r.storeDir, outDir: r.outDir, forceReplan: true } }).catch((e) => e);
+    assert.ok(err instanceof RerunRefused, String(err && err.message));
+    assert.equal(err.code, 'rows');
+    assert.match(err.message, /posted/);
+    assert.equal(JSON.stringify(r.supabase.tables), before);
+  });
+
+  it('--force-replan with only pending rows replaces them (never deletes approved/posted rows)', async () => {
+    const r = await runNew();
+    const oldIds = r.supabase.tables.weekly_posts.map((p) => p.id);
+    const again = await runNew({ deps: { supabase: r.supabase }, options: { storeDir: r.storeDir, outDir: r.outDir, forceReplan: true } });
+    assert.equal(again.attempt.status, 'succeeded');
+    assert.equal(again.supabase.tables.weekly_posts.length, 11);
+    assert.ok(again.supabase.tables.weekly_posts.every((p) => !oldIds.includes(p.id)), 'pending rows were replaced, not kept');
+    assert.ok(again.supabase.tables.weekly_posts.every((p) => p.status === 'pending_approval'));
+    assert.ok(again.warnings.some((w) => /replanning week .* 11 pending_approval row\(s\)/.test(w)), again.warnings.join('\n'));
+  });
+
+  it('checkRerunGuard passes a week with no seo_runs row and refuses an existing pending run without force', async () => {
+    const supabase = memorySupabase();
+    assert.deepEqual(await checkRerunGuard({ supabase, weekOf: WEEK_OF }), { weekOf: WEEK_OF, runs: 0, pending: 0, nonPending: 0, replan: false });
+    supabase.tables.seo_runs.push({ id: 'run-1', week_of: WEEK_OF, status: 'pending_approval' });
+    supabase.tables.weekly_posts.push({ id: 'p-1', run_id: 'run-1', status: 'pending_approval', platform: 'gbp', post_date: GBP_DATES[0] });
+    await assert.rejects(checkRerunGuard({ supabase, weekOf: WEEK_OF }), (e) => e instanceof RerunRefused && e.code === 'exists');
+    const ok = await checkRerunGuard({ supabase, weekOf: WEEK_OF, forceReplan: true });
+    assert.deepEqual({ runs: ok.runs, pending: ok.pending, replan: ok.replan }, { runs: 1, pending: 1, replan: true });
+    assert.equal(supabase.tables.weekly_posts.length, 1, 'the guard itself deletes nothing');
+  });
+
+  it('parseArgs accepts --force-replan and resolveOptions defaults it off', () => {
+    assert.equal(parseArgs(['--mode', 'new', '--force-replan']).forceReplan, true);
+    assert.equal(resolveOptions({ mode: 'new' }).forceReplan, false);
   });
 });
 
