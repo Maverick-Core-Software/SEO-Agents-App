@@ -23,7 +23,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
+import { isMainModule } from './lib/entry.mjs';
 
 import { resolveCommenterName, stripUnknownNames } from './lib/comment-name-guard.mjs';
 
@@ -356,6 +357,8 @@ async function poll() {
 // ── Health check endpoint ──
 function startHealthServer() {
   const port = parseInt(process.env.FB_COMMENT_AGENT_PORT || '8795', 10);
+  // Loopback by default: this endpoint is for local/PM2 health checks only.
+  const host = process.env.FB_COMMENT_AGENT_BIND || '127.0.0.1';
   import('node:http').then(({ createServer }) => {
     const server = createServer((req, res) => {
       if (req.url === '/health') {
@@ -377,8 +380,8 @@ function startHealthServer() {
         res.end('not found');
       }
     });
-    server.listen(port, () => {
-      hopLog('health', 'info', `Health server on :${port}`);
+    server.listen(port, host, () => {
+      hopLog('health', 'info', `Health server on ${host}:${port}`);
     });
   }).catch(() => {});
 }
@@ -422,7 +425,7 @@ async function main() {
 
 // Only auto-start when run directly (PM2 entrypoint); importing this module
 // for tests/harnesses must not spin up polling or the health server.
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMainModule(import.meta.url)) {
   main().catch(e => {
     hopLog('startup', 'fatal', `Crash: ${e.message}`, e.stack);
     process.exit(1);
