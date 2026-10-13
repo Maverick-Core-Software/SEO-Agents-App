@@ -367,8 +367,16 @@ function parseArgs(argv) {
     else if (a === '--config') args.config = argv[++i];
     else if (a.startsWith('--config=')) args.config = a.slice('--config='.length);
   }
-  args.date ||= new Date().toISOString().slice(0, 10);
+  // Default to today's date in America/Chicago (the schedule's zone), not UTC:
+  // a manual run after 19:00 CT used to pick tomorrow's row.
+  args.date ||= chicagoDate();
   return args;
+}
+
+export function chicagoDate(now = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Chicago', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(now);
+  const get = (t) => parts.find((p) => p.type === t)?.value;
+  return `${get('year')}-${get('month')}-${get('day')}`;
 }
 
 export function parseSchedule(filePath, targetDate) {

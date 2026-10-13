@@ -77,3 +77,45 @@ Design notes recorded for the orchestrator:
 - The access probe on 2026-10-13 showed account management v1 = 200 and legacy v4 = 404 (project still gated). The API path is built as specified; with `GBP_POSTER=api` on a gated project every post exits 6 and its row stays `scheduled` with the gating note, so nothing is marked error or posted. `GBP_POSTER` default remains `playwright`.
 - The poster's `--dry-run` prints the resolved row and exits 5 (not 0) when the photo rule refuses, so a 7-date dry-run loop fails loudly on a missing/unaudited image.
 - `resolveManifestEntry` ignores rows with `postedBy:'gbp-api'` when choosing a selection and `reuseHistory` excludes this date's own gbp rows from the 8-week check; everything else with the same hash is a conflict.
+
+## 5. Review findings (JOB 3: `git diff origin/main...cutover/rc1`, 130 files)
+
+Method: a targeted sweep of every ADDED line in `scripts/`, `src/`, `deploy/` and `.env.example` for
+swallowed errors (`catch {}`), UTC date math (`toISOString().slice(0,10)`, `getDate/getHours`), file-store
+fallbacks, `process.exit` inside handlers, secrets and absolute user paths, plus the design review done while
+building G1-G3/V4/V5 (runner exit-code mappings, the new-mode export/projection order, the wrapper's health
+derivation). A delegated full-file review pass was started but had not reported back when this branch was
+handed off, so treat this as a targeted, not exhaustive, review; the orchestrator's Fable pass (plan §7 step 2)
+still applies.
+
+### Fixed on `cutover/rc1`
+
+| # | Where | Problem | Fix (commit) |
+|---|---|---|---|
+| F1 | `scripts/gbp-api-poster.mjs` `parseArgs` | default `--date` was the UTC day: a manual run after 19:00 CT targeted tomorrow's row | `chicagoDate()` (America/Chicago via Intl) is the default; the runner always passes `--date` so the automated path was unaffected (this commit) |
+| F2 | `scripts/run-weekly-seo.py` `run_new_pipeline` | a refused `--mode new` (exit 2) writes no attempt, so the health error said only `failed (no attempt written)`: the FAILED alert carried no reason | `_refusal_line` lifts the engine's `[weekly] refused: …` line into the health error (`5dcafb5`) |
+| F3 | `scripts/gbp-api-poster.mjs`, `scripts/lib/gbp-runner.mjs` | on the still-gated v4 API a 404 would have surfaced as a generic failure and the runner would have flipped rows to `error` | exit 6 `api_gated` → rows stay `scheduled` with the note; worker startup probe (`a568645`) |
+| F4 | `scripts/weekly/reconcile.mjs` (C branch) | hard-coded `C:/Users/carte/...` Search Console token path outside any win32 branch | merged onto B1's `resolveSearchConsoleTokenFile({ env })` (`88215cb`) |
+| F5 | `scripts/lib/monitor-host.mjs` vs `platform-defaults.mjs` | two independent GBP archive defaults (B1 and B3) could drift | one source of truth (`675d111`) |
+| F6 | `src/seo_agents/crew.py` | `OUTPUT_DIR` ignored `SEO_OUTPUT_DIR` while `evidence.py` honoured it (two output folders on AIWA) | same rule + contract test (`6cb4d15`) |
+| F7 | `scripts/mav-bridge.mjs` | B8 turned 135 lines LF in a CRLF file (whole-file diff noise) | pure CRLF restored; logical diff is 7 lines (`88215cb`) |
+
+### Open (listed, not changed)
+
+| # | Where | Note | Severity |
+|---|---|---|---|
+| O1 | `scripts/classify-electrical.mjs` label `date: now().toISOString().slice(0,10)` | label metadata date is the UTC day (Phase A code); cosmetic, not used for scheduling | nit |
+| O2 | `scripts/gbp-poster/driver.mjs` composer locator probing (`try { … } catch {}` ×2) | deliberate try-next-strategy fallthrough in the Playwright path (Phase A, legacy); not a silent success | nit |
+| O3 | `excelDateToIso` (`gbp-api-poster.mjs`, `gbp-runner.mjs`) | a workbook `Date` cell is read as UTC midnight (`toISOString().slice(0,10)`), the same convention the driver and runner have always used; consistent, but a workbook written with local-time Date objects would shift. Watch on AIWA (TZ=America/Chicago). | nit/watch |
+| O4 | `scripts/run-weekly-seo.py` `run_new_pipeline` | after a failed new-mode run the `plan.json` it reads for `topic` now lives under `outputs/shadow/failed-<attempt>/` (V5), so the health `topic` is blank for failed runs; `attempt.json` is still mirrored to `--out` so status/returncode derivation is unchanged | nit |
+| O5 | `scripts/gbp-worker.mjs` API mode | the startup `probeV4` makes one network call on boot (API mode only); a transient failure is logged as a warning and never stops the worker | note |
+| O6 | Review coverage | the delegated full-diff review did not report back before handoff; the orchestrator's review pass should read `scripts/mav-bridge.mjs` (`--ignore-all-space`), `scripts/seo-monitor.mjs` and `deploy/aiwa/*` in full, which this sweep covered only by grep | process |
+
+### Checked and clean
+
+- Secrets: none in added lines. The only `xoxb-` strings are test fakes in `scripts/mav-bridge.*test*`; no keys, tokens or `-----BEGIN` blocks.
+- Absolute user paths: `C:/Users/carte/gmail-multi` and the hermes venv path appear only inside `platform === 'win32'` / `os.name == 'nt'` branches or in tests asserting those win32 defaults; `.env.example` keeps its documented PC paths as before.
+- File-store fallback: `selectStore` refuses `--mode new` without Supabase (exit 2); `createFileStore` appears in added lines only in tests and the offline path. V4 adds a second guard (`StoreRefused` when no client).
+- Text-only GBP posts: no path in `gbp-api-poster.mjs` reaches `createLocalPost` without a `mediaRef` (the upload is unconditional after `preparePhoto` ok; tests "text-only is impossible").
+- Legacy/shadow behaviour on the PC: every change is behind `GBP_POSTER` (default `playwright`), `SEO_PIPELINE` (default `legacy`), `SEO_MONITOR_NET_USE`/`SEO_MONITOR_PM2` (win32 defaults keep today's behaviour), `MAV_BRIDGE_BIND` (default loopback), `MAV_BRIDGE_GBP`, `HERMES_CLI`, `SEO_OUTPUT_DIR`, `WEBSITE_BRANCH` (code default still `master`), `TZ`, and the `GBP_*`/`SEO_*` path overrides with win32 defaults equal to the old literals. The Playwright exit-code mappings in `gbp-runner.mjs` are unchanged (new branches are keyed on exit 6 / `api_gated` and on `GBP_POSTER=api`).
+- `process.exit`: the two authorize scripts now exit only from `server.close` callbacks; the poster's `runPoster` returns codes and `main()` sets `process.exitCode`.
