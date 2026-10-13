@@ -479,3 +479,157 @@ console.log('ok gbp-runner orchestration');
 }
 
 console.log('ok gbp-runner day1 approval gate');
+
+// ---------------------------------------------------------------------------
+// G1 (cutover Phase D): API-mode scheduling semantics.
+// ---------------------------------------------------------------------------
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import xlsx from 'xlsx';
+import { dailyTickDue, applyDriverResult } from './gbp-runner.mjs';
+
+// dailyTickDue: the once-per-day latch the workers keep around runDailyGbp.
+assert.equal(dailyTickDue({ cstHour: 8, todayDate: '2026-10-14', lastDailyGbpDate: '' }), false, 'before 09:00 CT: not due');
+assert.equal(dailyTickDue({ cstHour: 9, todayDate: '2026-10-14', lastDailyGbpDate: '' }), true, '09:00 CT, untouched day: due');
+assert.equal(dailyTickDue({ cstHour: 15, todayDate: '2026-10-14', lastDailyGbpDate: '2026-10-14' }), false, 'same day already ticked: not due');
+assert.equal(dailyTickDue({ cstHour: 9, todayDate: '2026-10-15', lastDailyGbpDate: '2026-10-14' }), true, 'next day: due again');
+assert.equal(dailyTickDue({ cstHour: 9, todayDate: '', lastDailyGbpDate: '' }), false, 'no date: never due');
+
+// --- runGbpForApprovedRun in API mode: Day 1 posts, Days 2-7 are marked
+// `scheduled` with NO poster call (the API has no native scheduling) ---
+{
+  const updates = [];
+  const makeQb = () => {
+    const qb = {
+      from: () => qb,
+      select: () => qb,
+      eq: () => qb,
+      update: (vals) => { updates.push(vals); return { eq: () => Promise.resolve({ data: null, error: null }) }; },
+    };
+    return qb;
+  };
+  const runPhaseCalls = [];
+  const runPhase = async (runId, phase, cmd, args) => {
+    runPhaseCalls.push({ cmd, args });
+    return { ok: true, exitCode: 0, stdout: '{"result":"posted","verified":true,"postUrl":"accounts/1/locations/2/localPosts/day1"}', stderr: '' };
+  };
+
+  await runGbpForApprovedRun({
+    runId: 'r1',
+    gbpPosts: [
+      { id: 'p1', day: 1, post_date: '2026-10-16', run_id: 'r1' },
+      { id: 'p2', day: 2, post_date: '2026-10-17', run_id: 'r1' },
+      { id: 'p3', day: 3, post_date: '2026-10-18', run_id: 'r1' },
+    ],
+    deps: {
+      supabase: makeQb(),
+      runPhase,
+      log: async () => {},
+      env: { GBP_POSTER: 'api' },
+      projectRoot: process.cwd(),
+      paths: { photoPick: 'C:/nonexistent/photo-pick.mjs', gbpPoster: 'C:/fake/gbp-api-poster.mjs', seoAgentsExe: 'seo-agents.exe' },
+    },
+  });
+
+  assert.equal(runPhaseCalls.some(c => c.args?.includes('--schedule')), false, 'API mode must never spawn --schedule');
+  const posterCalls = runPhaseCalls.filter(c => c.args?.[0] === 'C:/fake/gbp-api-poster.mjs');
+  assert.equal(posterCalls.length, 1, 'only Day 1 invokes the API poster at approval time');
+  assert.ok(posterCalls[0].args.includes('2026-10-16'), 'Day 1 poster call carries its date');
+  assert.equal(updates.filter(u => u.status === 'scheduled').length, 2, 'Days 2 and 3 are marked scheduled');
+  assert.equal(updates.some(u => u.status === 'scheduled_native'), false, 'no scheduled_native in API mode');
+  assert.equal(updates.find(u => u.status === 'posted')?.platform_post_id, 'accounts/1/locations/2/localPosts/day1');
+}
+
+// --- API mode: applyDriverResult closes the workbook Posted gate for every
+// post the API created, including exit 3 (created, GET-back not LIVE yet).
+// Playwright mode keeps the gate open on exit 3 (unchanged legacy behaviour). ---
+{
+  const makeWorkbook = (dir) => {
+    const file = path.join(dir, 'schedule.xlsx');
+    const ws = xlsx.utils.aoa_to_sheet([
+      ['Date', 'Status', 'Posted', 'AssetIdOrDescription'],
+      ['2026-10-17', 'Approved', false, ''],
+    ]);
+    const wb = xlsx.utils.book_new();
+    xlsx.utils.book_append_sheet(wb, ws, 'Posts');
+    xlsx.writeFile(wb, file);
+    return file;
+  };
+  const readPosted = (file) => {
+    const wb = xlsx.readFile(file);
+    const rows = xlsx.utils.sheet_to_json(wb.Sheets.Posts, { defval: '' });
+    return rows[0].Posted;
+  };
+  const makeQb = (updates) => {
+    const qb = {
+      from: () => qb,
+      update: (vals) => { updates.push(vals); return { eq: () => Promise.resolve({ data: null, error: null }) }; },
+    };
+    return qb;
+  };
+  const exit3 = { ok: false, exitCode: 3, stdout: '{"result":"posted","verified":false,"postUrl":"accounts/1/locations/2/localPosts/day2"}', stderr: '' };
+
+  const apiDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gbp-runner-api-'));
+  const apiBook = makeWorkbook(apiDir);
+  const apiUpdates = [];
+  const apiStatus = await applyDriverResult({
+    supabase: makeQb(apiUpdates), post: { id: 'p2', run_id: 'r1', post_date: '2026-10-17' }, result: exit3,
+    env: { GBP_POSTER: 'api', GBP_WORKBOOK_PATH: apiBook, GBP_ARCHIVE_FOLDER: path.join(apiDir, 'archive') }, log: async () => {},
+  });
+  assert.equal(apiStatus, 'needs_verification', 'exit 3 stays needs_verification for the operator');
+  assert.equal(readPosted(apiBook), true, 'API mode: workbook Posted=TRUE for a created-but-unconfirmed post');
+
+  const pwDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gbp-runner-pw-'));
+  const pwBook = makeWorkbook(pwDir);
+  await applyDriverResult({
+    supabase: makeQb([]), post: { id: 'p2', run_id: 'r1', post_date: '2026-10-17' }, result: exit3,
+    env: { GBP_POSTER: 'playwright', GBP_WORKBOOK_PATH: pwBook, GBP_ARCHIVE_FOLDER: path.join(pwDir, 'archive') }, log: async () => {},
+  });
+  assert.notEqual(readPosted(pwBook), true, 'playwright mode: exit 3 leaves the Posted gate open (unchanged)');
+
+  const errDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gbp-runner-err-'));
+  const errBook = makeWorkbook(errDir);
+  await applyDriverResult({
+    supabase: makeQb([]), post: { id: 'p2', run_id: 'r1', post_date: '2026-10-17' },
+    result: { ok: false, exitCode: 5, stdout: '{"result":"policy_violation","error":"image_missing"}', stderr: '' },
+    env: { GBP_POSTER: 'api', GBP_WORKBOOK_PATH: errBook, GBP_ARCHIVE_FOLDER: path.join(errDir, 'archive') }, log: async () => {},
+  });
+  assert.notEqual(readPosted(errBook), true, 'API mode: a refused post never closes the gate');
+  for (const d of [apiDir, pwDir, errDir]) fs.rmSync(d, { recursive: true, force: true });
+}
+
+// --- Daily tick publishes a `scheduled` row exactly once: the row leaves the
+// scheduled set on the first tick, so a second tick (worker restart, next
+// poll) runs the poster zero more times. ---
+{
+  const rows = [{ id: 'p2', run_id: 'r1', post_date: '2026-10-17', photo_file: '', status: 'scheduled' }];
+  const makeQb = () => {
+    const qb = {
+      from: () => qb,
+      select: () => qb,
+      eq: () => qb,
+      in: (_col, statuses) => { qb._statuses = statuses; return qb; },
+      order: () => Promise.resolve({ data: rows.filter(r => (qb._statuses || []).includes(r.status)) }),
+      update: (vals) => ({ eq: (_c, id) => { Object.assign(rows.find(r => r.id === id), vals); return Promise.resolve({ data: null, error: null }); } }),
+    };
+    return qb;
+  };
+  let posterRuns = 0;
+  const runPhase = async () => {
+    posterRuns += 1;
+    return { ok: true, exitCode: 0, stdout: '{"result":"posted","verified":true,"postUrl":"accounts/1/locations/2/localPosts/day2"}', stderr: '' };
+  };
+  const tick = () => runDailyGbp({
+    supabase: makeQb(), runPhase, log: async () => {}, env: { GBP_POSTER: 'api' },
+    todayDate: '2026-10-17', gbpPosterPath: 'C:/fake/gbp-api-poster.mjs', projectRoot: process.cwd(), gbpMode: 'api',
+  });
+  await tick();
+  assert.equal(posterRuns, 1, 'first tick posts the scheduled row');
+  assert.equal(rows[0].status, 'posted');
+  await tick();
+  await tick();
+  assert.equal(posterRuns, 1, 'later ticks on the same day post nothing (row is no longer scheduled)');
+}
+
+console.log('ok gbp-runner G1 api-mode scheduling');

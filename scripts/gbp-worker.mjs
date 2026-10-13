@@ -23,7 +23,7 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createClient } from '@supabase/supabase-js';
 import { makeRunPhase } from './lib/run-phase.mjs';
-import { centralDateHour, runGbpForApprovedRun, runDailyGbp, markGbpPostedAndArchive, applyDriverResult, parseDriverJson } from './lib/gbp-runner.mjs';
+import { centralDateHour, dailyTickDue, runGbpForApprovedRun, runDailyGbp, markGbpPostedAndArchive, applyDriverResult, parseDriverJson } from './lib/gbp-runner.mjs';
 import { sendHermesAlert } from './lib/hermes-alert.mjs';
 import { resolveSeoAgentsExe } from './lib/platform-defaults.mjs';
 import { resolveGbpMode } from './lib/gbp-mode.mjs';
@@ -601,17 +601,20 @@ async function poll() {
         await runGbpForApprovedRun({
           runId,
           gbpPosts,
-          deps: { supabase, runPhase, log, env: process.env, projectRoot: PROJECT_ROOT, paths },
+          deps: { supabase, runPhase, log, env: process.env, projectRoot: PROJECT_ROOT, paths, gbpMode: GBP_MODE },
         });
       }
     }
 
-    // 2. Daily poster: today's scheduled gbp rows, once/day >=9am Central.
-    if (cstHour >= 9 && lastDailyGbpDate !== todayDate) {
+    // 2. Daily poster: today's scheduled gbp rows, once/day >=9am Central
+    //    (dailyTickDue is the latch; in API mode this is the ONLY path that
+    //    publishes Days 2-7, see runGbpForApprovedRun).
+    if (dailyTickDue({ cstHour, todayDate, lastDailyGbpDate })) {
       await runDailyGbp({
         supabase, runPhase, log,
         env: process.env,
         todayDate, gbpPosterPath: GBP_POSTER_PATH, projectRoot: PROJECT_ROOT,
+        gbpMode: GBP_MODE,
       });
       // Mark the day done only after a successful run — a throw here lets the next
       // poll retry today instead of silently skipping the day's posts.

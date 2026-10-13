@@ -7,9 +7,21 @@ import path from 'node:path';
 import { gbpListingUnverifiedMessage, isGbpSessionExpiredText } from './gbp-listing.mjs';
 import { defaultGbpPhotoDirs } from './gbp-paths.mjs';
 import { resolveGbpArchiveFolder } from './platform-defaults.mjs';
+import { resolveGbpMode } from './gbp-mode.mjs';
 import { syncGbpScheduleToWorkbook, gbpPostToScheduleMarkdown } from '../sync-gbp-schedule.mjs';
 
 export { gbpListingUnverifiedMessage, isGbpSessionExpiredText };
+
+/** Hour (Central) from which the daily poster tick may run. */
+export const DAILY_TICK_HOUR = 9;
+
+// The once-per-day latch the workers keep around runDailyGbp: due only at/after
+// 09:00 Central and only when today's tick has not already completed. The caller
+// stores todayDate into its latch AFTER runDailyGbp returns, so a throw inside
+// the tick leaves the day open for the next poll instead of silently skipping it.
+export function dailyTickDue({ cstHour, todayDate, lastDailyGbpDate = '', hour = DAILY_TICK_HOUR } = {}) {
+  return Number(cstHour) >= hour && Boolean(todayDate) && lastDailyGbpDate !== todayDate;
+}
 
 // Excel cells store dates as Date objects, serial numbers, or strings depending
 // on how the workbook was written. Normalise all three to an ISO yyyy-mm-dd.
@@ -248,8 +260,11 @@ async function withExcelRetry(filePath, fn, { maxRetries = 6, delayMs = 5000, lo
 
 // Called only after the driver verifies the post (exit 0): set Posted=TRUE in the
 // Excel workbook and move the photo to the dated archive folder. deps: { env, log }.
-export async function markGbpPostedAndArchive({ postDate, exitCode, runId, env, log }) {
-  if (exitCode !== 0) return;
+// `force` (API mode, G1): a localPost that Google created exists whatever the
+// GET-back said, so the workbook gate closes on exit 3 too; the API poster's own
+// already-posted guard reads that flag and refuses to create a second post.
+export async function markGbpPostedAndArchive({ postDate, exitCode, runId, env, log, force = false }) {
+  if (exitCode !== 0 && !force) return;
   const GBP_WORKBOOK_PATH = env.GBP_WORKBOOK_PATH || '';
   const GBP_ARCHIVE_FOLDER = resolveGbpArchiveFolder({ env });
   if (!GBP_WORKBOOK_PATH) { await log(runId, 'gbp', 'info', 'GBP_WORKBOOK_PATH not set — skipping Excel update'); return; }
@@ -301,9 +316,15 @@ export async function markGbpPostedAndArchive({ postDate, exitCode, runId, env, 
 }
 
 // Apply a driver result to one weekly_posts row (shared by run + daily paths).
-export async function applyDriverResult({ supabase, post, result, env, log }) {
+// API mode (G1): every post the API poster created (it reports the localPost
+// resource name as postUrl, on exit 0 and exit 3 alike) closes the workbook
+// Posted gate, so neither the daily tick nor a retry can create it twice.
+// Playwright mode is unchanged: the gate closes only after verification.
+export async function applyDriverResult({ supabase, post, result, env, log, gbpMode }) {
   const parsed = parseDriverJson(result.stdout);
   const map = gbpDailyStatusForExit(result.exitCode, parsed);
+  const apiMode = (gbpMode || resolveGbpMode(env || {})) === 'api';
+  const apiCreated = apiMode && Boolean(parsed.postUrl) && map.status !== 'error';
   const update = { status: map.status, error: map.error };
   if (map.status === 'posted') {
     update.posted_at = new Date().toISOString();
@@ -313,8 +334,8 @@ export async function applyDriverResult({ supabase, post, result, env, log }) {
     update.error = (map.error || result.stderr || result.error || 'GBP poster failed').slice(0, 300);
   }
   await supabase.from('weekly_posts').update(update).eq('id', post.id);
-  if (map.archive) {
-    await markGbpPostedAndArchive({ postDate: post.post_date, exitCode: result.exitCode, runId: post.run_id, env, log });
+  if (map.archive || apiCreated) {
+    await markGbpPostedAndArchive({ postDate: post.post_date, exitCode: result.exitCode, runId: post.run_id, env, log, force: apiCreated });
   }
   return map.status;
 }
@@ -354,18 +375,33 @@ export async function runGbpForApprovedRun({ runId, gbpPosts, deps }) {
   }
 
   // 3. Post Day 1 now.
+  const gbpMode = deps.gbpMode || resolveGbpMode(env || {});
   const day1 = gbpPosts.find(p => p.day === 1);
   if (day1) {
     await log(runId, 'gbp', 'info', 'Posting Day 1 GBP immediately...');
     const r = await runPhase(runId, 'gbp', 'node', [paths.gbpPoster, '--date', day1.post_date], projectRoot);
-    const status = await applyDriverResult({ supabase, post: day1, result: r, env, log });
+    const status = await applyDriverResult({ supabase, post: day1, result: r, env, log, gbpMode });
     await log(runId, 'gbp', status === 'posted' ? 'info' : 'warn', `Day 1 GBP → ${status} (exit ${r.exitCode})`);
   }
 
-  // 4. Schedule Days 2-7 natively (approval already stamped above).
   const later = gbpPosts
     .filter(p => p.day > 1)
     .sort((a, b) => a.day - b.day);
+
+  // 4a. API mode (G1): the Business Profile API has no scheduled posts, so Days
+  // 2-7 are marked `scheduled` with NO poster call; the daily tick (>= 09:00
+  // Central, once per day) publishes each row on its morning. Calling the API
+  // poster here would publish the whole week at once.
+  if (gbpMode === 'api') {
+    for (const post of later) {
+      await supabase.from('weekly_posts').update({ status: 'scheduled', error: null }).eq('id', post.id);
+      await log(runId, 'gbp', 'info', `Day ${post.day} ${post.post_date} → scheduled (API mode: the daily worker posts it at 09:00 CT)`);
+    }
+    await log(runId, 'gbp', 'info', `Days 2-7 scheduling: ${later.length} scheduled for the daily tick (API mode, no native scheduling)`);
+    return;
+  }
+
+  // 4b. Playwright mode: schedule Days 2-7 natively (approval already stamped above).
   let nativeCount = 0;
   let fallbackCount = 0;
   for (const post of later) {
@@ -419,7 +455,7 @@ export async function syncGbpRowToWorkbook({ post, env, log, runId }) {
 // Shifted/late-approved runs can leave today's row in Supabase but missing from the
 // workbook (driver: "No post found for date"). Restore the row from Supabase and
 // retry the driver once before giving up.
-export async function runDailyGbp({ supabase, runPhase, log, env, todayDate, gbpPosterPath, projectRoot, syncGbpRow = syncGbpRowToWorkbook }) {
+export async function runDailyGbp({ supabase, runPhase, log, env, todayDate, gbpPosterPath, projectRoot, syncGbpRow = syncGbpRowToWorkbook, gbpMode }) {
   const { data: todayGbp } = await supabase
     .from('weekly_posts')
     .select('id, run_id, post_date, photo_file, status')
@@ -437,7 +473,7 @@ export async function runDailyGbp({ supabase, runPhase, log, env, todayDate, gbp
         result = await runPhase(post.run_id, 'gbp', 'node', [gbpPosterPath, '--date', post.post_date], projectRoot);
       }
     }
-    const status = await applyDriverResult({ supabase, post, result, env, log });
+    const status = await applyDriverResult({ supabase, post, result, env, log, gbpMode });
     await log(post.run_id, 'gbp', status === 'error' ? 'error' : 'info', `Daily GBP ${post.post_date} → ${status} (exit ${result.exitCode})`);
   }
 }
