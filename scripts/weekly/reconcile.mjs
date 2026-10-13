@@ -21,6 +21,7 @@ import { fileURLToPath } from 'node:url';
 import { createClient } from '@supabase/supabase-js';
 import { loadEnv } from './lib/env.mjs';
 import { copyPublishStatus, reconcilePerformance, recordPageMetrics } from './lib/reconcile.mjs';
+import { resolveSearchConsoleTokenFile } from '../lib/platform-defaults.mjs';
 
 const PROJECT_ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const HEALTH_FILE = path.join(PROJECT_ROOT, 'outputs', 'reconcile-health.json');
@@ -73,8 +74,7 @@ async function videoFallback({ postId }) {
 
 async function searchConsolePages(days) {
   try {
-    process.env.GBP_TOKEN_FILE = process.env.SEARCH_CONSOLE_TOKEN_FILE
-      || 'C:/Users/carte/gmail-multi/tokens/grizzly-search-console.json';
+    process.env.GBP_TOKEN_FILE = resolveSearchConsoleTokenFile();
     const [{ gbpFetch }, { dateRange, pickGrizzlyProperty }] = await Promise.all([
       import('../lib/gbp-api-auth.mjs'),
       import('../lib/search-console.mjs'),

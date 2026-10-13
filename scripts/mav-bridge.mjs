@@ -29,6 +29,8 @@ import { sendHermesAlert } from './lib/hermes-alert.mjs';
 import { getSlackConfig, approvalBlocks, sendSlackBlocks } from './lib/slack-alert.mjs';
 import { approveAction, dismissAction } from './lib/slack-actions.mjs';
 import { makeRunPhase } from './lib/run-phase.mjs';
+import { resolveSeoAgentsExe } from './lib/platform-defaults.mjs';
+import { resolveGbpMode } from './lib/gbp-mode.mjs';
 import { runGbpForApprovedRun, runDailyGbp, centralDateHour } from './lib/gbp-runner.mjs';
 import { parseAfterTime, shouldRunFbBoostTick, decideBoostLaunch, summarizeBoostRun } from './lib/fb-boost-tick.mjs';
 import { fetchApprovedWebsiteTasks, executeNextWebsiteTask, sweepOrphanWebsiteTasks } from './lib/website-task-runner.mjs';
@@ -52,15 +54,9 @@ const SUPABASE_URL = process.env.SUPABASE_URL || '';
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY || '';
 const POLL_INTERVAL_MS = parseInt(process.env.MAV_BRIDGE_POLL_MS || '30000');
 const BRIDGE_PORT = parseInt(process.env.MAV_BRIDGE_PORT || '8790');
-const SEO_AGENTS_EXE = process.env.SEO_AGENTS_EXE
-  || [
-    path.join(PROJECT_ROOT, '.venv', 'Scripts', 'seo-agents.exe'),
-    path.join(PROJECT_ROOT, '.venv', 'bin', 'seo-agents'),
-    'C:\\Users\\carte\\AppData\\Local\\Programs\\Python\\Python312\\Scripts\\seo-agents.exe',
-  ].find((p) => fs.existsSync(p))
-  || path.join(PROJECT_ROOT, '.venv', 'Scripts', 'seo-agents.exe');
+const SEO_AGENTS_EXE = resolveSeoAgentsExe({ projectRoot: PROJECT_ROOT });
 const PENDING_PROMPT_FILE = path.join(PROJECT_ROOT, 'outputs', 'pending_prompt.json');
-const GBP_MODE = (process.env.GBP_POSTER || 'api').toLowerCase();
+const GBP_MODE = resolveGbpMode();
 const GBP_POSTER_PATH = GBP_MODE === 'playwright'
   ? path.join(PROJECT_ROOT, 'scripts', 'gbp-poster', 'driver.mjs')
   : path.join(PROJECT_ROOT, 'scripts', 'gbp-api-poster.mjs');
@@ -1459,6 +1455,7 @@ async function handleHttpRequest(req, res) {
 
 console.log(`[mav-bridge] Starting — polling Supabase every ${POLL_INTERVAL_MS / 1000}s`);
 console.log(`[mav-bridge] Project root: ${PROJECT_ROOT}`);
+console.log(`[mav-bridge] GBP_POSTER=${GBP_MODE} → ${path.basename(GBP_POSTER_PATH)} (MAV_BRIDGE_GBP=${GBP_ON ? 'on' : 'off'})`);
 
 const httpServer = http.createServer((req, res) => {
   handleHttpRequest(req, res).catch(e => {

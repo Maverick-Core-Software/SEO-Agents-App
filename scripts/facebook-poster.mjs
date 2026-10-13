@@ -53,6 +53,7 @@ import { loadPhotoSelectionManifest, isManifestSelectionCompatible } from './lib
 import { postProcessVideo, enhanceVideo } from './video-postprocess.mjs';
 import { buildSlideshowReel, parseOnScreenText } from './slideshow-reel.mjs';
 import { defaultGbpPhotoDirs } from './lib/gbp-paths.mjs';
+import { resolveGbpPhotoPath, resolveEndcardFont } from './lib/platform-defaults.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -98,8 +99,7 @@ const GEMINI_VIDEO_GEN = process.env.GEMINI_VIDEO_GENERATOR
 const XAI_VIDEO_GEN = process.env.XAI_VIDEO_GENERATOR
   || path.join(__dirname, 'xai-video-generator.mjs');
 const VIDEO_GEN_SCRIPT = VIDEO_BACKEND === 'gemini' ? GEMINI_VIDEO_GEN : XAI_VIDEO_GEN;
-const GBP_PHOTO_PATH = process.env.GBP_PHOTO_PATH
-  || String.raw`C:\Workspace\Shared\Assets\Media\Grizzly\GBP Post Photos`;
+const GBP_PHOTO_PATH = resolveGbpPhotoPath();
 const PHOTO_SELECTION_MANIFEST = process.env.GBP_PHOTO_SELECTION_MANIFEST
   || path.join(PROJECT_ROOT, 'state', 'photo-selection-manifest.json');
 const photoSelectionManifest = loadPhotoSelectionManifest(PHOTO_SELECTION_MANIFEST);
@@ -161,10 +161,7 @@ const FIRST_COMMENT = resolvePhoneLine(
   '📲 Text us at (469) 896-3862 to get a free instant quote — calls welcome too!',
   'FB_FIRST_COMMENT',
 );
-const ENDCARD_FONT = process.env.GRIZZLY_ENDCARD_FONT
-  || (process.platform === 'win32'
-    ? String.raw`C\:/Windows/Fonts/arialbd.ttf`
-    : '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf');
+const ENDCARD_FONT = resolveEndcardFont();
 const XAI_API_KEY = process.env.XAI_API_KEY || process.env.GROK_API_KEY || '';
 
 // Must exceed gemini-video-generator's poll ceiling (90 polls × 8s = 720s) so a

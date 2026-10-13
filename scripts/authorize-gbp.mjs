@@ -13,11 +13,10 @@ import path from 'node:path';
 import http from 'node:http';
 import crypto from 'node:crypto';
 import { exec } from 'node:child_process';
+import { resolveGbpClientSecret, resolveGbpTokenFile } from './lib/platform-defaults.mjs';
 
-const CLIENT_SECRET_PATH = process.env.GBP_CLIENT_SECRET
-  || 'C:/Users/carte/gmail-multi/client_secret_hermes_gbp.json';
-const TOKEN_PATH = process.env.GBP_TOKEN_FILE
-  || 'C:/Users/carte/gmail-multi/tokens/grizzly-gbp.json';
+const CLIENT_SECRET_PATH = resolveGbpClientSecret();
+const TOKEN_PATH = resolveGbpTokenFile();
 const SCOPES = ['https://www.googleapis.com/auth/business.manage'];
 
 if (!fs.existsSync(CLIENT_SECRET_PATH)) {
