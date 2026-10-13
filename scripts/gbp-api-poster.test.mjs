@@ -150,7 +150,7 @@ describe('G2 pure helpers', () => {
     ] });
     const posts = await listLocalPosts(LOCATION, api);
     assert.deepEqual(posts.map((p) => p.name), ['a', 'b']);
-    const listCalls = api.calls.filter((c) => c.url.includes('localPosts?pageSize='));
+    const listCalls = api.calls.filter((c) => c.url.includes('localPosts?pageSize=100'));
     assert.equal(listCalls.length, 2);
     assert.ok(listCalls[1].url.includes('pageToken=tok-2'));
   });
@@ -184,7 +184,7 @@ describe('G2 idempotent create (runPoster with mocked API)', () => {
     assert.equal(api.created.length, 1, 'exactly one create');
     assert.equal(r.result.postUrl, api.created[0].name);
     assert.ok(api.created[0].body.media?.[0]?.dataRef?.resourceName, 'the create carries the uploaded media');
-    const listIdx = api.calls.findIndex((c) => c.url.includes('localPosts?pageSize='));
+    const listIdx = api.calls.findIndex((c) => c.url.includes('localPosts?pageSize=100'));
     const createIdx = api.calls.findIndex((c) => c.method === 'POST' && c.url.endsWith('/localPosts'));
     assert.ok(listIdx !== -1 && listIdx < createIdx, 'the list runs before the create');
   });
@@ -426,10 +426,16 @@ describe('G3 photo rule: manifest-only image, never text-only', () => {
 });
 
 describe('gated v4 (404 route not served): fail closed with exit 6, never a create', () => {
-  const gate = (api, when) => ({
+  const HTML_404 = '<!DOCTYPE html><html><head><title>Error 404 (Not Found)!!1</title></head><body>route not served</body></html>';
+  const JSON_404 = '{"error":{"code":404,"message":"Requested entity was not found.","status":"NOT_FOUND"}}';
+  const GATE = (url) => url.endsWith('/localPosts?pageSize=1');
+  const ACCOUNTS_V4 = 'https://mybusiness.googleapis.com/v4/accounts';
+  const noQuery = (u) => u.split('?')[0];
+  /** Fail the calls `when` selects with a status and body, the way gbpFetch reports them. */
+  const gate = (api, when, { status = 404, body = HTML_404 } = {}) => ({
     ...api,
     gbpFetch: async (url, o) => {
-      if (when(url, o)) { const e = new Error('GBP API Error [404]: route not served'); e.status = 404; throw e; }
+      if (when(url, o)) { const e = new Error(`GBP API Error [${status}]: ${body}`); e.status = status; e.body = body; throw e; }
       return api.gbpFetch(url, o);
     },
   });
@@ -460,12 +466,67 @@ describe('gated v4 (404 route not served): fail closed with exit 6, never a crea
     await assert.rejects(run({}, boom, fixture()), /500/);
   });
 
-  it('probeV4 reports gated on 404 and ok on 200', async () => {
+  it('the gate is a localPosts pageSize=1 GET: 200 proceeds to create, and /v4/accounts is never called', async () => {
     const api = mockApi();
-    const ok = await probeV4(api);
-    assert.equal(ok.ok, true);
-    assert.equal(ok.locationName, LOCATION);
-    const gated = await probeV4(gate(api, (url) => url.includes('/localPosts?pageSize=1')));
-    assert.deepEqual({ ok: gated.ok, gated: gated.gated, status: gated.status }, { ok: false, gated: true, status: 404 });
+    const r = await run({}, api, fixture());
+    assert.equal(r.code, 0, r.logs.join('\n'));
+    assert.equal(api.created.length, 1);
+    const gateCalls = api.calls.filter((c) => GATE(c.url));
+    assert.deepEqual(gateCalls.map((c) => [c.method, c.url]), [['GET', `https://mybusiness.googleapis.com/v4/${LOCATION}/localPosts?pageSize=1`]]);
+    assert.ok(api.calls.every((c) => noQuery(c.url) !== ACCOUNTS_V4), 'no /v4/accounts call');
+  });
+
+  it('gate 404 JSON (a missing resource) is an error, not api_gated: nothing created', async () => {
+    const api = mockApi();
+    await assert.rejects(run({}, gate(api, GATE, { body: JSON_404 }), fixture()), /gate failed: .*404/);
+    assert.equal(api.created.length, 0);
+    assert.equal(api.uploads.length, 0);
+  });
+
+  it('gate 401 is an auth error, not api_gated: nothing created', async () => {
+    const api = mockApi();
+    const body = '{"error":{"code":401,"message":"Request had invalid authentication credentials."}}';
+    await assert.rejects(run({}, gate(api, GATE, { status: 401, body }), fixture()), /auth failed \[401\]/);
+    assert.equal(api.created.length, 0);
+    assert.equal(api.uploads.length, 0);
+  });
+
+  it('probeV4: 200 is ok with the count; 404 HTML is gated; 404 JSON is not gated', async () => {
+    const api = mockApi({ listed: [{ name: 'p/1' }] });
+    const ok = await probeV4({ ...api, env: {} });
+    assert.deepEqual(
+      { ok: ok.ok, gated: ok.gated, auth: ok.auth, count: ok.count, locationName: ok.locationName },
+      { ok: true, gated: false, auth: false, count: 1, locationName: LOCATION },
+    );
+    const html = await probeV4({ ...gate(api, GATE), env: {} });
+    assert.deepEqual({ ok: html.ok, gated: html.gated, status: html.status, bodyKind: html.bodyKind }, { ok: false, gated: true, status: 404, bodyKind: 'html' });
+    const json = await probeV4({ ...gate(api, GATE, { body: JSON_404 }), env: {} });
+    assert.deepEqual({ ok: json.ok, gated: json.gated, bodyKind: json.bodyKind }, { ok: false, gated: false, bodyKind: 'json' });
+  });
+
+  it('probeV4 never calls /v4/accounts; with GBP_ACCOUNT_ID + GBP_LOCATION_ID it makes only the gate call', async () => {
+    const api = mockApi();
+    await probeV4({ ...api, env: {} });
+    assert.ok(api.calls.every((c) => noQuery(c.url) !== ACCOUNTS_V4), 'no /v4/accounts call');
+    const direct = mockApi();
+    const r = await probeV4({ ...direct, env: { GBP_ACCOUNT_ID: '111', GBP_LOCATION_ID: '222' } });
+    assert.equal(r.ok, true);
+    assert.equal(r.locationName, LOCATION);
+    assert.equal(direct.calls.length, 1, 'no v1 lookup when both ids are set');
+  });
+
+  it('location pick among several: default title picks the match; an unmatched set is an error, never a guess', async () => {
+    const two = (api) => ({
+      ...api,
+      gbpFetch: async (url, o) => (url.includes('/locations?readMask')
+        ? { locations: [{ name: 'locations/333', title: 'Other Co' }, { name: 'locations/222', title: 'Grizzly Electrical Solutions' }] }
+        : api.gbpFetch(url, o)),
+    });
+    const picked = await probeV4({ ...two(mockApi()), env: {} });
+    assert.equal(picked.ok, true);
+    assert.equal(picked.locationName, LOCATION);
+    const none = await probeV4({ ...two(mockApi()), env: { GBP_LOCATION_TITLE: 'Nobody' } });
+    assert.deepEqual({ ok: none.ok, stage: none.stage }, { ok: false, stage: 'resolve' });
+    assert.match(none.error, /none match/);
   });
 });
