@@ -5,6 +5,25 @@
 // injected env, platform and exec.
 import { execSync as realExecSync } from 'node:child_process';
 import { resolveGbpArchiveFolder } from './platform-defaults.mjs';
+import { describeBind } from './bridge-bind.mjs';
+
+// Where seo-monitor probes the two HTTP health endpoints (rc1 review F6).
+// mav-bridge: MAV_BRIDGE_HEALTH_URL, else http://<MAV_BRIDGE_BIND host>:<port>/health
+//   with an unspecified bind (0.0.0.0) probed on loopback; the default is loopback,
+//   so on AIWA (MAV_BRIDGE_BIND=<LXC ip>) the probe follows the bind instead of
+//   reporting a healthy bridge as down after ~90 s.
+// MCC: MCC_HEALTH_URL (origin or full /health URL), default http://127.0.0.1:<MCC_PORT|3000>/health;
+//   AIWA sets CT 103's address since MCC does not run on the LXC.
+export function resolveMonitorProbes(env = process.env) {
+  const bind = describeBind(env);
+  const bridgeHost = bind.unspecified ? '127.0.0.1' : bind.host;
+  const bridgeHealthUrl = (env.MAV_BRIDGE_HEALTH_URL || '').trim() || `http://${bridgeHost}:${bind.port}/health`;
+  const mccPort = parseInt(env.MCC_PORT || '3000', 10);
+  const mccRaw = (env.MCC_HEALTH_URL || '').trim() || `http://127.0.0.1:${mccPort}`;
+  const mcc = new URL(mccRaw);
+  if (mcc.pathname === '/' || mcc.pathname === '') mcc.pathname = '/health';
+  return { bridgeHealthUrl, mccHealthUrl: mcc.toString() };
+}
 
 // SEO_MONITOR_PM2: '1' keeps pm2 self-heal, '0' is HTTP health only. Unset defaults
 // to on for win32 (the Workbench) and off elsewhere (AIWA runs under systemd).

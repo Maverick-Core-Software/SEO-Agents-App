@@ -23,7 +23,7 @@ import { execSync, execFile } from 'node:child_process';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { sendHermesAlert } from './lib/hermes-alert.mjs';
-import { createPm2SelfHeal, netUseEnabled, gbpArchiveFolder } from './lib/monitor-host.mjs';
+import { createPm2SelfHeal, netUseEnabled, gbpArchiveFolder, resolveMonitorProbes } from './lib/monitor-host.mjs';
 // The rebuilt pipeline's alert rules live with the watchdog so the daily watchdog
 // and this monitor cannot disagree about what a clean shadow/new run looks like.
 import { evaluatePipelineWatchdog, evaluateGbpOverdue, chicagoDateHour } from './seo-watchdog.mjs';
@@ -46,8 +46,8 @@ const SUPABASE_SERVICE_KEY= process.env.SUPABASE_SERVICE_KEY|| '';
 const SMTP_APP_PASSWORD   = process.env.SMTP_APP_PASSWORD   || '';
 const SMTP_FROM           = process.env.SMTP_FROM           || 'barnscarter@gmail.com';
 const SMTP_TO             = process.env.SMTP_TO             || 'barnscarter@gmail.com';
-const MAV_BRIDGE_PORT     = parseInt(process.env.MAV_BRIDGE_PORT || '8790', 10);
-const MCC_PORT            = parseInt(process.env.MCC_PORT || '3000', 10);
+// Health URLs follow the bridge bind / MCC_HEALTH_URL (F6), not a fixed loopback.
+const { bridgeHealthUrl: MAV_BRIDGE_HEALTH_URL, mccHealthUrl: MCC_HEALTH_URL } = resolveMonitorProbes(process.env);
 const POLL_MS             = 30_000;
 const GBP_ARCHIVE_FOLDER  = gbpArchiveFolder(process.env);
 
@@ -137,10 +137,12 @@ async function getPostsForRun(runId) {
 }
 
 // ── HTTP health checks ────────────────────────────────────────────────────────
-function httpGet(port, path, timeout = 5000) {
+function httpGet(url, timeout = 5000) {
   return new Promise((resolve) => {
     const timer = setTimeout(() => { req.destroy(); resolve(null); }, timeout);
-    const req = http.get({ host: '127.0.0.1', port, path }, res => {
+    const target = new URL(url);
+    const client = target.protocol === 'https:' ? https : http;
+    const req = client.get(target, res => {
       clearTimeout(timer);
       const chunks = [];
       res.on('data', c => chunks.push(c));
@@ -277,7 +279,7 @@ async function fixMDrive() {
 // ── Monitor checks ─────────────────────────────────────────────────────────────
 
 async function checkMavBridge() {
-  const result = await httpGet(MAV_BRIDGE_PORT, '/health');
+  const result = await httpGet(MAV_BRIDGE_HEALTH_URL);
   if (!result || result.status !== 200) {
     bridgeDownCount++;
     // 3 failures = ~90s window before alerting — avoids false positives on brief PM2 restarts
@@ -288,7 +290,7 @@ async function checkMavBridge() {
       if (bridge && bridge.pm2_env.status !== 'online') {
         await fixDeadProcess('mav-bridge');
       } else {
-        await alertOnce('mav-bridge-down', 'mav-bridge is not responding', `The mav-bridge HTTP health check has failed ${bridgeDownCount} times (~${bridgeDownCount * 30}s).\n\nBridge status in PM2: ${bridge?.pm2_env?.status || 'unknown'}\nCheck logs: pm2 logs mav-bridge\nLog file: ${logFile}`);
+        await alertOnce('mav-bridge-down', 'mav-bridge is not responding', `The mav-bridge HTTP health check (${MAV_BRIDGE_HEALTH_URL}) has failed ${bridgeDownCount} times (~${bridgeDownCount * 30}s).\n\nBridge status in PM2: ${bridge?.pm2_env?.status || 'unknown'}\nCheck logs: pm2 logs mav-bridge\nLog file: ${logFile}`);
       }
     }
   } else {
@@ -303,7 +305,7 @@ async function checkMavBridge() {
 }
 
 async function checkMCCDashboard() {
-  const result = await httpGet(MCC_PORT, '/health');
+  const result = await httpGet(MCC_HEALTH_URL);
   if (!result || result.status !== 200) {
     dashboardDownCount++;
     if (dashboardDownCount >= 2) {
@@ -313,7 +315,7 @@ async function checkMCCDashboard() {
       if (console_ && console_.pm2_env.status !== 'online') {
         await fixDeadProcess('mav-console');
       } else {
-        await alertOnce('dashboard-down', 'MCC Dashboard is not responding', `The MCC dashboard health check (port ${MCC_PORT}) has failed ${dashboardDownCount} times.\n\nProcess status: ${console_?.pm2_env?.status || 'unknown'}\nCheck: pm2 logs mav-console\nLog file: ${logFile}`);
+        await alertOnce('dashboard-down', 'MCC Dashboard is not responding', `The MCC dashboard health check (${MCC_HEALTH_URL}) has failed ${dashboardDownCount} times.\n\nProcess status: ${console_?.pm2_env?.status || 'unknown'}\nCheck: pm2 logs mav-console\nLog file: ${logFile}`);
       }
     }
   } else {
@@ -595,8 +597,8 @@ async function main() {
   log('info', `SEO Monitor starting — will run for ${RUN_DURATION_HOURS} hours`, {
     log_file: logFile,
     poll_interval_sec: POLL_MS / 1000,
-    mav_bridge_port: MAV_BRIDGE_PORT,
-    mcc_port: MCC_PORT,
+    mav_bridge_health_url: MAV_BRIDGE_HEALTH_URL,
+    mcc_health_url: MCC_HEALTH_URL,
   });
 
   sendAlert(

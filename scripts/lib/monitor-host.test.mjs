@@ -2,7 +2,23 @@
 // seo-monitor host controls. The pm2 decision and the exec seam are tested here
 // because seo-monitor.mjs runs its poll loop at import time.
 import assert from 'node:assert/strict';
-import { pm2SelfHealEnabled, netUseEnabled, gbpArchiveFolder, createPm2SelfHeal } from './monitor-host.mjs';
+import { pm2SelfHealEnabled, netUseEnabled, gbpArchiveFolder, createPm2SelfHeal, resolveMonitorProbes } from './monitor-host.mjs';
+
+// F6: health probes follow the bridge bind and MCC_HEALTH_URL, not a fixed loopback.
+assert.deepEqual(resolveMonitorProbes({}), {
+  bridgeHealthUrl: 'http://127.0.0.1:8790/health', mccHealthUrl: 'http://127.0.0.1:3000/health',
+}, 'PC defaults: loopback for both');
+assert.equal(resolveMonitorProbes({ MAV_BRIDGE_BIND: '192.168.1.60', MAV_BRIDGE_PORT: '8791' }).bridgeHealthUrl,
+  'http://192.168.1.60:8791/health', 'AIWA: the probe follows the LXC bind');
+assert.equal(resolveMonitorProbes({ MAV_BRIDGE_BIND: '0.0.0.0' }).bridgeHealthUrl,
+  'http://127.0.0.1:8790/health', 'an unspecified bind is probed on loopback');
+assert.equal(resolveMonitorProbes({ MAV_BRIDGE_BIND: '192.168.1.60', MAV_BRIDGE_HEALTH_URL: 'http://seo-prod:8790/health' }).bridgeHealthUrl,
+  'http://seo-prod:8790/health', 'explicit MAV_BRIDGE_HEALTH_URL wins');
+assert.equal(resolveMonitorProbes({ MCC_HEALTH_URL: 'http://192.168.1.103:3000' }).mccHealthUrl,
+  'http://192.168.1.103:3000/health', 'MCC origin gets /health appended');
+assert.equal(resolveMonitorProbes({ MCC_HEALTH_URL: 'http://192.168.1.103:3000/health' }).mccHealthUrl,
+  'http://192.168.1.103:3000/health', 'a full MCC health URL is kept');
+assert.equal(resolveMonitorProbes({ MCC_PORT: '3100' }).mccHealthUrl, 'http://127.0.0.1:3100/health', 'MCC_PORT still honoured');
 
 // Decision defaults: on for win32, off elsewhere. An explicit SEO_MONITOR_PM2 wins.
 assert.equal(pm2SelfHealEnabled({}, 'win32'), true);
