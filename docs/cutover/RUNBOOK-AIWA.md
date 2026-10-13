@@ -50,6 +50,16 @@ the LXC fetches secrets, and no agent prints values.
 4. Validate. Output lists names only:
    `bash /opt/seo/deploy/aiwa/render-env.sh /opt/seo/.env`. Expect `render-env: OK`.
 
+## 3a. Network: mav-bridge bind (B8) [Carter approval: firewall + MCC env]
+
+- `MAV_BRIDGE_BIND` sets the listen address for mav-bridge (default `127.0.0.1`, loopback only).
+  On the LXC set it to the LXC address in `/opt/seo/.env` so CT 103 (MCC) can reach the bridge; the port stays
+  `MAV_BRIDGE_PORT` (default 8790). Resolution lives in `scripts/lib/bridge-bind.mjs`.
+- Restrict `:8790` at the LXC/host firewall to CT 103's address only.
+- MCC env change (one line, Carter-approved): set `SEO_APP_URL` to `http://<seo-prod-ip>:8790`.
+- Startup log line to look for: `mav-bridge listening on <host>:<port>`.
+- Routes and auth are unchanged. On the PC nothing changes: `MAV_BRIDGE_BIND` unset keeps loopback.
+
 ## 4. Data copy (E4) [Carter approval: data movement]
 
 Transport: an Orca-approved path only (rsync over the LAN from a Carter-run command, or a Syncthing share). No SCP from an agent.

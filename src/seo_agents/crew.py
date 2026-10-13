@@ -56,7 +56,9 @@ def structured_completions_enabled() -> bool:
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PROMPT_DIR = PROJECT_ROOT / "prompts" / "agents"
 BASELINE_DIR = PROJECT_ROOT / "knowledge" / "baselines"
-OUTPUT_DIR = PROJECT_ROOT / "outputs"
+# SEO_OUTPUT_DIR overrides the repo-relative outputs folder (same rule as evidence.py),
+# so the crew and the evidence writer never disagree about where a run lands.
+OUTPUT_DIR = Path(os.getenv("SEO_OUTPUT_DIR") or (PROJECT_ROOT / "outputs"))
 ARCHIVE_DIR = OUTPUT_DIR / "archive"
 
 DEFAULT_SITE_URL = "https://www.grizzlyelectricaltx.com/"
