@@ -1,67 +1,87 @@
 /**
  * gbp-access-probe.mjs
  *
- * Read-only diagnostic: is this GCP project approved for Business Profile API access yet?
- * Makes no writes and posts nothing. Run it after Google answers the basic-access
- * application (case 2-5921000040991, filed 2026-07-27).
+ * Read-only diagnostic: can this project post through the GBP v4 API yet?
+ * Makes only GET calls and posts nothing.
  *
  *   node scripts/gbp-access-probe.mjs
  *
- * How to read the output:
- *   403 SERVICE_DISABLED     API not enabled in the console for this project.
- *   429 quota_limit=0        Enabled, but the project is NOT approved. Zero quota
- *                            is an allowlist state, not a rate limit — waiting or
- *                            retrying will never clear it.
- *   404 on mybusiness/v4     The legacy host is gated off entirely. localPosts and
- *                            media upload exist ONLY on v4, so posting stays blocked
- *                            until this returns something other than 404.
- *   200                      Approved. See PLANSCOPE.MD "PICK UP HERE" for the flip.
+ * Gate (the verdict): v1 account list → v1 location list → GET v4
+ * {account}/{location}/localPosts?pageSize=1. The same gate the poster and the
+ * worker use (probeV4 in gbp-api-poster.mjs). The account/location come from
+ * GBP_ACCOUNT_ID / GBP_LOCATION_ID, else the v1 lookup, which picks the location
+ * by GBP_LOCATION_TITLE (default "Grizzly Electrical") or the only location.
+ *
+ * How to read the gate line:
+ *   200                      localPosts reachable: API posting possible.
+ *   404 HTML                 route not served: v4 is gated for this project.
+ *   401 / 403                auth problem (refresh the token), not a gate result.
+ *
+ * The other checks (business information, performance, Q&A, verifications) are
+ * informational only.
  */
-import { getGbpAccessToken } from './lib/gbp-api-auth.mjs';
+import { getGbpAccessToken, gbpFetch } from './lib/gbp-api-auth.mjs';
+import { resolveGbpLocation } from './lib/gbp-location.mjs';
+import { probeV4 } from './gbp-api-poster.mjs';
 
-const token = await getGbpAccessToken();
-
-const ENDPOINTS = [
-  ['accountmanagement v1', 'https://mybusinessaccountmanagement.googleapis.com/v1/accounts'],
-  ['legacy v4 (gated)', 'https://mybusiness.googleapis.com/v4/accounts'],
-  ['v4 $discovery', 'https://mybusiness.googleapis.com/$discovery/rest?version=v4'],
+const INFO_ENDPOINTS = [
   ['businessinformation v1', 'https://mybusinessbusinessinformation.googleapis.com/v1/categories?regionCode=US&languageCode=en&pageSize=1'],
   ['performance v1', 'https://businessprofileperformance.googleapis.com/v1/locations/1:getDailyMetricsTimeSeries?dailyMetric=CALL_CLICKS'],
   ['qanda v1', 'https://mybusinessqanda.googleapis.com/v1/locations/1/questions'],
   ['verifications v1', 'https://mybusinessverifications.googleapis.com/v1/locations/1/verifications'],
 ];
 
-let v4Alive = false;
+const row = (label, status, note = '') => console.log(`${label.padEnd(26)} ${String(status).padEnd(5)} ${note}`);
 
-for (const [label, url] of ENDPOINTS) {
+/** Status and first-line message of a failed gbpFetch (the body is never printed). */
+function failure(e) {
+  const status = e && e.status ? e.status : 'ERR';
+  const html = String(e?.body ?? '').trimStart().startsWith('<');
+  return { status, note: html ? 'HTML error page (route not served)' : String(e?.message || e).slice(0, 110) };
+}
+
+let resolved = null;
+try {
+  resolved = await resolveGbpLocation({ gbpFetch, env: process.env });
+  row('v1 accounts + locations', 200, `account ${resolved.accountName}`);
+  row('location', '', `${resolved.locationName}${resolved.title ? ` "${resolved.title}"` : ''}`);
+} catch (e) {
+  const f = failure(e);
+  row('v1 accounts + locations', f.status, f.note);
+}
+
+let verdict;
+if (!resolved) {
+  verdict = '\nVERDICT: not determined — account/location lookup failed (see above). Fix GBP_ACCOUNT_ID / GBP_LOCATION_ID or the v1 access, then re-run.';
+} else {
+  const gate = await probeV4({ gbpFetch, env: process.env, locationName: resolved.locationName });
+  if (gate.ok) {
+    row('v4 localPosts (gate)', 200, `count=${gate.count}${gate.totalSize != null ? ` totalSize=${gate.totalSize}` : ''}`);
+    verdict = '\nVERDICT: v4 localPosts reachable — API posting possible';
+  } else {
+    const note = gate.gated ? 'HTML 404: route not served' : gate.bodyKind === 'html' ? 'HTML error page' : String(gate.error || '').slice(0, 110);
+    row('v4 localPosts (gate)', gate.status ?? 'ERR', note);
+    verdict = gate.gated
+      ? '\nVERDICT: gated'
+      : `\nVERDICT: not determined — v4 localPosts returned ${gate.status ?? 'no status'} (${gate.auth ? 'auth, refresh the token' : 'not a 200 and not the gate'}).`;
+  }
+}
+
+for (const [label, url] of INFO_ENDPOINTS) {
   try {
+    const token = await getGbpAccessToken();
     const res = await fetch(url, { headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' } });
     const text = await res.text();
-    let reason = '';
-    let quota = '';
-    let msg = '';
-    try {
-      const json = JSON.parse(text);
-      const err = json.error || {};
-      msg = (err.message || '').slice(0, 90);
-      const detail = (err.details || [])[0] || {};
-      reason = detail.reason || err.status || '';
-      quota = detail.metadata?.quota_limit_value ?? '';
-    } catch {
-      msg = text.trimStart().startsWith('<') ? 'HTML error page (route not served)' : text.slice(0, 90);
-    }
-    const quotaNote = quota !== '' ? ` quota_limit=${quota}` : '';
-    console.log(`${label.padEnd(24)} ${String(res.status).padEnd(4)} ${reason.padEnd(22)}${quotaNote}`);
-    if (res.ok) console.log(`${''.padEnd(24)} ^^ 200 OK: ${text.slice(0, 120)}`);
-    else if (!reason) console.log(`${''.padEnd(24)} msg: ${msg}`);
-    if (label.startsWith('legacy v4') && res.status !== 404) v4Alive = true;
-  } catch (err) {
-    console.log(`${label.padEnd(24)} ERR  ${String(err.message).slice(0, 70)}`);
+    const html = text.trimStart().startsWith('<');
+    row(label, res.status, html ? 'HTML error page' : (res.ok ? '' : text.slice(0, 90).replace(/\s+/g, ' ')));
+  } catch (e) {
+    row(label, 'ERR', String(e.message).slice(0, 90));
   }
 }
 
 console.log('\n--- token sanity ---');
 try {
+  const token = await getGbpAccessToken();
   const res = await fetch(`https://oauth2.googleapis.com/tokeninfo?access_token=${encodeURIComponent(token)}`);
   const json = await res.json();
   const scopes = (json.scope || '(none)').split(' ');
@@ -70,8 +90,5 @@ try {
   console.log('tokeninfo err:', err.message.slice(0, 90));
 }
 
-console.log(
-  v4Alive
-    ? '\nVERDICT: v4 is answering — access may be approved. Do a real read before flipping GBP_POSTER=api.'
-    : '\nVERDICT: still gated (v4 404s). Leave GBP_POSTER on playwright.',
-);
+console.log(verdict);
+process.exitCode = verdict.includes('reachable') ? 0 : 1;

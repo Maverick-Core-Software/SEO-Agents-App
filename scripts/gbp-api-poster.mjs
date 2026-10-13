@@ -43,8 +43,9 @@
  *   4 = needs_approval (workbook Status != Approved)
  *   5 = policy_violation (caption/phone/URL policy — checkPostPolicy, matches
  *       driver; or a Google-rejected duplicate)
- *   6 = api_gated (v4 answered 404 "route not served": nothing posted; the
- *       runner keeps the row `scheduled`, see EXIT_API_GATED)
+ *   6 = api_gated (the localPosts gate (probeV4, pageSize=1) answered 404 HTML
+ *       "route not served": nothing posted; the runner keeps the row
+ *       `scheduled`, see EXIT_API_GATED. 200 = ok; 401/403 = exit 1 auth error)
  *   1 = error
  */
 
@@ -54,6 +55,7 @@ import process from 'node:process';
 import xlsx from 'xlsx';
 import { fileURLToPath } from 'node:url';
 import { getGbpAccessToken as realGetGbpAccessToken, gbpFetch as realGbpFetch } from './lib/gbp-api-auth.mjs';
+import { isV4RouteGated, resolveGbpLocation } from './lib/gbp-location.mjs';
 import { checkPostPolicy, formatViolations, checkImagePolicy, IMAGE_CONVERT_EXTS } from './gbp-poster/policy-check.mjs';
 import { resolveGbpPosterConfig } from './lib/platform-defaults.mjs';
 import {
@@ -90,19 +92,45 @@ export const REFUSED_STATES = new Set(['REJECTED', 'TAKEN_DOWN']);
 export const EXIT_API_GATED = 6;
 export const API_GATED_MESSAGE = 'GBP v4 API (localPosts) returned 404 "route not served": the API is still gated for this project, nothing was posted. Keep GBP_POSTER=playwright until scripts/gbp-access-probe.mjs passes.';
 
+/** True only for the v4 "route not served" 404 (HTML), not a JSON 404 for a missing resource. */
 export function isV4Gated(e) {
-  return Boolean(e) && Number(e.status) === 404;
+  return isV4RouteGated(e);
 }
 
-/** One v4 call (list one localPost). { ok, gated, status, error }. Used by the worker at startup. */
+/**
+ * THE v4 gate: one GET of the location's localPosts list (pageSize=1).
+ * 200 → ok; 404 HTML → gated (exit 6 api_gated); 401/403 → auth; anything else →
+ * error. `locationName` may be passed to skip the account/location lookup.
+ * Never calls /v4/accounts. Used by the worker startup probe, the poster's
+ * pre-create check and scripts/gbp-access-probe.mjs.
+ */
 export async function probeV4(rawDeps = {}) {
   const deps = resolveDeps(rawDeps);
+  let locationName = rawDeps.locationName || '';
+  if (!locationName) {
+    try {
+      ({ locationName } = await resolveLocation(deps));
+    } catch (e) {
+      return { ok: false, gated: false, auth: false, stage: 'resolve', status: e && e.status ? e.status : null, error: String(e && e.message || e) };
+    }
+  }
   try {
-    const { locationName } = await resolveLocation(deps);
-    await deps.gbpFetch(`${V4}/${locationName}/localPosts?pageSize=1`);
-    return { ok: true, gated: false, status: 200, locationName };
+    const res = await deps.gbpFetch(`${V4}/${locationName}/localPosts?pageSize=1`);
+    const count = Array.isArray(res?.localPosts) ? res.localPosts.length : 0;
+    return { ok: true, gated: false, auth: false, stage: 'localPosts', status: 200, locationName, count, totalSize: res?.totalSize ?? null };
   } catch (e) {
-    return { ok: false, gated: isV4Gated(e), status: e && e.status ? e.status : null, error: String(e && e.message || e) };
+    const status = e && e.status ? Number(e.status) : null;
+    const htmlBody = String(e?.body ?? '').trimStart().startsWith('<');
+    return {
+      ok: false,
+      gated: isV4Gated(e),
+      auth: status === 401 || status === 403,
+      stage: 'localPosts',
+      status,
+      bodyKind: htmlBody ? 'html' : (e?.body ? 'json' : 'none'),
+      locationName,
+      error: String(e && e.message || e),
+    };
   }
 }
 
@@ -403,20 +431,12 @@ function resolveDeps(deps = {}) {
   };
 }
 
-export async function resolveLocation({ gbpFetch }) {
-  const acct = await gbpFetch('https://mybusinessaccountmanagement.googleapis.com/v1/accounts');
-  if (!acct.accounts?.length) throw new Error('No GBP accounts found for this token.');
-  const accountName = acct.accounts[0].name; // accounts/{id}
-  const locs = await gbpFetch(
-    `https://mybusinessbusinessinformation.googleapis.com/v1/${accountName}/locations?readMask=name,title`,
-  );
-  if (!locs.locations?.length) throw new Error(`No GBP locations under ${accountName}.`);
-  // location.name from the v1 businessinformation API is typically the full
-  // resource path ("accounts/{aid}/locations/{lid}"). Guard against the bare
-  // "locations/{lid}" form so the localPosts URL below is always well-formed.
-  const locName = locs.locations[0].name;
-  const fullLocName = locName.startsWith('accounts/') ? locName : `${accountName}/${locName}`;
-  return { accountName, locationName: fullLocName };
+/**
+ * Account/location for the posts: GBP_ACCOUNT_ID + GBP_LOCATION_ID (numeric or
+ * full names) from env, else a v1 lookup (see lib/gbp-location.mjs). No v4 call.
+ */
+export async function resolveLocation({ gbpFetch, env = process.env } = {}) {
+  return resolveGbpLocation({ gbpFetch, env });
 }
 
 /**
@@ -593,6 +613,14 @@ export async function runPoster(args, rawDeps = {}) {
     log(API_GATED_MESSAGE);
     return EXIT_API_GATED;
   };
+
+  // The gate is the localPosts list (pageSize=1) for this account+location,
+  // checked before anything is listed, uploaded or created. 401/403 is an auth
+  // problem (throw → exit 1, nothing posted), never a gate result.
+  const gate = await probeV4({ ...deps, locationName });
+  if (gate.gated) return gated();
+  if (gate.auth) throw new Error(`GBP v4 localPosts auth failed [${gate.status}]; refresh the GBP token (scripts/authorize-gbp.mjs). Nothing was posted.`);
+  if (!gate.ok) throw new Error(`GBP v4 localPosts gate failed: ${gate.error}`);
 
   // G2: idempotent create. List first; a listing failure propagates (exit 1)
   // rather than creating blind, which is the duplicate this guard exists for.

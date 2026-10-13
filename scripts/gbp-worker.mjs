@@ -663,6 +663,7 @@ if (invokedDirectly) {
       const probe = await probeV4();
       if (probe.ok) console.log(`[gbp-worker] GBP v4 API reachable (${probe.locationName})`);
       else if (probe.gated) console.error(`[gbp-worker] WARNING: GBP v4 API is GATED for this project (404 route not served). API posts will exit 6 api_gated and rows stay scheduled. Keep GBP_POSTER=playwright until scripts/gbp-access-probe.mjs passes.`);
+      else if (probe.auth) console.error(`[gbp-worker] WARNING: GBP v4 probe auth failed (${probe.status}); refresh the GBP token. API posts will fail until fixed.`);
       else console.error(`[gbp-worker] WARNING: GBP v4 probe failed (${probe.status || 'no status'}): ${probe.error}`);
     } catch (e) {
       console.error(`[gbp-worker] WARNING: GBP v4 probe could not run: ${e.message}`);
