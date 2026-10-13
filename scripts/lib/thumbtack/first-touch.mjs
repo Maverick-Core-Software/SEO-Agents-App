@@ -1,6 +1,6 @@
 import { CUSTOMER_FALLBACK, sanitizeCustomerMessage } from './policy.mjs';
 
-const OFFICE_PHONE = '(469) 863-9804';
+const OFFICE_PHONE = '(469) 716-9870';
 
 function firstName(customerName) {
   const token = String(customerName || '').trim().split(/\s+/)[0];
@@ -23,7 +23,7 @@ export function generateFirstTouchReply(lead = {}) {
   const category = String(lead.category || '').trim();
   const about = category ? ` about your ${category} request` : '';
   const text = [
-    `${hello} — this is Jaime with Grizzly Electrical Solutions. I received your Thumbtack request${about}.`,
+    `${hello} — this is Grizzly Electrical Solutions. We received your Thumbtack request${about}.`,
     scopingQuestion(lead),
     `If it is easier to talk it through, call us at ${OFFICE_PHONE}.`,
   ].join(' ');

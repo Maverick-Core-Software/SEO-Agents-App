@@ -159,9 +159,9 @@ describe('generate helpers', () => {
   });
 
   it('redactUnknownPhones keeps the two approved numbers and withholds every other one', () => {
-    const text = 'Text (469) 896-3862 or call 469-863-9804; the form placeholder is (469) 555-0123 and 214.555.0199.';
+    const text = 'Text (469) 896-3862 or call 469-716-9870; the form placeholder is (469) 555-0123 and 214.555.0199.';
     const out = redactUnknownPhones(text, facts);
-    assert.equal(out, `Text (469) 896-3862 or call 469-863-9804; the form placeholder is ${REDACTED_PHONE} and ${REDACTED_PHONE}.`);
+    assert.equal(out, `Text (469) 896-3862 or call 469-716-9870; the form placeholder is ${REDACTED_PHONE} and ${REDACTED_PHONE}.`);
     assert.equal(redactUnknownPhones('no numbers here', facts), 'no numbers here');
     assert.equal(redactUnknownPhones(null, facts), '');
     assert.equal(redactUnknownPhones('(469) 896-3862', { phones: {} }), REDACTED_PHONE);
@@ -225,7 +225,7 @@ describe('buildGenerationInput', () => {
     assert.equal(business.founded_year, 2021);
     assert.equal(business.tenure_phrase, 'since 2021');
     assert.deepEqual(business.forbidden_tenure_phrases, ['over a decade', '3+ years']);
-    assert.deepEqual(business.phones, { customer_text: '(469) 896-3862', published_main: '(469) 863-9804' });
+    assert.deepEqual(business.phones, { customer_text: '(469) 896-3862', published_main: '(469) 716-9870' });
     assert.equal(business.domain, 'grizzlyelectricaltx.com');
     assert.ok(business.existing_pages.includes('/panel-upgrades/'));
     assert.ok(business.existing_blog_slugs.includes('recessed-lighting-cost-dfw'));

@@ -21,6 +21,7 @@
  *   3 = submitted but unverified (create returned a name, but GET-back failed
  *       or state was REJECTED/TAKEN_DOWN) — caller treats as "check manually"
  *   4 = needs_approval (workbook Status != Approved)
+ *   5 = policy_violation (caption/phone/URL policy — checkPostPolicy, matches driver)
  *   1 = error
  */
 
@@ -30,6 +31,7 @@ import process from 'node:process';
 import xlsx from 'xlsx';
 import { fileURLToPath } from 'node:url';
 import { getGbpAccessToken, gbpFetch } from './lib/gbp-api-auth.mjs';
+import { checkPostPolicy, formatViolations } from './gbp-poster/policy-check.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const DEFAULT_CONFIG = 'C:\\Workspace\\Active\\SEO-Agents-App\\config\\gbp-poster.config.json';
@@ -214,6 +216,18 @@ async function main() {
 
   if (!payload.caption) throw new Error(`Post ${args.date} has no caption/body text.`);
 
+  // Content-policy gate — the same hard stop as the Playwright driver
+  // (policy-check.mjs). Phone numbers (including the retired main number) are
+  // never allowed in a GBP caption: Google auto-rejects them and disables
+  // posting profile-wide. Exit 5 = policy_violation.
+  const policyViolations = checkPostPolicy({ caption: payload.caption });
+  if (policyViolations.length > 0) {
+    const message = `Post ${payload.date} violates GBP content policy:\n${formatViolations(policyViolations)}`;
+    emit({ result: 'policy_violation', date: payload.date, verified: false, postUrl: null, error: message, violations: policyViolations });
+    console.error(message);
+    process.exit(5);
+  }
+
   // Approval gate (exit 4) — matches driver so the runner records needs_approval.
   if (!args.dryRun && payload.status !== 'Approved') {
     emit({
@@ -311,13 +325,24 @@ function runSelfcheck() {
     && p.imagePath === 'C:\\pic.jpg' && p.status === 'Approved' && p.posted === false,
     'buildPayload field mapping');
 
+  // Content-policy gate: phone numbers in captions are rejected — retired and new alike.
+  assert(checkPostPolicy({ caption: 'Call (469) 863-9804 today' }).some(v => v.rule === 'phone-number'),
+    'retired phone in caption rejected');
+  assert(checkPostPolicy({ caption: 'Call (469) 716-9870 today' }).some(v => v.rule === 'phone-number'),
+    'new main phone in caption rejected');
+  assert(checkPostPolicy({ caption: 'Breakers tripping? We can help.' }).length === 0,
+    'clean caption passes policy');
+
   console.log('ok gbp-api-poster selfcheck');
 }
 
 // ── Entry ───────────────────────────────────────────────────────────────────
 
+// realpath so a junction/symlinked checkout (C:\Workspace → D:\Workspace) still
+// matches: path.resolve alone kept argv[1] on the alias drive while __filename
+// resolved to the real drive, silently disabling the CLI (and --selfcheck).
 const invokedDirectly = process.argv[1] &&
-  path.resolve(process.argv[1]) === path.resolve(__filename);
+  fs.realpathSync(path.resolve(process.argv[1])) === fs.realpathSync(path.resolve(__filename));
 
 if (invokedDirectly) {
   if (process.argv.includes('--selfcheck')) {
