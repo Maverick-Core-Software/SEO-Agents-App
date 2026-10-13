@@ -6,7 +6,19 @@
 #   - write /opt/seo/.env (render-env.sh validates a PC-built file; decision D2)
 #   - enable or start any timer, service or pm2 app
 #   - copy photo, state or ledger data
+# The one exception is opt-in: `install.sh --pm2-startup` installs and enables the pm2-seo
+# systemd unit (boot persistence for the pm2 apps, F7). It is the Carter-approved step in
+# RUNBOOK section 8 (F3) and is skipped without the flag.
 set -euo pipefail
+
+PM2_STARTUP=0
+for arg in "$@"; do
+  case "$arg" in
+    --pm2-startup) PM2_STARTUP=1 ;;
+    -h|--help) sed -n '2,13p' "$0"; exit 0 ;;
+    *) echo "unknown option: $arg" >&2; exit 2 ;;
+  esac
+done
 
 APP_ROOT=/opt/seo
 SRV_ROOT=/srv/seo
@@ -113,6 +125,23 @@ if [ -d "$SCRIPT_DIR/systemd" ]; then
   log "systemd: installing units from $SCRIPT_DIR/systemd"
   install -m 0644 -t /etc/systemd/system/ "$SCRIPT_DIR"/systemd/*.service "$SCRIPT_DIR"/systemd/*.timer
   systemctl daemon-reload
+fi
+
+# 9. pm2 boot persistence (F7): without it an LXC reboot leaves mav-bridge / gbp-worker /
+# fb-comment-agent down (Days 2-7 never post). `pm2 startup systemd -u seo --hp /opt/seo`
+# installs and enables pm2-seo.service, which resurrects the dump written by `pm2 save`
+# (run as seo after `pm2 start`, RUNBOOK 8 F3). Opt-in: Carter-approved, --pm2-startup only.
+if [ "$PM2_STARTUP" -eq 1 ]; then
+  if systemctl is-enabled pm2-seo.service >/dev/null 2>&1; then
+    log "pm2 startup: pm2-seo.service already enabled"
+  else
+    log "pm2 startup: installing pm2-seo.service (user $SEO_USER, home $APP_ROOT)"
+    pm2 startup systemd -u "$SEO_USER" --hp "$APP_ROOT"
+    systemctl is-enabled pm2-seo.service >/dev/null 2>&1 || { echo "pm2-seo.service not enabled after pm2 startup" >&2; exit 1; }
+  fi
+  log "pm2 startup: remember 'runuser -u $SEO_USER -- pm2 save' after 'pm2 start' so the unit has a dump to resurrect"
+else
+  log "pm2 startup: skipped (opt-in: install.sh --pm2-startup, RUNBOOK 8 F3, Carter approval)"
 fi
 
 log "done. Next: render and check .env (render-env.sh), then the RUNBOOK data and enable steps (Carter approval)."

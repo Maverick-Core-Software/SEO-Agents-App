@@ -122,17 +122,23 @@ For the coming week's Monday (`<next Monday>`), with publishers in dry-run:
 
 F1 (Thu): PC `pm2 save`, stop the PC publishers, disable (do not delete) the 5 PC tasks.
 F2 (Thu): copy the ledger and state deltas; compare ledger totals; rekey.
-F3 (Thu): AIWA `.env` to `SEO_PIPELINE=new`, `SEO_AUTO_APPROVE=1`, `GBP_POSTER=api`, `FB_BOOST_API=1`, then:
+F3 (Thu): AIWA `.env` to `SEO_PIPELINE=new`, `SEO_AUTO_APPROVE=1`, `GBP_POSTER=api`, `FB_BOOST_API=1`, then
+(each line is its own Carter-approved step):
 ```
+bash /opt/seo/deploy/aiwa/install.sh --pm2-startup        # as root: pm2 startup systemd -u seo --hp /opt/seo → pm2-seo.service enabled (boot persistence, F7)
 runuser -u seo -- pm2 start /opt/seo/deploy/aiwa/ecosystem.linux.config.cjs
-runuser -u seo -- pm2 save
+runuser -u seo -- pm2 save                                 # the dump pm2-seo.service resurrects at boot
 systemctl enable --now seo-weekly-run.timer seo-monitor.timer
 ```
-MCC on CT 103: `SEO_APP_URL=http://<seo-prod>:8790`. Needs the mav-bridge bind-host follow-up (see `deploy/aiwa/README.md`).
+Without `--pm2-startup` an LXC reboot leaves mav-bridge / gbp-worker / fb-comment-agent down and Days 2-7 never
+post (the GBP OVERDUE check would page, but nothing would recover). Verify: `systemctl is-enabled pm2-seo.service`
+prints `enabled`; a `systemctl restart pm2-seo.service` brings the three apps back `online`.
+MCC on CT 103: `SEO_APP_URL=http://<seo-prod>:8790` (bind per section 3a, firewall gate E3 first).
 
 ## 9. Health checks (after any start)
 
 - `runuser -u seo -- pm2 list`: mav-bridge, gbp-worker, fb-comment-agent all `online`, no restart loop.
+- `systemctl is-enabled pm2-seo.service` prints `enabled` (boot persistence, F7) and `/opt/seo/.pm2/dump.pm2` exists (`pm2 save` was run).
 - `systemctl list-timers 'seo-*'`: only the enabled set is scheduled, with the expected next runs.
 - `outputs/reconcile-health.json` present and fresh after the 10:10 run (V3).
 - `outputs/weekly-runner-health.json` written by the weekly run (`attempt.status`).

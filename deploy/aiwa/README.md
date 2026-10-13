@@ -9,7 +9,7 @@ Target: Debian 12 LXC `seo-prod`, app root `/opt/seo`, photo library `/srv/seo/p
 |---|---|
 | `ecosystem.linux.config.cjs` | pm2 apps: mav-bridge, gbp-worker (via `gbp-worker-service.mjs`), fb-comment-agent. Logs to `/opt/seo/logs/<app>.log`. No secrets. |
 | `systemd/*.service`, `systemd/*.timer` | seo-photo-sync (Fri 08:25, rclone then cache sync), seo-weekly-run (Fri 08:30), seo-monitor (Fri 08:30, 14 h), seo-watchdog (daily 10:00), seo-reconcile (daily 10:10). Every service sets TZ, `EnvironmentFile=/opt/seo/.env`, `User=seo`. |
-| `install.sh` | Idempotent Debian 12 provisioning. Enables nothing. |
+| `install.sh` | Idempotent Debian 12 provisioning. Enables nothing, except with the opt-in `--pm2-startup` flag (installs and enables `pm2-seo.service` for boot persistence; the Carter-approved F3 step). |
 | `render-env.sh` | Validates a PC-built `.env` against `env.required`. Names only, never values. |
 | `env.required` | Names the `.env` must define, tagged by service. |
 | `verify-units.sh` | `bash -n`, shellcheck if present, `systemd-analyze verify` if present, else a grep lint. Also checks that the ecosystem loads. |
