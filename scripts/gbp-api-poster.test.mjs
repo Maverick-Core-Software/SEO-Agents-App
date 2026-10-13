@@ -16,6 +16,7 @@ import {
   listLocalPosts,
   resolveManifestEntry,
   preparePhoto,
+  probeV4,
   SUMMARY_PREFIX_CHARS,
 } from './gbp-api-poster.mjs';
 import { loadSelectionManifest, sha256Buffer } from './lib/photo-selection.mjs';
@@ -421,5 +422,50 @@ describe('G3 photo rule: manifest-only image, never text-only', () => {
     const none = await preparePhoto({ payload: { date: '2026-10-17', imagePath: '', topic: 't', caption: 'c' }, manifest, now: NOW });
     assert.equal(none.ok, false);
     assert.equal(none.reason, 'image_missing');
+  });
+});
+
+describe('gated v4 (404 route not served): fail closed with exit 6, never a create', () => {
+  const gate = (api, when) => ({
+    ...api,
+    gbpFetch: async (url, o) => {
+      if (when(url, o)) { const e = new Error('GBP API Error [404]: route not served'); e.status = 404; throw e; }
+      return api.gbpFetch(url, o);
+    },
+  });
+
+  it('404 on the localPosts list -> exit 6 api_gated, no create, no upload', async () => {
+    const fx = fixture();
+    const api = mockApi();
+    const r = await run({}, gate(api, (url) => url.includes('localPosts?pageSize=')), fx);
+    assert.equal(r.code, 6);
+    assert.equal(r.result.result, 'api_gated');
+    assert.equal(r.result.reason, 'v4_gated');
+    assert.match(r.result.error, /gated/);
+    assert.equal(api.created.length, 0);
+    assert.equal(api.uploads.length, 0);
+    assert.equal(loadSelectionManifest(fx.manifestPath).some((e) => e.postedBy === 'gbp-api'), false, 'nothing recorded');
+  });
+
+  it('404 on media:startUpload -> exit 6 api_gated, no create', async () => {
+    const api = mockApi();
+    const r = await run({}, gate(api, (url) => url.includes('media:startUpload')), fixture());
+    assert.equal(r.code, 6);
+    assert.equal(api.created.length, 0);
+  });
+
+  it('a non-404 failure is still an error (exit 1 path), not api_gated', async () => {
+    const api = mockApi();
+    const boom = { ...api, gbpFetch: async (url, o) => { if (url.includes('localPosts?pageSize=')) { const e = new Error('GBP API Error [500]: boom'); e.status = 500; throw e; } return api.gbpFetch(url, o); } };
+    await assert.rejects(run({}, boom, fixture()), /500/);
+  });
+
+  it('probeV4 reports gated on 404 and ok on 200', async () => {
+    const api = mockApi();
+    const ok = await probeV4(api);
+    assert.equal(ok.ok, true);
+    assert.equal(ok.locationName, LOCATION);
+    const gated = await probeV4(gate(api, (url) => url.includes('/localPosts?pageSize=1')));
+    assert.deepEqual({ ok: gated.ok, gated: gated.gated, status: gated.status }, { ok: false, gated: true, status: 404 });
   });
 });

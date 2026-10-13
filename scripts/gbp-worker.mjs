@@ -653,6 +653,21 @@ if (invokedDirectly) {
   process.on('SIGTERM', () => { release(); process.exit(0); });
   console.log(`[gbp-worker] Starting — project root: ${PROJECT_ROOT}`);
   console.log(`[gbp-worker] GBP_POSTER=${GBP_MODE} → ${path.basename(GBP_POSTER_PATH)}${SESSION_PROBE_SUPPORTED ? '' : ' (api mode: session probe and export skipped)'}`);
+  if (GBP_MODE === 'api') {
+    // Startup v4 probe: a gated project (404 route not served, the state on
+    // 2026-10-13) is said once, loudly. Posting still runs; the poster exits 6
+    // api_gated and the runner keeps rows `scheduled`, so nothing flips to
+    // error or posted while the API is gated.
+    try {
+      const { probeV4 } = await import('./gbp-api-poster.mjs');
+      const probe = await probeV4();
+      if (probe.ok) console.log(`[gbp-worker] GBP v4 API reachable (${probe.locationName})`);
+      else if (probe.gated) console.error(`[gbp-worker] WARNING: GBP v4 API is GATED for this project (404 route not served). API posts will exit 6 api_gated and rows stay scheduled. Keep GBP_POSTER=playwright until scripts/gbp-access-probe.mjs passes.`);
+      else console.error(`[gbp-worker] WARNING: GBP v4 probe failed (${probe.status || 'no status'}): ${probe.error}`);
+    } catch (e) {
+      console.error(`[gbp-worker] WARNING: GBP v4 probe could not run: ${e.message}`);
+    }
+  }
   if (probeOnly) {
     // Probe-only startup mode: record session health, release, exit. No claims, no
     // daily path, no polling — the documented session probe.

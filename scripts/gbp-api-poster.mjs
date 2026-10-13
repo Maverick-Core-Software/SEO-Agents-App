@@ -43,6 +43,8 @@
  *   4 = needs_approval (workbook Status != Approved)
  *   5 = policy_violation (caption/phone/URL policy — checkPostPolicy, matches
  *       driver; or a Google-rejected duplicate)
+ *   6 = api_gated (v4 answered 404 "route not served": nothing posted; the
+ *       runner keeps the row `scheduled`, see EXIT_API_GATED)
  *   1 = error
  */
 
@@ -79,6 +81,30 @@ export const LIST_PAGE_SIZE = 100;
 const LIST_MAX_PAGES = 20;
 /** Post states that mean "exists, do not re-create, but it is not live either". */
 export const REFUSED_STATES = new Set(['REJECTED', 'TAKEN_DOWN']);
+/**
+ * Exit 6 = the legacy v4 API (localPosts, media) answered 404 "route not
+ * served": the project is still gated for v4 (probe 2026-10-13: account
+ * management v1 = 200, v4 = 404). Nothing was posted; gbp-runner maps it to
+ * `scheduled` (never error/posted). Distinct from policy exit 5 on purpose.
+ */
+export const EXIT_API_GATED = 6;
+export const API_GATED_MESSAGE = 'GBP v4 API (localPosts) returned 404 "route not served": the API is still gated for this project, nothing was posted. Keep GBP_POSTER=playwright until scripts/gbp-access-probe.mjs passes.';
+
+export function isV4Gated(e) {
+  return Boolean(e) && Number(e.status) === 404;
+}
+
+/** One v4 call (list one localPost). { ok, gated, status, error }. Used by the worker at startup. */
+export async function probeV4(rawDeps = {}) {
+  const deps = resolveDeps(rawDeps);
+  try {
+    const { locationName } = await resolveLocation(deps);
+    await deps.gbpFetch(`${V4}/${locationName}/localPosts?pageSize=1`);
+    return { ok: true, gated: false, status: 200, locationName };
+  } catch (e) {
+    return { ok: false, gated: isV4Gated(e), status: e && e.status ? e.status : null, error: String(e && e.message || e) };
+  }
+}
 
 // ── Pure helpers ───────────────────────────────────────────────────────────
 
@@ -552,9 +578,23 @@ export async function runPoster(args, rawDeps = {}) {
 
   const { locationName } = await resolveLocation(deps);
 
+  // Gated v4 (404 route not served): fail closed with its own exit code so the
+  // runner leaves the row `scheduled`, never error or posted.
+  const gated = () => {
+    emit({ result: 'api_gated', status: 'api_gated', reason: 'v4_gated', date: payload.date, verified: false, postUrl: null, error: API_GATED_MESSAGE, ...dryRow });
+    log(API_GATED_MESSAGE);
+    return EXIT_API_GATED;
+  };
+
   // G2: idempotent create. List first; a listing failure propagates (exit 1)
   // rather than creating blind, which is the duplicate this guard exists for.
-  const existing = await listLocalPosts(locationName, deps);
+  let existing;
+  try {
+    existing = await listLocalPosts(locationName, deps);
+  } catch (e) {
+    if (isV4Gated(e)) return gated();
+    throw e;
+  }
   const live = findLivePostForSummary({ posts: existing, summary: payload.caption, now: deps.now() });
   if (live) {
     const state = String(live.state || '').toUpperCase();
@@ -571,10 +611,16 @@ export async function runPoster(args, rawDeps = {}) {
 
   // The photo is mandatory (G3): preparePhoto returned ok, so the upload always
   // runs and a create without media cannot be reached from here.
-  const mediaRef = await uploadMedia(locationName, { buffer: photo.bytes, contentType: photo.contentType }, deps);
-  log(`Media uploaded: ${mediaRef} (${path.basename(photo.imagePath)}${photo.converted ? ', HEIC→JPEG' : ''}, sha256 ${photo.sha256.slice(0, 12)})`);
-
-  const created = await createLocalPost(locationName, payload, payload.ctaUrl, mediaRef, deps);
+  let mediaRef;
+  let created;
+  try {
+    mediaRef = await uploadMedia(locationName, { buffer: photo.bytes, contentType: photo.contentType }, deps);
+    log(`Media uploaded: ${mediaRef} (${path.basename(photo.imagePath)}${photo.converted ? ', HEIC→JPEG' : ''}, sha256 ${photo.sha256.slice(0, 12)})`);
+    created = await createLocalPost(locationName, payload, payload.ctaUrl, mediaRef, deps);
+  } catch (e) {
+    if (isV4Gated(e)) return gated();
+    throw e;
+  }
   const postName = created.name;
   if (!postName) {
     throw new Error(`Create returned no post name: ${JSON.stringify(created)}`);

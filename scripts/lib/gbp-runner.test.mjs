@@ -633,3 +633,28 @@ assert.equal(dailyTickDue({ cstHour: 9, todayDate: '', lastDailyGbpDate: '' }), 
 }
 
 console.log('ok gbp-runner G1 api-mode scheduling');
+
+// --- Gated v4 API (poster exit 6 / result api_gated): the row stays scheduled,
+// never error (no alert storm), never posted (no false success), gate untouched. ---
+{
+  const gatedResult = { result: 'api_gated', reason: 'v4_gated', error: 'GBP v4 API (localPosts) returned 404 "route not served": the API is still gated for this project, nothing was posted.' };
+  assert.equal(gbpDailyStatusForExit(6, gatedResult).status, 'scheduled');
+  assert.equal(gbpDailyStatusForExit(6, gatedResult).archive, false);
+  assert.match(gbpDailyStatusForExit(6, gatedResult).error, /gated/);
+  assert.equal(gbpDailyStatusForExit(6, {}).status, 'scheduled', 'exit 6 alone is enough');
+  assert.equal(gbpDailyStatusForExit(0, { result: 'api_gated' }).status, 'scheduled', 'result alone is enough');
+  assert.equal(gbpScheduleStatusForExit(6, gatedResult).status, 'scheduled');
+
+  const updates = [];
+  const qb = { from: () => qb, update: (vals) => { updates.push(vals); return { eq: () => Promise.resolve({ data: null, error: null }) }; } };
+  const status = await applyDriverResult({
+    supabase: qb, post: { id: 'p1', run_id: 'r1', post_date: '2026-10-17' },
+    result: { ok: false, exitCode: 6, stdout: JSON.stringify(gatedResult), stderr: '' },
+    env: { GBP_POSTER: 'api', GBP_WORKBOOK_PATH: 'C:/nonexistent/schedule.xlsx' }, log: async () => {},
+  });
+  assert.equal(status, 'scheduled');
+  assert.equal(updates[0].status, 'scheduled');
+  assert.equal(updates[0].posted_at, undefined, 'no posted_at on a gated API');
+}
+
+console.log('ok gbp-runner api-gated exit 6');

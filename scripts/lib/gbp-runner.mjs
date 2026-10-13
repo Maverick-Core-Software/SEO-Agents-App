@@ -80,10 +80,22 @@ export function gbpPolicyViolationMessage(parsed = {}) {
 //   0 = posted+verified, 3 = submitted-unverified, 4 = approval-gate-unset, else = error.
 // Driver JSON wins over a crashed exit: last week's live posts were marked error
 // because context.close() aborted after a successful submit/verify emit.
+// Exit 6 = the API poster found the v4 API gated (404 route not served). Nothing
+// was posted and nothing is wrong with the row: it stays `scheduled` with the
+// gating note, never error (no alert storm) and never posted (no false success).
+export const GBP_API_GATED_EXIT = 6;
+export function gbpApiGatedMessage(parsed = {}) {
+  return String(parsed.error || '').trim()
+    || 'GBP v4 API is gated for this project (404 route not served) — nothing was posted; keep GBP_POSTER=playwright until the access probe passes.';
+}
+
 export function gbpDailyStatusForExit(exitCode, parsed = {}) {
   const result = String(parsed.result || '').toLowerCase();
   const failureReason = String(parsed.failure_reason || '').toLowerCase();
   const failureDetail = String(parsed.error || '').trim();
+  if (exitCode === GBP_API_GATED_EXIT || result === 'api_gated') {
+    return { status: 'scheduled', error: gbpApiGatedMessage(parsed), archive: false, platform_post_id: null };
+  }
   // Listing already has a live match — treat as posted even if we did not compose.
   if (result === 'already_live' || parsed.verified === true) {
     return { status: 'posted', error: null, archive: true, platform_post_id: parsed.postUrl || null };
@@ -152,6 +164,9 @@ export function gbpScheduleStatusForExit(exitCode, parsed = {}) {
   const result = String(parsed.result || '').toLowerCase();
   const failureReason = String(parsed.failure_reason || '').toLowerCase();
   const failureDetail = String(parsed.error || '').trim();
+  if (exitCode === GBP_API_GATED_EXIT || result === 'api_gated') {
+    return { status: 'scheduled', error: gbpApiGatedMessage(parsed) };
+  }
   // A known failure before the Post click is not a candidate for the legacy
   // daily fallback. Mark it visibly so the existing worker fault alert has a
   // precise, human-actionable recovery rather than a false scheduled state.
