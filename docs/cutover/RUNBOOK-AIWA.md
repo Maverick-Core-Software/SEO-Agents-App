@@ -23,7 +23,7 @@ or SCP from an agent), per `aiwa-deployment.md`.
 1. Copy the repo tree (or a tag archive) to `/opt/seo`. Install.sh expects it there.
 2. As root: `bash /opt/seo/deploy/aiwa/install.sh`
    - Installs apt packages (ffmpeg, fonts-dejavu-core, rclone, git), NodeSource Node 22, uv, pm2.
-   - Creates user `seo`, `/opt/seo` (+ logs, state, outputs), `/opt/seo/secrets` (700), `/srv/seo/{photos,photos/inbox,gbp,gbp-archive}`.
+   - Creates user `seo`, `/opt/seo` (+ logs, state, outputs), `/opt/seo/secrets` (700), `/srv/seo/{photos,photos-inbox,gbp,gbp-archive}` (the rclone inbox is outside the photo cache).
    - Sets the host timezone to America/Chicago. Copies the units to `/etc/systemd/system` and runs `daemon-reload`.
    - Runs `npm ci` (with `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1`, no browsers needed in API mode) and `uv sync --locked` as `seo`.
    - **Enables nothing.** The installer reaches the NodeSource and astral.sh installers over the network. Review them first.
@@ -74,7 +74,7 @@ Transport: an Orca-approved path only (rsync over the LAN from a Carter-run comm
 
 | Source (PC) | Destination (LXC) | Notes |
 |---|---|---|
-| `C:\Workspace\Shared\Assets\Media\Grizzly\GBP Post Photos` (15.1 GB, 6,281 files) | `/srv/seo/photos` | keep `inbox/` as the rclone target |
+| `C:\Workspace\Shared\Assets\Media\Grizzly\GBP Post Photos` (15.1 GB, 6,281 files) | `/srv/seo/photos` | the rclone target is `/srv/seo/photos-inbox`, outside the cache; do not create `photos/inbox` |
 | `state/` minus `weekly/serp-cache` | `/opt/seo/state` | |
 | `outputs/`: `fb-boost-ledger.json`, `fb-boost-api-last.json`, `*_posting_schedule.md`, `weekly-runner-health.json`, `run_manifest.json`, `shadow/`, `archive/` | `/opt/seo/outputs` | drop `gbp-debug/`, `fb-videos/`, `monitor-*.jsonl` |
 | `Grizzly GBP Schedule.xlsx` (+ backups) | `/srv/seo/gbp/` | set `GBP_WORKBOOK_PATH` to match |

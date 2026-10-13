@@ -69,7 +69,9 @@ if ! id -u "$SEO_USER" >/dev/null 2>&1; then
 fi
 install -d -o "$SEO_USER" -g "$SEO_USER" -m 0755 \
   "$APP_ROOT" "$APP_ROOT/logs" "$APP_ROOT/state" "$APP_ROOT/outputs" \
-  "$SRV_ROOT" "$SRV_ROOT/photos" "$SRV_ROOT/photos/inbox" "$SRV_ROOT/gbp" "$SRV_ROOT/gbp-archive"
+  "$SRV_ROOT" "$SRV_ROOT/photos" "$SRV_ROOT/photos-inbox" "$SRV_ROOT/gbp" "$SRV_ROOT/gbp-archive"
+# The rclone inbox lives OUTSIDE the photo cache (/srv/seo/photos): an inbox inside it
+# made every synced photo discoverable twice (F8, the 9/25 duplicate-photo incident).
 install -d -o "$SEO_USER" -g "$SEO_USER" -m 0700 "$APP_ROOT/secrets"
 
 # 6. timezone: systemd timers use the host clock, so the host must be on Chicago time.

@@ -20,7 +20,7 @@ Nothing else in it changed.
 ## Decisions reflected here
 
 - **D2** `.env` is built on the PC and shipped. `render-env.sh` validates it. Nothing here reads Secret Manager.
-- **D3** Photo intake is `rclone sync` from the Drive folder "GBP Photos" into `/srv/seo/photos/inbox`. It is gated by `SEO_RCLONE_REMOTE`. Unset means the rclone step is skipped.
+- **D3** Photo intake is `rclone sync` from the Drive folder "GBP Photos" into `/srv/seo/photos-inbox` (outside the cache, F8). It is gated by `SEO_RCLONE_REMOTE`. Unset means the rclone step is skipped.
 - Friday timers have `Persistent=false`, so a missed Friday does not run on Monday. Daily timers have `Persistent=true`, so a missed daily run fires once on the next boot.
 
 ## Follow-ups (not implemented in B4)
@@ -29,7 +29,7 @@ Nothing else in it changed.
 2. **fb-comment-agent binds all interfaces.** `scripts/facebook-comment-agent.mjs:380` calls `listen(port)` with no host. B6 moves it to `127.0.0.1` by default.
 3. **seo-monitor pm2 and `net use`.** `scripts/seo-monitor.mjs:152-198` runs `pm2 jlist/restart/resurrect` and a Windows `net use M:` remount. On Linux these need B3 (`SEO_MONITOR_PM2=0` and the `GBP_ARCHIVE_FOLDER` existence check) before `seo-monitor.timer` is enabled in phase F3.
 4. **`SEO_PIPELINE=new` is not in this branch.** The `seo-weekly-run` unit calls `run-weekly-seo.py`, which only knows the legacy and shadow pipelines until cutover V1 lands. Keep `seo-weekly-run.timer` disabled until V1 is in rc1.
-5. **rclone `sync` mirrors deletions into the inbox.** Files removed from Drive are removed from `/srv/seo/photos/inbox`. The library at `/srv/seo/photos` is the copy that matters. For an additive inbox, change the `ExecStartPre` in `systemd/seo-photo-sync.service` to `rclone copy`.
+5. **rclone `sync` mirrors deletions into the inbox.** Files removed from Drive are removed from `/srv/seo/photos-inbox`. The library at `/srv/seo/photos` is the copy that matters. For an additive inbox, change the `ExecStartPre` in `systemd/seo-photo-sync.service` to `rclone copy`.
 6. **systemd EnvironmentFile wins over `Environment=`.** The unit-level `GBP_PHOTOS_FOLDER` and `GBP_PHOTOS_LOCAL_CACHE` are defaults only. The values in `.env` take effect, so `env.required` lists them.
 7. **Legacy crew (D5) is not covered.** `SEO_PIPELINE=legacy` needs the CrewAI key set and the B7 path changes. None of that is in `env.required`.
 8. **Watchdog during the shadow week.** `seo-watchdog` runs daily on AIWA against copied `outputs/`, which can lag the PC. Check its alerts against the PC's live state during E.

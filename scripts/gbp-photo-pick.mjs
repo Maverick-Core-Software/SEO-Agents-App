@@ -121,7 +121,10 @@ const CURATED_SEED_SCORE = parseInt(process.env.GBP_CURATED_SEED_SCORE || '70');
 const CURATED_NAME_RE = /^(\d{4}-\d{2}-\d{2})-(panel|lighting|wiring|ev-charger|outlet|generator)(?:-\d+)?\.(?:jpe?g|png|webp)$/i;
 // Sub-folders the picker must never draw from: "Unused Review" is the
 // classifier's borderline / false-positive pile, "Archive" is retired material.
-const EXCLUDED_DIRS = new Set(['unused review', 'archive']);
+// `inbox` is excluded as well: the AIWA rclone target is /srv/seo/photos-inbox,
+// outside the cache, but a stray inbox folder inside it must never make a synced
+// photo discoverable twice (F8, the 9/25 duplicate-photo incident).
+const EXCLUDED_DIRS = new Set(['unused review', 'archive', 'inbox']);
 const SUPPORTED_EXTS = new Set(['.jpg', '.jpeg', '.png', '.heic', '.heif', '.webp']);
 
 const dryRun = process.argv.includes('--dry-run');
