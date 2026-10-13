@@ -161,7 +161,8 @@ describe('buildRevision / nextRevisionNumber / exportPaths', () => {
     const paths = exportPaths();
     assert.deepEqual(Object.keys(paths), Object.keys(EXPORT_FILES));
     for (const [key, p] of Object.entries(paths)) assert.equal(p, path.join(SHADOW_DIR, EXPORT_FILES[key]));
-    assert.deepEqual(EXPORT_MODES, ['shadow', 'offline']);
+    // Phase C: `new` exports too (to outputs/ by default; see e2e-new-mode.test.mjs for the dir).
+    assert.deepEqual(EXPORT_MODES, ['shadow', 'new', 'offline']);
   });
 });
 
@@ -262,13 +263,26 @@ describe('stagePlan in shadow mode with the real file store', () => {
 });
 
 describe('stagePlan in mode new', () => {
-  it('writes no files and does not project without a project function', async () => {
+  // Phase C: `new` is an export mode (the legacy consumers read outputs/*_posting_schedule.md),
+  // so the seven files are written exactly as in shadow, and the projection is still only the
+  // caller's `project` function.
+  it('exports the files to outDir and does not project without a project function', async () => {
     const { store, outDir } = fresh();
-    const rev = await stagePlan({ store, attempt: makeAttempt({ mode: 'new' }), plan: makePlan(), selection: SELECTION, validation: VALID, mode: 'new', now: NOW, outDir });
-    assert.equal(rev.exported_at, null);
+    const rev = await stagePlan({ store, attempt: makeAttempt({ mode: 'new' }), plan: makePlan(), selection: SELECTION, validation: VALID, rendered: RENDERED, mode: 'new', now: NOW, outDir });
+    assert.equal(rev.exported_at, ISO);
     assert.equal(rev.projected_at, null);
-    assert.ok(!fs.existsSync(outDir));
+    assert.deepEqual(fs.readdirSync(outDir).sort(), Object.values(EXPORT_FILES).sort());
+    assert.equal(fs.readFileSync(exportPaths(outDir).gbp, 'utf8'), RENDERED.gbp);
     assert.equal((await store.listItems(rev.id)).length, 13);
+  });
+
+  it('requires rendered text in mode new, like shadow (never a silent skip of the legacy schedules)', async () => {
+    const { store, outDir } = fresh();
+    await assert.rejects(
+      stagePlan({ store, attempt: makeAttempt({ mode: 'new' }), plan: makePlan(), selection: SELECTION, validation: VALID, mode: 'new', now: NOW, outDir }),
+      (e) => e instanceof TypeError && /rendered\.gbp/.test(e.message),
+    );
+    assert.deepEqual(await store.listRevisions('2026-09-07'), []);
   });
 
   it('calls project with the staged revision and items when validation passed', async () => {
@@ -276,7 +290,7 @@ describe('stagePlan in mode new', () => {
     const attempt = makeAttempt({ mode: 'new' });
     const seen = [];
     const project = async (args) => { seen.push(args); return { runId: 'run-1' }; };
-    const rev = await stagePlan({ store, attempt, plan: makePlan(), selection: SELECTION, validation: VALID, mode: 'new', now: NOW, outDir, project });
+    const rev = await stagePlan({ store, attempt, plan: makePlan(), selection: SELECTION, validation: VALID, rendered: RENDERED, mode: 'new', now: NOW, outDir, project });
     assert.equal(seen.length, 1);
     const args = seen[0];
     assert.equal(args.store, store);
@@ -288,27 +302,29 @@ describe('stagePlan in mode new', () => {
     assert.deepEqual(args.items, await store.listItems(rev.id));
     assert.equal(args.plan.week_of, '2026-09-07');
     assert.equal(rev.projected_at, ISO);
-    assert.ok(!fs.existsSync(outDir));
+    assert.equal(rev.exported_at, ISO, 'the files were exported before the projection');
+    assert.ok(fs.existsSync(exportPaths(outDir).facebook));
   });
 
-  it('refuses to project a plan that failed validation and leaves the revision staged', async () => {
-    const { store } = fresh();
+  it('refuses to project a plan that failed validation and leaves the revision staged (and exported)', async () => {
+    const { store, outDir } = fresh();
     let called = 0;
     const project = async () => { called++; };
     const failed = { ok: false, errors: ['date mismatch'], warnings: [] };
     await assert.rejects(
-      stagePlan({ store, attempt: makeAttempt({ mode: 'new' }), plan: makePlan(), selection: SELECTION, validation: failed, mode: 'new', now: NOW, project }),
+      stagePlan({ store, attempt: makeAttempt({ mode: 'new' }), plan: makePlan(), selection: SELECTION, validation: failed, rendered: RENDERED, mode: 'new', now: NOW, outDir, project }),
       (e) => e instanceof ValidationFailed && e.errors[0] === 'date mismatch',
     );
     assert.equal(called, 0);
     assert.equal((await store.listRevisions('2026-09-07')).length, 1);
+    assert.ok(fs.existsSync(exportPaths(outDir).plan), 'a failed plan is still exported for inspection');
   });
 
   it('propagates a project failure after the revision is staged', async () => {
-    const { store } = fresh();
+    const { store, outDir } = fresh();
     const project = async () => { throw new Error('weekly_posts insert: boom'); };
     await assert.rejects(
-      stagePlan({ store, attempt: makeAttempt({ mode: 'new' }), plan: makePlan(), selection: SELECTION, validation: VALID, mode: 'new', now: NOW, project }),
+      stagePlan({ store, attempt: makeAttempt({ mode: 'new' }), plan: makePlan(), selection: SELECTION, validation: VALID, rendered: RENDERED, mode: 'new', now: NOW, outDir, project }),
       /weekly_posts insert: boom/,
     );
     assert.equal((await store.listRevisions('2026-09-07')).length, 1);
@@ -333,7 +349,8 @@ describe('stagePlan in mode legacy', () => {
 describe('stagePlan store selection', () => {
   it('prefers the atomic stageRevision when the store has it', async () => {
     const store = spyStore({ withAtomic: true });
-    const rev = await stagePlan({ store, attempt: makeAttempt({ mode: 'new' }), plan: makePlan(), selection: SELECTION, validation: VALID, mode: 'new', now: NOW });
+    const { outDir } = fresh();
+    const rev = await stagePlan({ store, attempt: makeAttempt({ mode: 'new' }), plan: makePlan(), selection: SELECTION, validation: VALID, rendered: RENDERED, mode: 'new', now: NOW, outDir });
     assert.deepEqual(store.calls, ['listRevisions', 'stageRevision']);
     assert.equal(store.revision.id, rev.id);
     assert.equal(store.items.length, 13);
@@ -342,7 +359,8 @@ describe('stagePlan store selection', () => {
 
   it('falls back to putRevision then putItems', async () => {
     const store = spyStore({ revisions: [{ revision: 4 }] });
-    const rev = await stagePlan({ store, attempt: makeAttempt({ mode: 'new' }), plan: makePlan(), selection: SELECTION, validation: VALID, mode: 'new', now: NOW });
+    const { outDir } = fresh();
+    const rev = await stagePlan({ store, attempt: makeAttempt({ mode: 'new' }), plan: makePlan(), selection: SELECTION, validation: VALID, rendered: RENDERED, mode: 'new', now: NOW, outDir });
     assert.deepEqual(store.calls, ['listRevisions', 'putRevision', 'putItems']);
     assert.equal(rev.revision, 5);
     assert.equal(store.revision.id, `${ATTEMPT_ID}-r5`);
@@ -359,16 +377,17 @@ describe('stagePlan store selection', () => {
 
   it('surfaces a store failure', async () => {
     const store = spyStore({ withAtomic: true });
+    const { outDir } = fresh();
     store.stageRevision = async () => { throw new Error('stage_plan_revision: permission denied'); };
     await assert.rejects(
-      stagePlan({ store, attempt: makeAttempt({ mode: 'new' }), plan: makePlan(), selection: SELECTION, validation: VALID, mode: 'new', now: NOW }),
+      stagePlan({ store, attempt: makeAttempt({ mode: 'new' }), plan: makePlan(), selection: SELECTION, validation: VALID, rendered: RENDERED, mode: 'new', now: NOW, outDir }),
       /stage_plan_revision: permission denied/,
     );
   });
 });
 
 describe('stagePlan input guards', () => {
-  const base = () => ({ store: spyStore({ withAtomic: true }), attempt: makeAttempt({ mode: 'new' }), plan: makePlan(), selection: SELECTION, validation: VALID, mode: 'new', now: NOW });
+  const base = () => ({ store: spyStore({ withAtomic: true }), attempt: makeAttempt({ mode: 'new' }), plan: makePlan(), selection: SELECTION, validation: VALID, rendered: RENDERED, mode: 'new', now: NOW, outDir: fresh().outDir });
 
   it('requires store, attempt, mode and validation', async () => {
     await assert.rejects(stagePlan({ ...base(), store: null }), /store is required/);
@@ -466,7 +485,8 @@ describe('writeExports / defaultSummary', () => {
 describe('stagePlan after a projection', () => {
   it('never writes the revision a second time (the Supabase RPC is insert-only) and returns a copy of the stored record', async () => {
     const store = spyStore({ withAtomic: true });
-    const rev = await stagePlan({ store, attempt: makeAttempt({ mode: 'new' }), plan: makePlan(), selection: SELECTION, validation: VALID, mode: 'new', now: NOW, project: async () => {} });
+    const { outDir } = fresh();
+    const rev = await stagePlan({ store, attempt: makeAttempt({ mode: 'new' }), plan: makePlan(), selection: SELECTION, validation: VALID, rendered: RENDERED, mode: 'new', now: NOW, outDir, project: async () => {} });
     assert.deepEqual(store.calls, ['listRevisions', 'stageRevision']);
     assert.equal(rev.projected_at, ISO);
     assert.notEqual(rev, store.revision);

@@ -3,7 +3,7 @@
   "notes": "Selection policy for scripts/weekly. City tiers, weights, and service_city_emphasis come from docs/strategy/2026-09-06-dfw-expansion.md (research 2026-09-06); Greenville is tier 3 pending owner confirmation. Pricing is approximate and only used for the cost meter.",
   "recency_weeks": 4,
   "boost_weekly_usd": 50,
-  "budget_usd": 20,
+  "budget_usd": 5,
   "weights": {
     "priority": 0.25,
     "demand": 0.2,
