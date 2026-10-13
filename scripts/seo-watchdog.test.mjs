@@ -48,6 +48,24 @@ describe('evaluateWatchdog', () => {
     assert.ok(problems.some((p) => p.startsWith('HUNG')), problems.join('\n'));
   });
 
+  it('NOTIFY MISS on a Saturday catch-up run (non-run day)', () => {
+    const problems = evaluateWatchdog({
+      now: new Date(2026, 7, 29, 10, 0, 0), // Saturday
+      health: { status: 'success', date: '2026-08-29', at: new Date(2026, 7, 29, 8, 30, 0).toISOString() },
+      notify: null,
+    });
+    assert.ok(problems.some((p) => p.startsWith('NOTIFY MISS')), problems.join(String.fromCharCode(10)));
+  });
+
+  it('HUNG is reported on a non-run day too', () => {
+    const problems = evaluateWatchdog({
+      now: new Date(2026, 7, 29, 10, 0, 0), // Saturday
+      health: { status: 'started', date: '2026-08-29', at: new Date(2026, 7, 29, 8, 30, 0).toISOString() },
+      notify: null,
+    });
+    assert.ok(problems.some((p) => p.startsWith('HUNG')), problems.join(String.fromCharCode(10)));
+  });
+
   it('NO-SHOW when marker missing on run day past deadline', () => {
     const problems = evaluateWatchdog({
       now: fridayTen(),
