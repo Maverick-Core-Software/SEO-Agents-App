@@ -625,34 +625,78 @@ describe('prior-week winners from stored revisions', () => {
 
 describe('kill/timeout (T6)', () => {
   // A child that publishes its identity and then hangs inside generate forever.
+  // The timer keeps the event loop alive: without it a never-settling top-level
+  // await leaves nothing to run and node exits 13 ("unsettled top-level await")
+  // on its own, which is a race with the parent's polling, not a hang.
   const HANGING_CHILD = `
+    const keepAlive = setInterval(() => {}, 60_000);
     const { runWeekly } = await import(process.env.KILL_RUN_URL);
     await runWeekly(
       { mode: 'offline', now: process.env.KILL_NOW, storeDir: process.env.KILL_STORE, outDir: process.env.KILL_OUT },
       { env: {}, llm: { model: 'hang', endpoint: 'hang', chatJSON: () => new Promise(() => {}) } },
     );
   `;
+  const CHILD_STOP_MS = 5_000;
 
-  async function waitFor(check, label, ms = 30_000) {
+  const hasExited = (child) => child.exitCode !== null || child.signalCode !== null;
+  function tailOf(file, bytes = 2_000) {
+    try {
+      const text = fs.readFileSync(file, 'utf8');
+      return text.length > bytes ? `...${text.slice(-bytes)}` : text;
+    } catch { return '(no output captured)'; }
+  }
+  function childReport(child, logs) {
+    const state = hasExited(child) ? `exited code=${child.exitCode} signal=${child.signalCode}` : 'still running';
+    return `child ${state}\n--- stdout ---\n${tailOf(logs.stdout)}\n--- stderr ---\n${tailOf(logs.stderr)}`;
+  }
+
+  /** Polls `check`; fails at once if the child exits first, and after `ms` otherwise. */
+  async function waitFor(check, label, child, logs, ms = 30_000) {
     const deadline = Date.now() + ms;
     while (Date.now() < deadline) {
       if (check()) return;
+      if (hasExited(child)) throw new Error(`the child exited before ${label}\n${childReport(child, logs)}`);
       await new Promise((r) => setTimeout(r, 50));
     }
-    throw new Error(`timed out waiting for ${label}`);
+    throw new Error(`timed out waiting for ${label}\n${childReport(child, logs)}`);
+  }
+
+  /** Resolves true when `promise` settles within `ms`; the timer never outlives the race. */
+  function settlesWithin(promise, ms) {
+    let timer;
+    const timeout = new Promise((resolve) => { timer = setTimeout(() => resolve(false), ms); });
+    return Promise.race([promise.then(() => true), timeout]).finally(() => clearTimeout(timer));
+  }
+
+  /** TERM, bounded wait, KILL, bounded wait. Never awaits an exit that already happened. */
+  async function stopChild(child) {
+    if (hasExited(child)) return;
+    const exited = new Promise((resolve) => child.once('exit', resolve));
+    child.kill('SIGTERM');
+    if (await settlesWithin(exited, CHILD_STOP_MS)) return;
+    child.kill('SIGKILL');
+    await settlesWithin(exited, CHILD_STOP_MS);
   }
 
   it('a killed run is finalized failed and its lease released by the next run, without touching another attempt', async () => {
     const storeDir = tmp('kill-store');
     const outDir = path.join(tmp('kill-out'), 'shadow');
     const identityFile = path.join(outDir, CURRENT_ATTEMPT_FILE);
+    // The child's output goes to files, so a child that dies early or hangs can be
+    // reported with its own stdout/stderr tails instead of a bare timeout.
+    const logDir = tmp('kill-logs');
+    const logs = { stdout: path.join(logDir, 'child.stdout.log'), stderr: path.join(logDir, 'child.stderr.log') };
+    const outFd = fs.openSync(logs.stdout, 'w');
+    const errFd = fs.openSync(logs.stderr, 'w');
     const child = spawn(process.execPath, ['--input-type=module', '-e', HANGING_CHILD], {
       cwd: PROJECT_ROOT,
-      stdio: 'ignore',
+      stdio: ['ignore', outFd, errFd],
       env: hermeticChildEnv({ KILL_RUN_URL: pathToFileURL(RUN).href, KILL_NOW: NOW, KILL_STORE: storeDir, KILL_OUT: outDir }),
     });
+    fs.closeSync(outFd);
+    fs.closeSync(errFd);
     try {
-      await waitFor(() => fs.existsSync(identityFile), 'the published attempt identity');
+      await waitFor(() => fs.existsSync(identityFile), 'the published attempt identity', child, logs);
       // Published early: the identity is on disk while the run is still hanging,
       // before anything is staged or exported.
       const identity = readAttemptIdentity(identityFile);
@@ -666,10 +710,12 @@ describe('kill/timeout (T6)', () => {
       await waitFor(() => {
         const stored = fs.existsSync(attemptPath) ? readJson(attemptPath) : null;
         return Boolean(stored && stored.stages && stored.stages.generate && stored.stages.generate.status === 'running');
-      }, 'the hanging generate stage');
+      }, 'the hanging generate stage', child, logs);
+    } catch (error) {
+      error.message = `${error.message}\n${childReport(child, logs)}`;
+      throw error;
     } finally {
-      child.kill('SIGTERM');
-      await new Promise((resolve) => child.on('exit', resolve));
+      await stopChild(child);
     }
     const killed = readAttemptIdentity(identityFile);
     assert.equal(killed.status, 'running', 'a kill cannot write a final status');

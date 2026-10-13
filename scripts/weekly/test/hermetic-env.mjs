@@ -5,9 +5,14 @@
 // credential keys (imports of supabase-sync.mjs / facebook-poster.mjs read .env
 // at load time). Not a *.test.mjs file, so the test glob does not run it.
 
-/** The only process variables a spawned weekly child inherits. */
+/**
+ * The only process variables a spawned weekly child inherits. TMPDIR, TZ, LANG
+ * and LC_ALL are the POSIX counterparts (os.tmpdir() reads TMPDIR on Linux; TZ
+ * keeps child local-time behaviour equal to the parent's, e.g. America/Chicago on the LXC).
+ */
 export const CHILD_ENV_ALLOWLIST = [
-  'PATH', 'SYSTEMROOT', 'TEMP', 'TMP', 'HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'NODE_OPTIONS',
+  'PATH', 'SYSTEMROOT', 'TEMP', 'TMP', 'TMPDIR', 'HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'NODE_OPTIONS',
+  'TZ', 'LANG', 'LC_ALL',
 ];
 
 /** Credential keys a live run would pick up; removed from the test process. */
