@@ -1,0 +1,13 @@
+[Unit]
+Description=Grizzly SEO weekly run, Fridays 08:30 America/Chicago
+
+[Timer]
+OnCalendar=Fri *-*-* 08:30:00
+AccuracySec=1s
+# A missed Friday must not fire later (a Monday publish would duplicate the week's posts).
+Persistent=false
+Unit=seo-weekly-run.service
+
+# Do NOT enable this timer before cutover phase F (see docs/cutover/RUNBOOK-AIWA.md, step 6).
+[Install]
+WantedBy=timers.target

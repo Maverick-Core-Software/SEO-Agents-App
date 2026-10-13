@@ -1,4 +1,5 @@
 // PM2 process definition for the Facebook comment agent.
+// Linux/AIWA equivalent (cutover B4): deploy/aiwa/ecosystem.linux.config.cjs
 // Secrets come from .env (loaded by the script itself) — never hardcode here.
 module.exports = {
   apps: [

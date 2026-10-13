@@ -1,0 +1,18 @@
+[Unit]
+Description=Grizzly SEO monitor (14-hour Friday watch)
+Documentation=file:///opt/seo/deploy/aiwa/README.md
+Wants=network-online.target
+After=network-online.target seo-photo-sync.service
+
+[Service]
+Type=oneshot
+User=seo
+WorkingDirectory=/opt/seo
+EnvironmentFile=/opt/seo/.env
+Environment=TZ=America/Chicago
+Environment=NODE_ENV=production
+Environment=PATH=/opt/seo/.venv/bin:/usr/local/bin:/usr/bin:/bin
+NoNewPrivileges=yes
+PrivateTmp=yes
+ExecStart=/usr/bin/node scripts/seo-monitor.mjs --run-hours 14
+TimeoutStartSec=16h

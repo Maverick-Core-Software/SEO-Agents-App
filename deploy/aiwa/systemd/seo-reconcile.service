@@ -1,0 +1,19 @@
+[Unit]
+Description=Grizzly SEO reconcile (FB + Search Console metrics into Supabase)
+Documentation=file:///opt/seo/deploy/aiwa/README.md
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=seo
+WorkingDirectory=/opt/seo
+EnvironmentFile=/opt/seo/.env
+Environment=TZ=America/Chicago
+Environment=NODE_ENV=production
+Environment=PATH=/opt/seo/.venv/bin:/usr/local/bin:/usr/bin:/bin
+NoNewPrivileges=yes
+PrivateTmp=yes
+# Writes outputs/reconcile-health.json on success and failure (cutover V3).
+ExecStart=/usr/bin/node scripts/weekly/reconcile.mjs
+TimeoutStartSec=30min

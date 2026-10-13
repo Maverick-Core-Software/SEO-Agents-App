@@ -1,0 +1,12 @@
+[Unit]
+Description=Grizzly SEO monitor, Fridays 08:30 America/Chicago
+
+[Timer]
+OnCalendar=Fri *-*-* 08:30:00
+AccuracySec=1s
+# A missed Friday must not fire later.
+Persistent=false
+Unit=seo-monitor.service
+
+[Install]
+WantedBy=timers.target
