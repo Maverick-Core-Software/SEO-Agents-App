@@ -162,6 +162,10 @@ export function resolveGbpImagePath(imagePath, {
   localCache,
   curatedPreferred,
   usedPaths,
+  // false skips the curated-pool substitute and returns the original path when no
+  // exact or same-date file exists, so a later caller with more context (the
+  // poster, which knows the topic and caption) makes the service-matched pick.
+  fallback = true,
 } = {}) {
   const candidates = [];
   if (imagePath) {
@@ -182,9 +186,10 @@ export function resolveGbpImagePath(imagePath, {
       if (hit) return path.join(dir, hit);
     }
   }
-  const fallback = pickCuratedFallbackPhoto({
+  if (!fallback) return imagePath || '';
+  const picked = pickCuratedFallbackPhoto({
     date, topic, caption, service, curatedDir, localCache, curatedPreferred, usedPaths,
   });
-  if (fallback) return fallback;
+  if (picked) return picked;
   return imagePath || '';
 }

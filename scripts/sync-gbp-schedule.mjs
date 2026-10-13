@@ -133,6 +133,9 @@ function photoPathForPost(post, { curatedPreferred, localCache }) {
     date: post.date,
     curatedPreferred,
     localCache,
+    // Keep the planned PHOTO_FILE in the workbook; the poster substitutes a
+    // service-matched still at post time if the file is still missing.
+    fallback: false,
   });
   if (resolved && fs.existsSync(resolved)) return resolved;
   const base = path.basename(post.photo_file);

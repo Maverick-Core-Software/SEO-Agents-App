@@ -76,6 +76,22 @@ import {
   });
   assert.equal(path.basename(lighting), '2018-08-17-lighting-1.jpg');
 
+  // fallback:false keeps the planned name instead of substituting a curated still
+  // (the workbook sync defers that choice to the poster), but exact and same-date
+  // matches still resolve.
+  const kept = resolveGbpImagePath('missing-fluorescent-t12.jpg', {
+    date: '2026-09-10', topic: 'LED retrofit lighting', curatedPreferred: curated, localCache: cache, fallback: false,
+  });
+  assert.equal(kept, 'missing-fluorescent-t12.jpg');
+  assert.equal(
+    resolveGbpImagePath('nope.jpg', { date: '2026-08-21', localCache: cache, fallback: false }),
+    path.join(cache, '2026-08-21-panel.jpg'),
+  );
+  assert.equal(
+    resolveGbpImagePath('IMG_2402.JPG', { localCache: cache, fallback: false }),
+    path.join(cache, 'IMG_2402.JPG'),
+  );
+
   // Require-photo still blocks empty path when no images exist.
   const empty = fs.mkdtempSync(path.join(os.tmpdir(), 'gbp-empty-'));
   const none = resolveGbpImagePath('', { date: '2026-09-09', localCache: empty, curatedPreferred: empty });

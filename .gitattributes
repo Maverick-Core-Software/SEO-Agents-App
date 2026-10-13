@@ -1,0 +1,7 @@
+# Test fixtures and prompt templates are read byte-for-byte (parsing and content
+# hashes), and their tests convert \n to \r\n themselves. Keep them LF on every
+# checkout, including Windows with core.autocrlf=true.
+scripts/weekly/test/fixtures/** text eol=lf
+scripts/weekly/lib/prompts/** text eol=lf
+# These legacy schedule fixtures are committed with CRLF on purpose; keep the exact bytes.
+scripts/weekly/test/fixtures/e2e/legacy/** -text

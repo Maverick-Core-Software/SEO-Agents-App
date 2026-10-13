@@ -55,6 +55,15 @@ function centralDate(now) {
   }).format(now);
 }
 
+// Days since the schedule's week start. Honors the same FB_BOOST_TODAY test
+// override as the eligibility date, so staleness and "today" share one clock.
+function scheduleAgeDays(week) {
+  const now = process.env.FB_BOOST_TODAY
+    ? new Date(`${process.env.FB_BOOST_TODAY}T12:00:00`).getTime()
+    : Date.now();
+  return (now - new Date(`${week}T00:00:00`).getTime()) / 86_400_000;
+}
+
 function readLedger() {
   if (!fs.existsSync(LEDGER_PATH)) return { weeks: {} };
   return JSON.parse(fs.readFileSync(LEDGER_PATH, 'utf8'));
@@ -181,7 +190,7 @@ if (cmd === 'status') {
     out.entries = weekEntries(ledger, week);
     // A schedule older than its own 7-day window has nothing left to boost;
     // the scheduled task must treat stale=true as "do nothing".
-    const ageDays = (Date.now() - new Date(`${week}T00:00:00`).getTime()) / 86_400_000;
+    const ageDays = scheduleAgeDays(week);
     out.stale = ageDays > 8;
   } else {
     out.error = 'no schedule found';
@@ -273,7 +282,7 @@ if (cmd === 'status') {
     console.log(JSON.stringify({ eligible: false, reason: 'no schedule found' }));
     process.exit(0);
   }
-  const ageDays = (Date.now() - new Date(`${week}T00:00:00`).getTime()) / 86_400_000;
+  const ageDays = scheduleAgeDays(week);
   if (ageDays > 8) {
     console.log(JSON.stringify({ eligible: false, reason: 'schedule stale', week }));
     process.exit(0);
