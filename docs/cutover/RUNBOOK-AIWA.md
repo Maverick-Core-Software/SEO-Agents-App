@@ -22,7 +22,7 @@ or SCP from an agent), per `aiwa-deployment.md`.
 
 1. Copy the repo tree (or a tag archive) to `/opt/seo`. Install.sh expects it there.
 2. As root: `bash /opt/seo/deploy/aiwa/install.sh`
-   - Installs apt packages (ffmpeg, fonts-dejavu-core, rclone, git), NodeSource Node 22, uv, pm2.
+   - Installs apt packages (ffmpeg, fonts-dejavu-core, rclone, git), NodeSource Node 24, uv, pm2.
    - Creates user `seo`, `/opt/seo` (+ logs, state, outputs), `/opt/seo/secrets` (700), `/srv/seo/{photos,photos-inbox,gbp,gbp-archive}` (the rclone inbox is outside the photo cache), then `chown -R seo:seo /opt/seo /srv/seo` (the tree was copied as root).
    - Sets the host timezone to America/Chicago. Copies the units to `/etc/systemd/system` and runs `daemon-reload`.
    - Runs `npm ci` (with `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1`, no browsers needed in API mode) and `uv sync --locked` as `seo`.

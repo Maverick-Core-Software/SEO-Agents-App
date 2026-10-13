@@ -24,7 +24,7 @@ APP_ROOT=/opt/seo
 SRV_ROOT=/srv/seo
 SEO_USER=seo
 TZ_NAME=America/Chicago
-NODE_MAJOR="${SEO_NODE_MAJOR:-22}"
+NODE_MAJOR="${SEO_NODE_MAJOR:-24}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 log() { printf '[install] %s\n' "$*"; }
