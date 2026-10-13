@@ -35,4 +35,4 @@ Nothing else in it changed.
 8. **Watchdog during the shadow week.** `seo-watchdog` runs daily on AIWA against copied `outputs/`, which can lag the PC. Check its alerts against the PC's live state during E.
 9. **Windows-only strings** (`CMB-Workbench` in alert text, `CARTERSPC` in old docs) are cosmetic. Left to B2/B3.
 10. **Legacy `PORT` in the PC ecosystem file.** `ecosystem.config.cjs` sets `PORT: '8795'` for fb-comment-agent, which the script never reads. The Linux file uses `FB_COMMENT_AGENT_PORT`.
-11. **`install.sh` pulls two installers over the network.** NodeSource's apt key and `astral.sh/uv/install.sh`. Review before the first run on AIWA.
+11. **`install.sh` pulls two installers over the network.** NodeSource's apt key and the pinned `astral.sh/uv/<SEO_UV_VERSION>/install.sh` (0.12.7). Review before the first run on AIWA.

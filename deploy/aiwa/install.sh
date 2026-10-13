@@ -38,7 +38,12 @@ if node_ok; then
 else
   log "node: installing NodeSource ${NODE_MAJOR}.x"
   install -d -m 0755 /etc/apt/keyrings
-  curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg
+  # Idempotent (F9): a re-run must not fail on an existing keyring (gpg -o refuses to overwrite).
+  if [ -s /etc/apt/keyrings/nodesource.gpg ]; then
+    log "node: apt keyring already present"
+  else
+    curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor --yes -o /etc/apt/keyrings/nodesource.gpg
+  fi
   printf 'deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_%s.x nodistro main\n' "$NODE_MAJOR" \
     > /etc/apt/sources.list.d/nodesource.list
   apt-get update -qq
@@ -46,12 +51,14 @@ else
   node_ok || { echo "node ${NODE_MAJOR} not active after install" >&2; exit 1; }
 fi
 
-# 3. uv (Python 3.12 is fetched by uv: Debian 12 ships 3.11)
+# 3. uv (Python 3.12 is fetched by uv: Debian 12 ships 3.11). Pinned to the version the
+# lock file was produced with on the PC (F9); override with SEO_UV_VERSION.
+UV_VERSION="${SEO_UV_VERSION:-0.12.7}"
 if command -v uv >/dev/null 2>&1; then
   log "uv: already $(uv --version)"
 else
-  log "uv: installing to /usr/local/bin"
-  curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
+  log "uv: installing ${UV_VERSION} to /usr/local/bin"
+  curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | env UV_INSTALL_DIR=/usr/local/bin INSTALLER_NO_MODIFY_PATH=1 sh
 fi
 
 # 4. pm2 (global, for the long-running apps)
@@ -73,6 +80,9 @@ install -d -o "$SEO_USER" -g "$SEO_USER" -m 0755 \
 # The rclone inbox lives OUTSIDE the photo cache (/srv/seo/photos): an inbox inside it
 # made every synced photo discoverable twice (F8, the 9/25 duplicate-photo incident).
 install -d -o "$SEO_USER" -g "$SEO_USER" -m 0700 "$APP_ROOT/secrets"
+# The repo tree is copied to /opt/seo as root before this runs (RUNBOOK 1); npm ci / uv sync
+# run as seo and need to own it (F9). Secrets keep 0700 (install -d above, chown does not change modes).
+chown -R "$SEO_USER:$SEO_USER" "$APP_ROOT" "$SRV_ROOT"
 
 # 6. timezone: systemd timers use the host clock, so the host must be on Chicago time.
 current_tz="$(timedatectl show -p Timezone --value 2>/dev/null || true)"
@@ -87,13 +97,15 @@ else
 fi
 
 # 7. app dependencies, only when the repo is present. Playwright browsers are not needed (GBP is API mode).
+# runuser inherits the caller's cwd (/root, 0700): npm and uv fail with EACCES on getcwd as seo,
+# so every runuser call is made from $APP_ROOT (F9).
 if [ -f "$APP_ROOT/package-lock.json" ]; then
   log "npm: ci as $SEO_USER (PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1)"
-  runuser -u "$SEO_USER" -- env PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --prefix "$APP_ROOT"
+  (cd "$APP_ROOT" && runuser -u "$SEO_USER" -- env PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --prefix "$APP_ROOT")
 fi
 if [ -f "$APP_ROOT/uv.lock" ]; then
   log "uv: sync --locked as $SEO_USER"
-  runuser -u "$SEO_USER" -- env UV_PROJECT_ENVIRONMENT="$APP_ROOT/.venv" uv sync --locked --project "$APP_ROOT"
+  (cd "$APP_ROOT" && runuser -u "$SEO_USER" -- env UV_PROJECT_ENVIRONMENT="$APP_ROOT/.venv" uv sync --locked --project "$APP_ROOT")
 fi
 
 # 8. systemd units: copy and reload. Nothing is enabled.
