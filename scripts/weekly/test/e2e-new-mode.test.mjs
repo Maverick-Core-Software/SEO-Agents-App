@@ -21,7 +21,7 @@ import {
 } from '../run.mjs';
 import { createFileStore } from '../lib/store.mjs';
 import { loadFacts } from '../lib/facts.mjs';
-import { DEFAULT_EXPORT_DIRS, EXPORT_FILES, EXPORT_MODES } from '../lib/stage.mjs';
+import { DEFAULT_EXPORT_DIRS, EXPORT_FILES, EXPORT_MODES, failedExportDir } from '../lib/stage.mjs';
 import { formatAttemptMessage } from '../lib/notify.mjs';
 import { weekSpecForWeekOf } from '../lib/week-spec.mjs';
 import { OUTPUTS_DIR, PROJECT_ROOT, SHADOW_DIR } from '../lib/paths.mjs';
@@ -295,7 +295,16 @@ describe('--mode new: a projection failure is a failed attempt, never a silent s
     assert.equal(supabase.tables.weekly_posts.length, 0, 'nothing reached weekly_posts');
     assert.equal(err.attempt.stages.stage.status, 'failed');
     assert.equal(fs.existsSync(path.join(outDir, MIRROR_FILES.projection)), false, 'no projection.json for a failed projection');
-    assert.equal(fs.existsSync(path.join(outDir, EXPORT_FILES.gbp)), true, 'the schedules were exported before the store write (inspectable)');
+    // V5: nothing of this attempt reaches the export dir; the artifacts are kept under shadow/failed-<attempt>/.
+    const failedDir = failedExportDir(outDir, err.attempt.id);
+    for (const name of [EXPORT_FILES.gbp, EXPORT_FILES.facebook, EXPORT_FILES.website, EXPORT_FILES.plan, EXPORT_FILES.selection, EXPORT_FILES.summary]) {
+      assert.equal(fs.existsSync(path.join(outDir, name)), false, `${name} must not be in the export dir`);
+      assert.ok(fs.existsSync(path.join(failedDir, name)), `${name} kept under ${failedDir}`);
+    }
+    assert.equal(fs.readdirSync(outDir).some((n) => n.endsWith('_posting_schedule.md')), false, 'no *_posting_schedule.md in the out dir');
+    assert.ok(fs.existsSync(path.join(outDir, 'attempt.json')), 'attempt.json mirror stays in --out for the wrapper health derivation');
+    assert.ok(fs.existsSync(path.join(failedDir, MIRROR_FILES.meter)), 'meter mirrored into the failed dir');
+    assert.equal(err.result.paths.plan, path.join(failedDir, EXPORT_FILES.plan));
   });
 });
 

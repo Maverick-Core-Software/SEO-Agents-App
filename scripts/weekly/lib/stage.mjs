@@ -82,6 +82,37 @@ export function exportPaths(outDir = SHADOW_DIR) {
   return out;
 }
 
+/**
+ * V5: where a `new`-mode export lands when the projection (or the store write
+ * before it) fails: `<outDir>/shadow/failed-<attemptId>` — outputs/shadow/failed-…
+ * for the default export dir. Nothing of that attempt is left in `outDir`, so
+ * gbp-photo-pick / sync-gbp-schedule / facebook-poster cannot act on a week the
+ * publishers never received.
+ */
+export function failedExportDir(outDir, attemptId) {
+  return path.join(path.resolve(outDir || OUTPUTS_DIR), 'shadow', `failed-${attemptId}`);
+}
+
+/** The holding dir the exports are written to before the projection succeeds. */
+function stagingExportDir(outDir, attemptId) {
+  return path.join(path.resolve(outDir), `.staging-${attemptId}`);
+}
+
+async function moveDir(from, to) {
+  await fs.mkdir(path.dirname(to), { recursive: true });
+  await fs.rm(to, { recursive: true, force: true });
+  await fs.rename(from, to);
+}
+
+/** Move the seven export files from `stagingDir` into `outDir` (replacing) and drop the staging dir. */
+async function promoteExports(stagingDir, outDir) {
+  await fs.mkdir(outDir, { recursive: true });
+  for (const name of Object.values(EXPORT_FILES)) {
+    await fs.rename(path.join(stagingDir, name), path.join(outDir, name));
+  }
+  await fs.rm(stagingDir, { recursive: true, force: true });
+}
+
 function summarizeIssues(issues) {
   return issues.slice(0, 5).map((i) => `${i.path || '(root)'}: ${i.message}`).join('; ');
 }
@@ -319,22 +350,48 @@ export async function stagePlan({
   }), 'revision');
   const items = buildItems(validPlan, revision.id).map((it, i) => assertSchema(PlanItemSchema, it, `item[${i}]`));
 
+  // V5: in `new` mode with a projector the legacy files are held in a staging
+  // dir and promoted into exportDir only after the projection succeeds. On a
+  // failure anywhere after they were written (store write, validation refusal,
+  // projection) they move to failedExportDir and exportDir keeps nothing of
+  // this attempt. Other modes export straight into exportDir as before.
+  const stagingDir = exportDir && effectiveMode === 'new' && typeof project === 'function'
+    ? stagingExportDir(exportDir, attempt.id)
+    : null;
   if (exportDir) {
-    await writeExports(exportDir, { rendered, plan: validPlan, selection, attempt, revision, validation: verdict });
+    await writeExports(stagingDir || exportDir, { rendered, plan: validPlan, selection, attempt, revision, validation: verdict });
   }
 
-  if (typeof store.stageRevision === 'function') {
-    await store.stageRevision({ revision, items });
-  } else {
-    await store.putRevision(revision);
-    await store.putItems(items);
+  try {
+    if (typeof store.stageRevision === 'function') {
+      await store.stageRevision({ revision, items });
+    } else {
+      await store.putRevision(revision);
+      await store.putItems(items);
+    }
+
+    if (effectiveMode === 'new' && typeof project === 'function') {
+      if (!verdict.ok) {
+        throw new ValidationFailed('stagePlan: refusing to project a plan that failed validation', verdict.errors, verdict.warnings);
+      }
+      await project({ store, attempt, plan: validPlan, selection, revision, items, now: at, mode: effectiveMode });
+    }
+  } catch (e) {
+    if (stagingDir) {
+      const failedDir = failedExportDir(exportDir, attempt.id);
+      try {
+        await moveDir(stagingDir, failedDir);
+        e.failedExportDir = failedDir;
+      } catch (moveError) {
+        e.failedExportDirError = moveError.message;
+      }
+    }
+    throw e;
   }
+
+  if (stagingDir) await promoteExports(stagingDir, exportDir);
 
   if (effectiveMode === 'new' && typeof project === 'function') {
-    if (!verdict.ok) {
-      throw new ValidationFailed('stagePlan: refusing to project a plan that failed validation', verdict.errors, verdict.warnings);
-    }
-    await project({ store, attempt, plan: validPlan, selection, revision, items, now: at, mode: effectiveMode });
     // The projector persists plan_revisions.projected_at itself (project.mjs
     // updates the row); the RPC behind stageRevision is insert-only, so the
     // revision is never written twice here. Return a copy rather than mutating

@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   stagePlan, buildItems, buildRevision, idempotencyKey, nextRevisionNumber, exportPaths, writeExports, defaultSummary,
-  EXPORT_FILES, EXPORT_MODES, ITEM_TYPES, STAGE_MODES,
+  failedExportDir, EXPORT_FILES, EXPORT_MODES, ITEM_TYPES, STAGE_MODES,
 } from '../lib/stage.mjs';
 import { createFileStore } from '../lib/store.mjs';
 import { GenerationInvalid, ValidationFailed } from '../lib/errors.mjs';
@@ -311,23 +311,48 @@ describe('stagePlan in mode new', () => {
     let called = 0;
     const project = async () => { called++; };
     const failed = { ok: false, errors: ['date mismatch'], warnings: [] };
+    let thrown;
     await assert.rejects(
       stagePlan({ store, attempt: makeAttempt({ mode: 'new' }), plan: makePlan(), selection: SELECTION, validation: failed, rendered: RENDERED, mode: 'new', now: NOW, outDir, project }),
-      (e) => e instanceof ValidationFailed && e.errors[0] === 'date mismatch',
+      (e) => { thrown = e; return e instanceof ValidationFailed && e.errors[0] === 'date mismatch'; },
     );
     assert.equal(called, 0);
     assert.equal((await store.listRevisions('2026-09-07')).length, 1);
-    assert.ok(fs.existsSync(exportPaths(outDir).plan), 'a failed plan is still exported for inspection');
+    // V5: a refused plan is still exported for inspection, but under
+    // <out>/shadow/failed-<attempt>/, never in the export dir the publishers read.
+    assert.equal(thrown.failedExportDir, failedExportDir(outDir, makeAttempt().id));
+    assert.ok(fs.existsSync(exportPaths(thrown.failedExportDir).plan), 'a failed plan is still exported for inspection');
+    assert.equal(fs.existsSync(exportPaths(outDir).gbp), false, 'no schedule in the export dir');
+    assert.equal(fs.existsSync(exportPaths(outDir).plan), false);
+    assert.equal(fs.existsSync(path.join(outDir, `.staging-${makeAttempt().id}`)), false, 'staging dir is gone');
   });
 
-  it('propagates a project failure after the revision is staged', async () => {
+  it('propagates a project failure after the revision is staged; exports land in the failed dir (V5)', async () => {
     const { store, outDir } = fresh();
     const project = async () => { throw new Error('weekly_posts insert: boom'); };
+    let thrown;
     await assert.rejects(
       stagePlan({ store, attempt: makeAttempt({ mode: 'new' }), plan: makePlan(), selection: SELECTION, validation: VALID, rendered: RENDERED, mode: 'new', now: NOW, outDir, project }),
-      /weekly_posts insert: boom/,
+      (e) => { thrown = e; return /weekly_posts insert: boom/.test(e.message); },
     );
     assert.equal((await store.listRevisions('2026-09-07')).length, 1);
+    for (const name of Object.values(EXPORT_FILES)) {
+      assert.equal(fs.existsSync(path.join(outDir, name)), false, `${name} must not reach the export dir`);
+      assert.ok(fs.existsSync(path.join(thrown.failedExportDir, name)), `${name} kept under the failed dir`);
+    }
+  });
+
+  it('promotes the exports into outDir only after the projection succeeded (V5)', async () => {
+    const { store, outDir } = fresh();
+    const seenDuringProject = {};
+    const project = async () => {
+      seenDuringProject.inOut = fs.existsSync(exportPaths(outDir).gbp);
+      seenDuringProject.inStaging = fs.existsSync(path.join(outDir, `.staging-${makeAttempt().id}`, EXPORT_FILES.gbp));
+    };
+    await stagePlan({ store, attempt: makeAttempt({ mode: 'new' }), plan: makePlan(), selection: SELECTION, validation: VALID, rendered: RENDERED, mode: 'new', now: NOW, outDir, project });
+    assert.deepEqual(seenDuringProject, { inOut: false, inStaging: true }, 'during the projection the files are only in staging');
+    for (const name of Object.values(EXPORT_FILES)) assert.ok(fs.existsSync(path.join(outDir, name)), name);
+    assert.equal(fs.existsSync(path.join(outDir, `.staging-${makeAttempt().id}`)), false);
   });
 });
 

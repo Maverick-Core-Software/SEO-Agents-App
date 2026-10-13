@@ -62,7 +62,7 @@ import { rankCandidates } from './lib/select.mjs';
 import { buildGenerationInput, generatePlan, promptVersion } from './lib/generate.mjs';
 import { downgradeCarousels, normalizeBoostPlan, validatePlan } from './lib/validate.mjs';
 import { renderFacebookSchedule, renderGbpSchedule, renderPlanSummary, renderWebsiteQueue } from './lib/render.mjs';
-import { exportPaths, stagePlan } from './lib/stage.mjs';
+import { exportPaths, failedExportDir, stagePlan } from './lib/stage.mjs';
 import { LEGACY_FILES, compareWithLegacy, redactSecrets } from './lib/compare.mjs';
 import { formatAttemptMessage, notifyAttempt } from './lib/notify.mjs';
 import { projectPlan } from './lib/project.mjs';
@@ -712,13 +712,14 @@ export async function runWeekly(options = {}, deps = {}) {
   };
   const retrievedAt = now.toISOString();
   const outPaths = exportPaths(opts.outDir);
-  const mirror = {
-    revision: path.join(opts.outDir, MIRROR_FILES.revision),
-    observations: path.join(opts.outDir, MIRROR_FILES.observations),
-    meter: path.join(opts.outDir, MIRROR_FILES.meter),
-    compare: path.join(opts.outDir, MIRROR_FILES.compare),
-    projection: path.join(opts.outDir, MIRROR_FILES.projection),
-  };
+  const mirrorPathsFor = (dir) => ({
+    revision: path.join(dir, MIRROR_FILES.revision),
+    observations: path.join(dir, MIRROR_FILES.observations),
+    meter: path.join(dir, MIRROR_FILES.meter),
+    compare: path.join(dir, MIRROR_FILES.compare),
+    projection: path.join(dir, MIRROR_FILES.projection),
+  });
+  const mirror = mirrorPathsFor(opts.outDir);
 
   // new mode: the projection stagePlan invokes once the revision is stored (and
   // only for a plan that passed validation). It is its own stage on the attempt
@@ -897,17 +898,29 @@ export async function runWeekly(options = {}, deps = {}) {
   }
 
   // Mirror the final records into --out (stage.mjs wrote the mid-run snapshot).
+  // V5: a new-mode attempt that failed before its projection succeeded mirrors
+  // into outputs/shadow/failed-<attempt>/ instead, so outputs/ holds nothing of
+  // a week the publishers never received. attempt.json is still written to
+  // --out as well: the wrapper derives the attempt health from that mirror.
+  const failedDir = opts.mode === 'new' && failure && !result.projection ? failedExportDir(opts.outDir, attempt.id) : null;
+  const finalPaths = failedDir ? exportPaths(failedDir) : outPaths;
+  const finalMirror = failedDir ? mirrorPathsFor(failedDir) : mirror;
+  if (failedDir) {
+    result.paths = { ...finalPaths };
+    log(`failed before projection: attempt artifacts kept under ${failedDir}`);
+  }
   try {
-    if (result.revision || fs.existsSync(opts.outDir)) {
+    if (result.revision || fs.existsSync(opts.outDir) || failedDir) {
       await writeJson(outPaths.attempt, attempt);
       result.paths.attempt = outPaths.attempt;
-      if (result.revision) { await writeJson(mirror.revision, result.revision); result.paths.revision = mirror.revision; }
+      if (failedDir) await writeJson(finalPaths.attempt, attempt);
+      if (result.revision) { await writeJson(finalMirror.revision, result.revision); result.paths.revision = finalMirror.revision; }
       if (result.observations.length) {
-        await writeText(mirror.observations, result.observations.map((o) => JSON.stringify(o)).join('\n') + '\n');
-        result.paths.observations = mirror.observations;
+        await writeText(finalMirror.observations, result.observations.map((o) => JSON.stringify(o)).join('\n') + '\n');
+        result.paths.observations = finalMirror.observations;
       }
-      await writeJson(mirror.meter, { spent_usd: result.spentUsd, ceiling_usd: budgetUsd, entries: meter.entries() });
-      result.paths.meter = mirror.meter;
+      await writeJson(finalMirror.meter, { spent_usd: result.spentUsd, ceiling_usd: budgetUsd, entries: meter.entries() });
+      result.paths.meter = finalMirror.meter;
       if (result.compare) {
         // The report was built during the compare stage, before the attempt was
         // finished, so it still said "running". Rebuild it from the final record
@@ -923,8 +936,8 @@ export async function runWeekly(options = {}, deps = {}) {
         }
       }
       if (result.plan) {
-        await writeText(outPaths.summary, renderPlanSummary(result.plan, result.selection, attempt));
-        result.paths.summary = outPaths.summary;
+        await writeText(finalPaths.summary, renderPlanSummary(result.plan, result.selection, attempt));
+        result.paths.summary = finalPaths.summary;
       }
     }
   } catch (e) {
