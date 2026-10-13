@@ -23,7 +23,7 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createClient } from '@supabase/supabase-js';
 import { makeRunPhase } from './lib/run-phase.mjs';
-import { centralDateHour, dailyTickDue, runGbpForApprovedRun, runDailyGbp, markGbpPostedAndArchive, applyDriverResult, parseDriverJson } from './lib/gbp-runner.mjs';
+import { centralDateHour, dailyTickDue, runGbpForApprovedRun, runDailyGbp, markGbpPostedAndArchive, applyDriverResult, parseDriverJson, createGbpApiGateLatch } from './lib/gbp-runner.mjs';
 import { sendHermesAlert } from './lib/hermes-alert.mjs';
 import { resolveSeoAgentsExe } from './lib/platform-defaults.mjs';
 import { resolveGbpMode } from './lib/gbp-mode.mjs';
@@ -407,6 +407,25 @@ async function alertSessionProbeFailure(reason) {
   );
 }
 
+// F4: a gated (exit 6) or auth-failed (401/403) GBP API is an operator problem that
+// used to be a log line only. One alert per episode, shared by the startup probe
+// and every poster result (createGbpApiGateLatch); the rows stay `scheduled`.
+async function alertApiGate(kind, detail = {}) {
+  const where = detail.post?.post_date ? `post ${detail.post.post_date}` : (detail.stage || 'startup probe');
+  if (kind === 'auth') {
+    await sendWorkerAlert(
+      'GBP API auth failed',
+      `The GBP API answered 401/403 (${where}). Nothing was posted; every due GBP row stays scheduled until the token is refreshed: node scripts/authorize-gbp.mjs, then scripts/gbp-access-probe.mjs. ${detail.message || ''}`.trim(),
+    );
+    return;
+  }
+  await sendWorkerAlert(
+    'GBP API gated',
+    `The GBP v4 localPosts API is gated for this project (404 route not served; ${where}). Nothing was posted; every due GBP row stays scheduled and no post goes out until scripts/gbp-access-probe.mjs passes. Keep GBP_POSTER=playwright or clear the gating. ${detail.message || ''}`.trim(),
+  );
+}
+const apiGate = createGbpApiGateLatch({ alert: alertApiGate, log: async (m) => console.log(`[gbp-worker] ${m}`) });
+
 async function alertStuckPoll(since) {
   const minutes = Math.round((Date.now() - since) / 60000);
   await sendWorkerAlert(
@@ -542,7 +561,7 @@ async function reconcileGrokVerdicts() {
       saveGrokRetried(retried);
       await log(row.run_id, 'gbp', 'warn', `Grok verified ${date} not_found — retrying post once`);
       const r = await runPhase(row.run_id, 'gbp', 'node', [GBP_POSTER_PATH, '--date', date], PROJECT_ROOT);
-      await applyDriverResult({ supabase, post: row, result: r, env: process.env, log });
+      await applyDriverResult({ supabase, post: row, result: r, env: process.env, log, gbpMode: GBP_MODE, apiGate });
       await log(row.run_id, 'gbp', r.ok ? 'info' : 'warn', `Grok-triggered retry for ${date} → exit ${r.exitCode}`);
       archiveGrokVerdict(filePath);
       continue;
@@ -601,7 +620,7 @@ async function poll() {
         await runGbpForApprovedRun({
           runId,
           gbpPosts,
-          deps: { supabase, runPhase, log, env: process.env, projectRoot: PROJECT_ROOT, paths, gbpMode: GBP_MODE },
+          deps: { supabase, runPhase, log, env: process.env, projectRoot: PROJECT_ROOT, paths, gbpMode: GBP_MODE, apiGate },
         });
       }
     }
@@ -614,7 +633,7 @@ async function poll() {
         supabase, runPhase, log,
         env: process.env,
         todayDate, gbpPosterPath: GBP_POSTER_PATH, projectRoot: PROJECT_ROOT,
-        gbpMode: GBP_MODE,
+        gbpMode: GBP_MODE, apiGate,
       });
       // Mark the day done only after a successful run — a throw here lets the next
       // poll retry today instead of silently skipping the day's posts.
@@ -655,16 +674,23 @@ if (invokedDirectly) {
   console.log(`[gbp-worker] GBP_POSTER=${GBP_MODE} → ${path.basename(GBP_POSTER_PATH)}${SESSION_PROBE_SUPPORTED ? '' : ' (api mode: session probe and export skipped)'}`);
   if (GBP_MODE === 'api') {
     // Startup v4 probe: a gated project (404 route not served, the state on
-    // 2026-10-13) is said once, loudly. Posting still runs; the poster exits 6
-    // api_gated and the runner keeps rows `scheduled`, so nothing flips to
-    // error or posted while the API is gated.
+    // 2026-10-13) is said once, loudly, AND alerted once per episode (F4, the
+    // apiGate latch shared with the poster results). Posting still runs; the
+    // poster exits 6 api_gated and the runner keeps rows `scheduled`, so
+    // nothing flips to error or posted while the API is gated.
     try {
       const { probeV4 } = await import('./gbp-api-poster.mjs');
       const probe = await probeV4();
-      if (probe.ok) console.log(`[gbp-worker] GBP v4 API reachable (${probe.locationName})`);
-      else if (probe.gated) console.error(`[gbp-worker] WARNING: GBP v4 API is GATED for this project (404 route not served). API posts will exit 6 api_gated and rows stay scheduled. Keep GBP_POSTER=playwright until scripts/gbp-access-probe.mjs passes.`);
-      else if (probe.auth) console.error(`[gbp-worker] WARNING: GBP v4 probe auth failed (${probe.status}); refresh the GBP token. API posts will fail until fixed.`);
-      else console.error(`[gbp-worker] WARNING: GBP v4 probe failed (${probe.status || 'no status'}): ${probe.error}`);
+      if (probe.ok) {
+        console.log(`[gbp-worker] GBP v4 API reachable (${probe.locationName})`);
+        await apiGate.report('ok');
+      } else if (probe.gated) {
+        console.error(`[gbp-worker] WARNING: GBP v4 API is GATED for this project (404 route not served). API posts will exit 6 api_gated and rows stay scheduled. Keep GBP_POSTER=playwright until scripts/gbp-access-probe.mjs passes.`);
+        await apiGate.report('gated', { stage: 'startup probe', message: probe.error });
+      } else if (probe.auth) {
+        console.error(`[gbp-worker] WARNING: GBP v4 probe auth failed (${probe.status}); refresh the GBP token. API posts will fail until fixed.`);
+        await apiGate.report('auth', { stage: 'startup probe', message: probe.error });
+      } else console.error(`[gbp-worker] WARNING: GBP v4 probe failed (${probe.status || 'no status'}): ${probe.error}`);
     } catch (e) {
       console.error(`[gbp-worker] WARNING: GBP v4 probe could not run: ${e.message}`);
     }

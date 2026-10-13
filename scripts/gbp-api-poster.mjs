@@ -45,7 +45,8 @@
  *       driver; or a Google-rejected duplicate)
  *   6 = api_gated (the localPosts gate (probeV4, pageSize=1) answered 404 HTML
  *       "route not served": nothing posted; the runner keeps the row
- *       `scheduled`, see EXIT_API_GATED. 200 = ok; 401/403 = exit 1 auth error)
+ *       `scheduled`, see EXIT_API_GATED. 200 = ok; 401/403 = exit 1 with
+ *       `result: 'auth_failed'`: the runner keeps the row `scheduled` and alerts)
  *   1 = error
  */
 
@@ -90,6 +91,8 @@ export const REFUSED_STATES = new Set(['REJECTED', 'TAKEN_DOWN']);
  * `scheduled` (never error/posted). Distinct from policy exit 5 on purpose.
  */
 export const EXIT_API_GATED = 6;
+/** 401/403 on the gate: exit 1 with `result: 'auth_failed'` so the runner keeps the row scheduled and alerts (F4). */
+export const EXIT_AUTH_FAILED = 1;
 export const API_GATED_MESSAGE = 'GBP v4 API (localPosts) returned 404 "route not served": the API is still gated for this project, nothing was posted. Keep GBP_POSTER=playwright until scripts/gbp-access-probe.mjs passes.';
 
 /** True only for the v4 "route not served" 404 (HTML), not a JSON 404 for a missing resource. */
@@ -619,7 +622,14 @@ export async function runPoster(args, rawDeps = {}) {
   // problem (throw → exit 1, nothing posted), never a gate result.
   const gate = await probeV4({ ...deps, locationName });
   if (gate.gated) return gated();
-  if (gate.auth) throw new Error(`GBP v4 localPosts auth failed [${gate.status}]; refresh the GBP token (scripts/authorize-gbp.mjs). Nothing was posted.`);
+  if (gate.auth) {
+    // Structured so the runner can keep the row `scheduled` and alert (F4):
+    // a dead token is an operator problem, not a reason to flip the row to error.
+    const message = `GBP v4 localPosts auth failed [${gate.status}]; refresh the GBP token (scripts/authorize-gbp.mjs). Nothing was posted.`;
+    emit({ result: 'auth_failed', status: 'auth_failed', reason: 'v4_auth', statusCode: gate.status, date: payload.date, verified: false, postUrl: null, error: message, ...dryRow });
+    log(message);
+    return EXIT_AUTH_FAILED;
+  }
   if (!gate.ok) throw new Error(`GBP v4 localPosts gate failed: ${gate.error}`);
 
   // G2: idempotent create. List first; a listing failure propagates (exit 1)

@@ -26,7 +26,7 @@ import { sendHermesAlert } from './lib/hermes-alert.mjs';
 import { createPm2SelfHeal, netUseEnabled, gbpArchiveFolder } from './lib/monitor-host.mjs';
 // The rebuilt pipeline's alert rules live with the watchdog so the daily watchdog
 // and this monitor cannot disagree about what a clean shadow/new run looks like.
-import { evaluatePipelineWatchdog } from './seo-watchdog.mjs';
+import { evaluatePipelineWatchdog, evaluateGbpOverdue, chicagoDateHour } from './seo-watchdog.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '..');
@@ -553,6 +553,25 @@ async function checkPipelineWatch() {
   }
 }
 
+// F4: `scheduled` GBP rows past their Chicago post date and not posted by 12:00 CT
+// (API gated, token dead, worker down). One alert per Chicago day; the daily
+// watchdog repeats it on its own trigger.
+async function checkGbpOverdue() {
+  const now = new Date();
+  const { todayDate } = chicagoDateHour(now);
+  let rows;
+  try {
+    const res = await sbFetch(`weekly_posts?platform=eq.gbp&status=in.(scheduled,scheduled_native)&post_date=lte.${todayDate}&select=id,post_date,status,error&order=post_date.asc`);
+    rows = Array.isArray(res.data) ? res.data : [];
+  } catch (e) {
+    log('warn', 'GBP overdue check could not query Supabase', { error: e.message });
+    return;
+  }
+  for (const problem of evaluateGbpOverdue({ now, rows })) {
+    await alertOnce(`gbp-overdue-${todayDate}`, 'GBP OVERDUE: scheduled posts not published', `${problem}\n\nMonitor log: ${logFile}`);
+  }
+}
+
 // ── Main poll loop ─────────────────────────────────────────────────────────────
 async function poll() {
   try {
@@ -564,6 +583,7 @@ async function poll() {
     await checkMDrive();
     await checkRunStarted();
     await checkPipelineWatch();
+    await checkGbpOverdue();
     await checkRunStatus();
   } catch (e) {
     log('error', 'Unhandled poll exception', { error: e.message, stack: e.stack?.slice(0, 500) });

@@ -13,6 +13,8 @@ import {
   centralDateHour,
   runDailyGbp,
   runGbpForApprovedRun,
+  gbpGateKindForResult,
+  createGbpApiGateLatch,
 } from './gbp-runner.mjs';
 
 // excelDateToIso: Date, Excel serial, and string forms
@@ -666,3 +668,83 @@ console.log('ok gbp-runner G1 api-mode scheduling');
 }
 
 console.log('ok gbp-runner api-gated exit 6');
+
+// --- F4: a gated (exit 6) or auth-failed API ALERTS, once per episode. Two gated
+// rows on one tick = one alert; a real answer ends the episode; the next gated
+// result alerts again. auth_failed keeps the row scheduled (never error). ---
+{
+  assert.equal(gbpGateKindForResult(6, {}), 'gated');
+  assert.equal(gbpGateKindForResult(0, { result: 'api_gated' }), 'gated');
+  assert.equal(gbpGateKindForResult(1, { result: 'auth_failed' }), 'auth');
+  assert.equal(gbpGateKindForResult(0, { result: 'posted', verified: true }), 'ok');
+  assert.equal(gbpGateKindForResult(5, { result: 'policy_violation' }), 'ok', 'a refusal proves the API answered');
+
+  const authResult = { result: 'auth_failed', reason: 'v4_auth', statusCode: 401, error: 'GBP v4 localPosts auth failed [401]; refresh the GBP token (scripts/authorize-gbp.mjs). Nothing was posted.' };
+  assert.equal(gbpDailyStatusForExit(1, authResult).status, 'scheduled', 'auth failure never flips the row to error');
+  assert.equal(gbpDailyStatusForExit(1, authResult).archive, false);
+  assert.match(gbpDailyStatusForExit(1, authResult).error, /auth failed \[401\]/);
+  assert.equal(gbpScheduleStatusForExit(1, authResult).status, 'scheduled');
+  assert.equal(gbpDailyStatusForExit(1, { result: 'failed', error: 'boom' }).status, 'error', 'a plain exit 1 is still an error');
+
+  const alerts = [];
+  const latch = createGbpApiGateLatch({ alert: async (kind, detail) => alerts.push({ kind, date: detail.post?.post_date }) });
+  const rows = [
+    { id: 'g1', run_id: 'r1', post_date: '2026-10-17', photo_file: '', status: 'scheduled' },
+    { id: 'g2', run_id: 'r1', post_date: '2026-10-17', photo_file: '', status: 'scheduled' },
+  ];
+  const makeQb = () => {
+    const qb = {
+      from: () => qb, select: () => qb, eq: () => qb,
+      in: (_col, statuses) => { qb._statuses = statuses; return qb; },
+      order: () => Promise.resolve({ data: rows.filter(r => (qb._statuses || []).includes(r.status)) }),
+      update: (vals) => ({ eq: (_c, id) => { Object.assign(rows.find(r => r.id === id), vals); return Promise.resolve({ data: null, error: null }); } }),
+    };
+    return qb;
+  };
+  let posterResult = { ok: false, exitCode: 6, stdout: '{"result":"api_gated","reason":"v4_gated","error":"gated"}', stderr: '' };
+  const tick = () => runDailyGbp({
+    supabase: makeQb(), runPhase: async () => posterResult, log: async () => {}, env: { GBP_POSTER: 'api' },
+    todayDate: '2026-10-17', gbpPosterPath: 'C:/fake/gbp-api-poster.mjs', projectRoot: process.cwd(), gbpMode: 'api', apiGate: latch,
+  });
+  await tick();
+  assert.equal(alerts.length, 1, 'exit 6 on two rows in one tick → exactly one alert');
+  assert.equal(alerts[0].kind, 'gated');
+  assert.deepEqual(rows.map(r => r.status), ['scheduled', 'scheduled'], 'gated rows stay scheduled');
+  await tick();
+  assert.equal(alerts.length, 1, 'the same episode on the next tick is silent');
+  assert.equal(latch.episode, 'gated');
+
+  // The API answers (a real post): the episode ends and the latch re-arms.
+  posterResult = { ok: true, exitCode: 0, stdout: '{"result":"posted","verified":true,"postUrl":"accounts/1/locations/2/localPosts/x"}', stderr: '' };
+  await tick();
+  assert.equal(latch.episode, 'ok');
+  assert.deepEqual(rows.map(r => r.status), ['posted', 'posted']);
+  assert.equal(alerts.length, 1, 'a good answer never alerts');
+
+  // A fresh gated episode alerts again; an auth episode is its own kind.
+  rows.forEach(r => { r.status = 'scheduled'; });
+  posterResult = { ok: false, exitCode: 6, stdout: '{"result":"api_gated"}', stderr: '' };
+  await tick();
+  assert.equal(alerts.length, 2, 'a new gated episode alerts once more');
+  posterResult = { ok: false, exitCode: 1, stdout: JSON.stringify(authResult), stderr: '' };
+  await tick();
+  assert.equal(alerts.length, 3, 'gated → auth is a different episode and alerts');
+  assert.equal(alerts[2].kind, 'auth');
+  assert.deepEqual(rows.map(r => r.status), ['scheduled', 'scheduled'], 'auth-failed rows stay scheduled');
+  await tick();
+  assert.equal(alerts.length, 3, 'the auth episode alerts once');
+
+  // The startup probe and the tick share the latch: a gated probe followed by a
+  // gated tick is one alert.
+  const alerts2 = [];
+  const latch2 = createGbpApiGateLatch({ alert: async (kind) => alerts2.push(kind) });
+  await latch2.report('gated', { stage: 'startup-probe' });
+  posterResult = { ok: false, exitCode: 6, stdout: '{"result":"api_gated"}', stderr: '' };
+  await runDailyGbp({
+    supabase: makeQb(), runPhase: async () => posterResult, log: async () => {}, env: { GBP_POSTER: 'api' },
+    todayDate: '2026-10-17', gbpPosterPath: 'C:/fake/gbp-api-poster.mjs', projectRoot: process.cwd(), gbpMode: 'api', apiGate: latch2,
+  });
+  assert.deepEqual(alerts2, ['gated'], 'startup probe + gated tick = one alert');
+}
+
+console.log('ok gbp-runner F4 api-gate alert latch');

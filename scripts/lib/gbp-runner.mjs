@@ -88,6 +88,46 @@ export function gbpApiGatedMessage(parsed = {}) {
   return String(parsed.error || '').trim()
     || 'GBP v4 API is gated for this project (404 route not served) — nothing was posted; keep GBP_POSTER=playwright until the access probe passes.';
 }
+// The API poster's gate answered 401/403 (`result: 'auth_failed'`, exit 1): a dead
+// or revoked token. Nothing was posted and nothing is wrong with the row, so it
+// stays `scheduled` (never error) and the gate latch alerts the operator (F4).
+export function gbpAuthFailedMessage(parsed = {}) {
+  return String(parsed.error || '').trim()
+    || 'GBP API auth failed (401/403) — nothing was posted; refresh the GBP token (scripts/authorize-gbp.mjs).';
+}
+
+// Which gate episode a poster result belongs to: 'gated' (exit 6 / api_gated),
+// 'auth' (result auth_failed) or 'ok' (anything else — a real post, a policy
+// refusal, a crash — all prove the API answered, so the episode ends).
+export function gbpGateKindForResult(exitCode, parsed = {}) {
+  const result = String(parsed.result || '').toLowerCase();
+  if (exitCode === GBP_API_GATED_EXIT || result === 'api_gated') return 'gated';
+  if (result === 'auth_failed') return 'auth';
+  return 'ok';
+}
+
+// One alert per gate episode (F4), the latch pattern of the session probe: the
+// first 'gated' or 'auth' report alerts, repeats of the same kind are silent,
+// an 'ok' report (or a different kind) ends the episode so the next one alerts
+// again. Shared by the worker's startup probe and every poster result, so a
+// gated startup followed by a gated 09:00 tick is one alert, not two.
+export function createGbpApiGateLatch({ alert = async () => {}, log = async () => {} } = {}) {
+  let episode = 'ok';
+  return {
+    get episode() { return episode; },
+    async report(kind, detail = {}) {
+      if (kind === 'ok') {
+        if (episode !== 'ok') await log(`GBP API gate episode '${episode}' ended`);
+        episode = 'ok';
+        return false;
+      }
+      if (episode === kind) return false;   // same episode: already alerted
+      episode = kind;
+      await alert(kind, detail);
+      return true;
+    },
+  };
+}
 
 export function gbpDailyStatusForExit(exitCode, parsed = {}) {
   const result = String(parsed.result || '').toLowerCase();
@@ -95,6 +135,9 @@ export function gbpDailyStatusForExit(exitCode, parsed = {}) {
   const failureDetail = String(parsed.error || '').trim();
   if (exitCode === GBP_API_GATED_EXIT || result === 'api_gated') {
     return { status: 'scheduled', error: gbpApiGatedMessage(parsed), archive: false, platform_post_id: null };
+  }
+  if (result === 'auth_failed') {
+    return { status: 'scheduled', error: gbpAuthFailedMessage(parsed), archive: false, platform_post_id: null };
   }
   // Listing already has a live match — treat as posted even if we did not compose.
   if (result === 'already_live' || parsed.verified === true) {
@@ -166,6 +209,9 @@ export function gbpScheduleStatusForExit(exitCode, parsed = {}) {
   const failureDetail = String(parsed.error || '').trim();
   if (exitCode === GBP_API_GATED_EXIT || result === 'api_gated') {
     return { status: 'scheduled', error: gbpApiGatedMessage(parsed) };
+  }
+  if (result === 'auth_failed') {
+    return { status: 'scheduled', error: gbpAuthFailedMessage(parsed) };
   }
   // A known failure before the Post click is not a candidate for the legacy
   // daily fallback. Mark it visibly so the existing worker fault alert has a
@@ -335,7 +381,9 @@ export async function markGbpPostedAndArchive({ postDate, exitCode, runId, env, 
 // resource name as postUrl, on exit 0 and exit 3 alike) closes the workbook
 // Posted gate, so neither the daily tick nor a retry can create it twice.
 // Playwright mode is unchanged: the gate closes only after verification.
-export async function applyDriverResult({ supabase, post, result, env, log, gbpMode }) {
+// `apiGate` (optional, createGbpApiGateLatch) is told the gate kind of every
+// result so a gated/auth-failed episode alerts once and ends on the next real answer.
+export async function applyDriverResult({ supabase, post, result, env, log, gbpMode, apiGate }) {
   const parsed = parseDriverJson(result.stdout);
   const map = gbpDailyStatusForExit(result.exitCode, parsed);
   const apiMode = (gbpMode || resolveGbpMode(env || {})) === 'api';
@@ -357,16 +405,19 @@ export async function applyDriverResult({ supabase, post, result, env, log, gbpM
   if (map.archive || apiCreated) {
     await markGbpPostedAndArchive({ postDate: post.post_date, exitCode: result.exitCode, runId: post.run_id, env, log, force: apiCreated });
   }
+  if (apiGate) {
+    await apiGate.report(gbpGateKindForResult(result.exitCode, parsed), { post, message: map.error, exitCode: result.exitCode });
+  }
   return map.status;
 }
 
 // Run-time GBP for a freshly-approved run: curate photos (H:->E:), sync the Excel
 // workbook, stamp the approval gate for all days, post Day 1 immediately, mark
 // Days 2-7 scheduled.
-// deps: { supabase, runPhase, log, env, projectRoot, paths }
+// deps: { supabase, runPhase, log, env, projectRoot, paths, gbpMode?, apiGate? }
 //   paths: { photoPick, gbpPoster, seoAgentsExe }
 export async function runGbpForApprovedRun({ runId, gbpPosts, deps }) {
-  const { supabase, runPhase, log, env, projectRoot, paths } = deps;
+  const { supabase, runPhase, log, env, projectRoot, paths, apiGate } = deps;
 
   // 0. Curate (reads H:\, writes E:\, rewrites PHOTO_FILE in the schedule).
   if (fs.existsSync(paths.photoPick)) {
@@ -400,7 +451,7 @@ export async function runGbpForApprovedRun({ runId, gbpPosts, deps }) {
   if (day1) {
     await log(runId, 'gbp', 'info', 'Posting Day 1 GBP immediately...');
     const r = await runPhase(runId, 'gbp', 'node', [paths.gbpPoster, '--date', day1.post_date], projectRoot);
-    const status = await applyDriverResult({ supabase, post: day1, result: r, env, log, gbpMode });
+    const status = await applyDriverResult({ supabase, post: day1, result: r, env, log, gbpMode, apiGate });
     await log(runId, 'gbp', status === 'posted' ? 'info' : 'warn', `Day 1 GBP → ${status} (exit ${r.exitCode})`);
   }
 
@@ -475,7 +526,7 @@ export async function syncGbpRowToWorkbook({ post, env, log, runId }) {
 // Shifted/late-approved runs can leave today's row in Supabase but missing from the
 // workbook (driver: "No post found for date"). Restore the row from Supabase and
 // retry the driver once before giving up.
-export async function runDailyGbp({ supabase, runPhase, log, env, todayDate, gbpPosterPath, projectRoot, syncGbpRow = syncGbpRowToWorkbook, gbpMode }) {
+export async function runDailyGbp({ supabase, runPhase, log, env, todayDate, gbpPosterPath, projectRoot, syncGbpRow = syncGbpRowToWorkbook, gbpMode, apiGate }) {
   const { data: todayGbp } = await supabase
     .from('weekly_posts')
     .select('id, run_id, post_date, photo_file, status')
@@ -493,7 +544,7 @@ export async function runDailyGbp({ supabase, runPhase, log, env, todayDate, gbp
         result = await runPhase(post.run_id, 'gbp', 'node', [gbpPosterPath, '--date', post.post_date], projectRoot);
       }
     }
-    const status = await applyDriverResult({ supabase, post, result, env, log, gbpMode });
+    const status = await applyDriverResult({ supabase, post, result, env, log, gbpMode, apiGate });
     await log(post.run_id, 'gbp', status === 'error' ? 'error' : 'info', `Daily GBP ${post.post_date} → ${status} (exit ${result.exitCode})`);
   }
 }

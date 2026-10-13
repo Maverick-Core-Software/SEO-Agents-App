@@ -22,6 +22,8 @@
  *   5. Auto-approve miss: SEO_AUTO_APPROVE is on and latest run is still
  *      pending_approval.
  *   6. Staleness: the health marker is older than STALE_DAYS.
+ *   7. GBP OVERDUE (F4): a weekly_posts gbp row still `scheduled` for a date
+ *      ≤ today in America/Chicago and not posted by 12:00 CT (needs SUPABASE_*).
  *
  * Shadow/new pipeline (T3, additive and config-gated on SEO_PIPELINE): once the
  * wrapper runs the rebuilt pipeline, its attempt-derived `shadow` block in the same
@@ -76,6 +78,65 @@ const RECONCILE_HEALTH_FILE  = path.join(PROJECT_ROOT, 'outputs', 'reconcile-hea
 const RECONCILE_STALE_HOURS  = parseInt(process.env.SEO_RECONCILE_STALE_HOURS ?? '48', 10);
 const PIPELINE_UNFINISHED    = new Set(['running', 'started']);
 const PIPELINE_GOOD          = new Set(['succeeded', 'degraded']);
+
+// ── GBP overdue (rc1 review F4) ──────────────────────────────────────────────
+// A `scheduled` GBP row whose post_date has passed in America/Chicago and that
+// is still not posted by GBP_OVERDUE_HOUR CT is a silent miss (API gated, token
+// dead, worker down, 09:00 tick skipped). Rows dated before today are overdue at
+// any hour; today's rows only from the overdue hour on.
+const GBP_OVERDUE_HOUR       = parseInt(process.env.SEO_GBP_OVERDUE_HOUR ?? '12', 10);
+const GBP_DUE_STATUSES       = new Set(['scheduled', 'scheduled_native']);
+const SUPABASE_URL           = process.env.SUPABASE_URL || '';
+const SUPABASE_SERVICE_KEY   = process.env.SUPABASE_SERVICE_KEY || '';
+
+// Chicago calendar date + hour for an instant, independent of the host TZ.
+export function chicagoDateHour(now = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Chicago', hour12: false,
+    year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit',
+  }).formatToParts(now);
+  const get = (t) => parts.find((p) => p.type === t)?.value || '';
+  return { todayDate: `${get('year')}-${get('month')}-${get('day')}`, cstHour: parseInt(get('hour'), 10) % 24 };
+}
+
+export function evaluateGbpOverdue({ now = new Date(), rows = [], overdueHour = GBP_OVERDUE_HOUR } = {}) {
+  const { todayDate, cstHour } = chicagoDateHour(now);
+  const overdue = (rows || []).filter((r) => {
+    if (!GBP_DUE_STATUSES.has(String(r.status || ''))) return false;
+    const date = String(r.post_date || '').slice(0, 10);
+    if (!date) return false;
+    if (date < todayDate) return true;
+    return date === todayDate && cstHour >= overdueHour;
+  });
+  if (overdue.length === 0) return [];
+  const list = overdue
+    .sort((a, b) => String(a.post_date).localeCompare(String(b.post_date)))
+    .map((r) => `${String(r.post_date).slice(0, 10)} (${r.status}${r.error ? `: ${String(r.error).slice(0, 120)}` : ''})`)
+    .join('; ');
+  return [
+    `GBP OVERDUE: ${overdue.length} GBP row(s) still scheduled past their post date ` +
+    `(Chicago ${todayDate} ${String(cstHour).padStart(2, '0')}:00, cutoff ${overdueHour}:00 CT): ${list}. ` +
+    `gbp-worker did not post them — API gated or token dead (scripts/gbp-access-probe.mjs), worker down, ` +
+    `or the 09:00 tick never ran. Check pm2 gbp-worker logs; do not re-post by hand without the listing check.`,
+  ];
+}
+
+// weekly_posts rows the overdue check needs (gbp, due statuses, dated ≤ today in
+// Chicago). null = Supabase not configured or unreachable (logged, never fatal).
+async function fetchDueGbpRows(now = new Date()) {
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) return null;
+  const { todayDate } = chicagoDateHour(now);
+  const url = `${SUPABASE_URL.replace(/\/+$/, '')}/rest/v1/weekly_posts` +
+    `?platform=eq.gbp&status=in.(scheduled,scheduled_native)&post_date=lte.${todayDate}` +
+    `&select=id,post_date,status,error&order=post_date.asc`;
+  const res = await fetch(url, {
+    headers: { apikey: SUPABASE_SERVICE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_KEY}` },
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!res.ok) throw new Error(`weekly_posts query failed: HTTP ${res.status}`);
+  const data = await res.json();
+  return Array.isArray(data) ? data : [];
+}
 
 const DOW_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
@@ -308,9 +369,18 @@ async function main() {
     log('warn', 'No runner health marker found', { file: RUNNER_HEALTH_FILE });
   }
 
+  let dueGbpRows = null;
+  try {
+    dueGbpRows = await fetchDueGbpRows(now);
+    if (dueGbpRows === null) log('warn', 'GBP overdue check skipped: SUPABASE_URL/SUPABASE_SERVICE_KEY not set');
+  } catch (e) {
+    log('warn', 'GBP overdue check could not query Supabase', { error: e.message });
+  }
+
   const problems = [
     ...evaluateWatchdog({ now, health, notify, autoApprove }),
     ...evaluatePipelineWatchdog({ now, health, reconcile }),
+    ...evaluateGbpOverdue({ now, rows: dueGbpRows || [] }),
   ];
 
   if (problems.length === 0) {
@@ -321,6 +391,7 @@ async function main() {
       pipeline: PIPELINE_MODE,
       shadow_status: health?.shadow?.status ?? null,
       reconcile_last_success_at: reconcile?.last_success_at ?? null,
+      gbp_due_rows_checked: dueGbpRows ? dueGbpRows.length : null,
     });
     return;
   }

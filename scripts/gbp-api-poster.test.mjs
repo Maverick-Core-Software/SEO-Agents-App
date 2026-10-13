@@ -483,10 +483,15 @@ describe('gated v4 (404 route not served): fail closed with exit 6, never a crea
     assert.equal(api.uploads.length, 0);
   });
 
-  it('gate 401 is an auth error, not api_gated: nothing created', async () => {
+  it('gate 401 is a structured auth_failed (exit 1), not api_gated: nothing created', async () => {
     const api = mockApi();
     const body = '{"error":{"code":401,"message":"Request had invalid authentication credentials."}}';
-    await assert.rejects(run({}, gate(api, GATE, { status: 401, body }), fixture()), /auth failed \[401\]/);
+    const r = await run({}, gate(api, GATE, { status: 401, body }), fixture());
+    assert.equal(r.code, 1);
+    assert.equal(r.result.result, 'auth_failed');
+    assert.equal(r.result.reason, 'v4_auth');
+    assert.equal(r.result.statusCode, 401);
+    assert.match(r.result.error, /auth failed \[401\]/);
     assert.equal(api.created.length, 0);
     assert.equal(api.uploads.length, 0);
   });

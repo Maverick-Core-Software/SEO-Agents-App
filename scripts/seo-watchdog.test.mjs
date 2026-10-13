@@ -1,7 +1,7 @@
 /** Last-week silent success must not look Healthy. */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { evaluateWatchdog, evaluatePipelineWatchdog } from './seo-watchdog.mjs';
+import { evaluateWatchdog, evaluatePipelineWatchdog, evaluateGbpOverdue, chicagoDateHour } from './seo-watchdog.mjs';
 
 function fridayTen() {
   // 2026-08-28 is a Friday. Local 10:00 — past the 09:00 deadline.
@@ -217,5 +217,50 @@ describe('evaluatePipelineWatchdog', () => {
     assert.deepEqual(evaluate(shadow('failed'), { now: saturday }), []);
     const beforeDeadline = new Date(2026, 7, 28, 8, 45, 0);
     assert.deepEqual(evaluate(shadow('failed'), { now: beforeDeadline }), []);
+  });
+});
+
+// F4: a `scheduled` GBP row past its Chicago post date is a silent miss (API gated,
+// token dead, worker down). Instants are UTC so the host TZ never matters:
+// 2026-10-17T17:30Z = Sat 2026-10-17 12:30 CDT; 2026-10-17T15:00Z = 10:00 CDT.
+describe('evaluateGbpOverdue (GBP OVERDUE)', () => {
+  const noonCT = new Date('2026-10-17T17:30:00Z');
+  const tenCT = new Date('2026-10-17T15:00:00Z');
+
+  it('chicagoDateHour is Chicago wall time, not host local or UTC', () => {
+    assert.deepEqual(chicagoDateHour(noonCT), { todayDate: '2026-10-17', cstHour: 12 });
+    // 2026-10-18T04:30Z is still Sat 23:30 CDT.
+    assert.deepEqual(chicagoDateHour(new Date('2026-10-18T04:30:00Z')), { todayDate: '2026-10-17', cstHour: 23 });
+  });
+
+  it("alerts on today's scheduled row once it is past 12:00 CT", () => {
+    const problems = evaluateGbpOverdue({ now: noonCT, rows: [{ post_date: '2026-10-17', status: 'scheduled', error: 'GBP v4 API is gated' }] });
+    assert.equal(problems.length, 1);
+    assert.ok(problems[0].startsWith('GBP OVERDUE'), problems[0]);
+    assert.match(problems[0], /2026-10-17 \(scheduled: GBP v4 API is gated\)/);
+  });
+
+  it("stays quiet on today's row before the cutoff (the 09:00 tick may still be running)", () => {
+    assert.deepEqual(evaluateGbpOverdue({ now: tenCT, rows: [{ post_date: '2026-10-17', status: 'scheduled' }] }), []);
+  });
+
+  it("yesterday's scheduled row is overdue at any hour", () => {
+    const problems = evaluateGbpOverdue({ now: tenCT, rows: [{ post_date: '2026-10-16', status: 'scheduled_native' }] });
+    assert.ok(problems.some((p) => p.startsWith('GBP OVERDUE')), problems.join('\n'));
+  });
+
+  it('posted, future and non-due statuses are not overdue', () => {
+    const rows = [
+      { post_date: '2026-10-16', status: 'posted' },
+      { post_date: '2026-10-18', status: 'scheduled' },
+      { post_date: '2026-10-16', status: 'needs_verification' },
+      { post_date: '2026-10-16', status: 'error' },
+    ];
+    assert.deepEqual(evaluateGbpOverdue({ now: noonCT, rows }), []);
+    assert.deepEqual(evaluateGbpOverdue({ now: noonCT, rows: [] }), []);
+  });
+
+  it('the cutoff hour is configurable', () => {
+    assert.equal(evaluateGbpOverdue({ now: tenCT, rows: [{ post_date: '2026-10-17', status: 'scheduled' }], overdueHour: 10 }).length, 1);
   });
 });
