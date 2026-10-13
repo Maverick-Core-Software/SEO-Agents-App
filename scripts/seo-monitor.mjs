@@ -368,8 +368,8 @@ async function checkPM2Processes() {
   }
 }
 
-// Without the net use remount (default off-Workbench, or SEO_MONITOR_NET_USE unset),
-// the check is whether the archive folder itself exists.
+// Without the net use remount (never off-Workbench; on win32 only when
+// SEO_MONITOR_NET_USE=0), the check is whether the archive folder itself exists.
 const NET_USE_REMOUNT = netUseEnabled(process.env);
 
 async function checkMDrive() {

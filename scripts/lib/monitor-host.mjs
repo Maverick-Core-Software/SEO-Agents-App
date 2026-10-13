@@ -14,9 +14,15 @@ export function pm2SelfHealEnabled(env = process.env, platform = process.platfor
   return value === '1';
 }
 
-// net use M: remount runs only on win32, and only when SEO_MONITOR_NET_USE=1.
+// net use M: remount is win32-only. Unset defaults to ON for win32 (the
+// Workbench keeps today's auto-fix without a .env line, matching the pm2
+// default, rc1 review F12); an explicit SEO_MONITOR_NET_USE=0 disables it.
+// Never on other platforms, whatever the value.
 export function netUseEnabled(env = process.env, platform = process.platform) {
-  return platform === 'win32' && env.SEO_MONITOR_NET_USE === '1';
+  if (platform !== 'win32') return false;
+  const raw = env.SEO_MONITOR_NET_USE;
+  const value = raw === undefined || raw === '' ? '1' : String(raw).trim();
+  return value === '1';
 }
 
 // One archive default for the whole repo: platform-defaults.mjs (B1) owns it;

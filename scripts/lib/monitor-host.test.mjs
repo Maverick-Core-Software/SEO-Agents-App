@@ -37,10 +37,13 @@ assert.equal(pm2SelfHealEnabled({ SEO_MONITOR_PM2: '1' }, 'linux'), true);
   assert.deepEqual(execCalls, ['pm2 jlist', 'pm2 restart "mav-bridge"', 'pm2 resurrect']);
 }
 
-// net use runs only on win32 with SEO_MONITOR_NET_USE=1.
-assert.equal(netUseEnabled({}, 'win32'), false);
-assert.equal(netUseEnabled({ SEO_MONITOR_NET_USE: '1' }, 'linux'), false);
+// net use is win32-only; unset defaults ON for win32 (F12, like pm2), '0' disables.
+assert.equal(netUseEnabled({}, 'win32'), true, 'win32 default is on (no .env line needed)');
+assert.equal(netUseEnabled({ SEO_MONITOR_NET_USE: '' }, 'win32'), true);
+assert.equal(netUseEnabled({ SEO_MONITOR_NET_USE: '0' }, 'win32'), false, 'explicit 0 disables');
 assert.equal(netUseEnabled({ SEO_MONITOR_NET_USE: '1' }, 'win32'), true);
+assert.equal(netUseEnabled({}, 'linux'), false);
+assert.equal(netUseEnabled({ SEO_MONITOR_NET_USE: '1' }, 'linux'), false, 'never on linux');
 
 // Archive folder: env first, then the platform default.
 assert.equal(gbpArchiveFolder({}, 'linux'), '/srv/seo/gbp-archive');
