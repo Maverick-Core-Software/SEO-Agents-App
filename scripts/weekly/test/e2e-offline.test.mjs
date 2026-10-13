@@ -749,7 +749,7 @@ describe('CLI (subprocess)', () => {
     assert.match(usage.stderr, /unknown option --bogus/);
     const mode = await execFileP(process.execPath, [RUN, '--mode', 'nope'], { cwd: PROJECT_ROOT, timeout: 60_000 }).catch((e) => e);
     assert.equal(mode.code, 2);
-    assert.match(mode.stderr, /--mode must be one of shadow, offline/);
+    assert.match(mode.stderr, /--mode must be one of shadow, new, offline/);
     const monday = await execFileP(process.execPath, [RUN, '--mode', 'offline', '--week-of', '2026-09-08', '--store', tmp('cli-x'), '--out', tmp('cli-y')], { cwd: PROJECT_ROOT, timeout: 60_000 }).catch((e) => e);
     assert.equal(monday.code, 1);
     assert.match(monday.stderr, /--week-of must be a Monday/);
@@ -828,7 +828,7 @@ describe('pure helpers', () => {
     assert.equal(shadow.legacyDir, path.resolve('legacy'));
     assert.equal(shadow.photosDir, path.resolve('pics'));
     assert.equal(resolveOptions({ mode: 'shadow' }).legacyDir, OUTPUTS_DIR);
-    assert.throws(() => resolveOptions({ mode: 'new' }), /--mode must be one of shadow, offline/);
+    assert.throws(() => resolveOptions({ mode: 'legacy' }), /--mode must be one of shadow, new, offline/);
     assert.throws(() => resolveOptions({}), /got nothing/);
   });
 

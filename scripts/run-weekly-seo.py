@@ -246,12 +246,16 @@ def pick_trending_topic() -> str:
     return fallback_topic
 
 
-def preflight() -> list[str]:
+def preflight(crew: bool = True) -> list[str]:
     """Fail closed before the crew if the Friday host cannot import or ping.
 
-    Returns a list of fatal errors. Empty list = ok to launch.
+    Returns a list of fatal errors. Empty list = ok to launch. ``crew=False``
+    (SEO_PIPELINE=new) skips the CrewAI probe: the crews are not launched in that
+    mode, so a broken crew package must not block the rebuilt pipeline.
     """
     errors: list[str] = []
+    if not crew:
+        return _preflight_shared(errors)
     py = _venv_python()
     src_pkg = str(PROJECT_ROOT / "src" / "seo_agents").replace("\\", "/")
     # Same interpreter and same env (no PYTHONPATH; editable install) as the
@@ -292,7 +296,11 @@ def preflight() -> list[str]:
         errors.append("crew preflight timed out after 180s")
     except Exception as e:
         errors.append(f"crew preflight could not run: {e}")
+    return _preflight_shared(errors)
 
+
+def _preflight_shared(errors: list[str]) -> list[str]:
+    """The checks every mode needs: Supabase env, an alert channel, the GBP session dir."""
     if not (os.environ.get("SUPABASE_URL") or "").strip() or not (
         os.environ.get("SUPABASE_SERVICE_KEY") or ""
     ).strip():
@@ -321,21 +329,48 @@ def preflight() -> list[str]:
 # Rebuilt pipeline (scripts/weekly) — launch seam and attempt-derived health
 # ---------------------------------------------------------------------------
 
-PIPELINE_MODES = ("shadow", "offline")
-# Modes whose attempt is expected to send one attempt-bound alert (T1). `new`
-# arrives with the cutover; today only `shadow` runs with `--notify`.
+PIPELINE_MODES = ("shadow", "new", "offline")
+# Modes whose attempt is expected to send one attempt-bound alert (T1); both run
+# with `--notify`. A rehearsal (`offline`) never touches an alert channel.
 NOTIFY_MODES = ("shadow", "new")
 SHADOW_TIMEOUT_S = int(os.environ.get("SEO_SHADOW_TIMEOUT_MIN", "30")) * 60
+# Cap on the live (`new`) pipeline child. SEO_PIPELINE_TIMEOUT_MIN is the
+# cutover name; SEO_SHADOW_TIMEOUT_MIN is honoured so an existing deployment
+# keeps its setting. Default 30 min, same as shadow.
+PIPELINE_TIMEOUT_S = int(
+    os.environ.get("SEO_PIPELINE_TIMEOUT_MIN") or os.environ.get("SEO_SHADOW_TIMEOUT_MIN") or "30"
+) * 60
+# The legacy watchdog's notify-miss check reads this file (written by
+# supabase-sync in the legacy chain). In `new` mode the wrapper writes it from
+# the attempt's notify receipt so the same check keeps working without the sync.
+APPROVAL_NOTIFY_FILE = OUTPUTS_DIR / "approval-notify.json"
+# Statuses a finished attempt may carry that count as a good run.
+PIPELINE_GOOD_STATUSES = ("succeeded", "degraded")
+
+
+def pipeline_mode() -> str:
+    """SEO_PIPELINE, normalized; `legacy` when unset."""
+    return (os.environ.get("SEO_PIPELINE") or "legacy").strip().lower()
 
 
 def pipeline_paths(mode: str) -> dict:
     """Where one rebuilt-pipeline mode reads and writes.
 
-    `shadow` uses the real store, exports, log and Friday health file. `offline`
-    is the rehearsal mode and is isolated under SEO_REHEARSAL_DIR
+    `shadow` uses the real store, exports, log and Friday health file. `new` is
+    the live cutover: same store and health file, but its exports go to
+    outputs/ itself (the legacy schedule consumers read
+    outputs/*_posting_schedule.md) and its log is weekly-new-<date>.log.
+    `offline` is the rehearsal mode and is isolated under SEO_REHEARSAL_DIR
     (default outputs/rehearsal) so a rehearsal can never touch the legacy store,
     the shadow exports, or the health marker the monitor reads.
     """
+    if mode == "new":
+        return {
+            "store": PROJECT_ROOT / "state" / "weekly",
+            "out": OUTPUTS_DIR,
+            "health": RUNNER_HEALTH_FILE,
+            "log": OUTPUTS_DIR / f"weekly-new-{date.today().isoformat()}.log",
+        }
     if mode == "offline":
         base = Path(os.environ.get("SEO_REHEARSAL_DIR") or (OUTPUTS_DIR / "rehearsal"))
         return {
@@ -361,11 +396,29 @@ def pipeline_cmd(mode: str, paths: dict, week_of=None) -> list:
     """
     runner = PROJECT_ROOT / "scripts" / "weekly" / "run.mjs"
     cmd = ["node", str(runner), "--mode", mode, "--store", str(paths["store"]), "--out", str(paths["out"])]
-    if mode == "shadow":
+    if mode in NOTIFY_MODES:
         cmd.append("--notify")
     if week_of:
         cmd += ["--week-of", week_of]
     return cmd
+
+
+def fresh_week_of(spec_file=None, today: date | None = None):
+    """`week_of` from outputs/week_spec.json, only when that file describes this run.
+
+    The legacy crews write week_spec.json; in `new` mode nothing refreshes it, so
+    a stale file from an earlier Friday would pin the live run to a past week.
+    The Monday is used only when it lies in the seven days from today (run.mjs
+    computes the same WeekSpec itself otherwise).
+    """
+    today = today or date.today()
+    data = _read_json_file(spec_file or (OUTPUTS_DIR / "week_spec.json"))
+    week_of = (data or {}).get("week_of") if isinstance(data, dict) else None
+    try:
+        monday = date.fromisoformat(str(week_of))
+    except (TypeError, ValueError):
+        return None
+    return week_of if 0 <= (monday - today).days <= 7 else None
 
 
 def _spawn_pipeline(cmd: list, log_file, timeout_s: int) -> dict:
@@ -673,16 +726,114 @@ def run_rehearsal() -> int:
     return 0 if block.get("status") in ("succeeded", "degraded") else 1
 
 
+def _write_approval_notify(block: dict, projection: dict | None) -> None:
+    """Mirror the attempt's notify receipt into outputs/approval-notify.json.
+
+    The legacy watchdog (`evaluateWatchdog`) still reads that file for its
+    NOTIFY MISS and AUTO-APPROVE checks; in `new` mode supabase-sync no longer
+    writes it, so the wrapper does, from the attempt record's receipt and the
+    projection result run.mjs mirrored into `<out>/projection.json`.
+    """
+    notify = block.get("notify") or {}
+    approved = (projection or {}).get("approved") or {}
+    payload = {
+        "sent": bool(notify.get("sent")),
+        "reason": notify.get("error") if not notify.get("sent") else "",
+        "channel": notify.get("channel"),
+        "runId": (projection or {}).get("runId"),
+        "weekOf": block.get("week_of") or (projection or {}).get("week_of"),
+        "autoApprove": bool((projection or {}).get("auto_approve")) and bool(approved.get("ok")),
+        "gbpCount": None,
+        "fbCount": None,
+        "source": "attempt",
+        "attempt_id": block.get("attempt_id"),
+        "event": notify.get("event"),
+        "at": _now_iso(),
+    }
+    try:
+        APPROVAL_NOTIFY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        APPROVAL_NOTIFY_FILE.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    except Exception as e:
+        print(f"[run-weekly-seo] WARNING: could not write {APPROVAL_NOTIFY_FILE}: {e}", flush=True)
+
+
+def run_new_pipeline() -> int:
+    """SEO_PIPELINE=new: the rebuilt pipeline IS the Friday run (Phase C cutover).
+
+    No CrewAI research/execute/schedule crews and no supabase-sync: run.mjs
+    stages the week, exports the legacy schedules to outputs/ and projects the
+    plan into seo_runs / weekly_posts / website_tasks itself. The attempt-derived
+    block is written under `shadow` as before, AND lifted into the top-level
+    health fields (`status` success|failed, `date`, `error`, `returncode`,
+    `topic`) the watchdog/monitor NO-SHOW / FAILED / HUNG rules read, so the
+    legacy checks keep working with nothing else on disk. Returns the exit code.
+    """
+    paths = pipeline_paths("new")
+    runner = PROJECT_ROOT / "scripts" / "weekly" / "run.mjs"
+    if not runner.exists():
+        msg = f"SEO_PIPELINE=new but {runner} is missing"
+        log_line(f"[run-weekly-seo] ERROR: {msg}")
+        write_runner_health("failed", error=msg)
+        return 1
+    fatal = preflight(crew=False)
+    if not (os.environ.get("DEEPSEEK_API_KEY") or "").strip():
+        fatal.append("DEEPSEEK_API_KEY missing (the rebuilt pipeline generates with DeepSeek)")
+    if fatal:
+        msg = "; ".join(fatal)
+        log_line(f"[run-weekly-seo] PREFLIGHT FAILED: {msg}")
+        write_runner_health("failed", error=f"preflight: {msg}")
+        return 1
+    log_line("[run-weekly-seo] preflight ok (new mode: Supabase env, alert channel, DeepSeek key)")
+
+    week_of = fresh_week_of()
+    log_line(f"[run-weekly-seo] SEO_PIPELINE=new: running scripts/weekly/run.mjs --mode new as the "
+             f"primary run (crews and supabase-sync skipped){f', week of {week_of}' if week_of else ''}")
+    block = run_pipeline("new", paths, week_of=week_of, timeout_s=PIPELINE_TIMEOUT_S)
+
+    status = str(block.get("status") or "")
+    ok = status in PIPELINE_GOOD_STATUSES
+    child = block.get("child") or {}
+    plan = _read_json_file(Path(paths["out"]) / "plan.json")
+    topic = ""
+    if isinstance(plan, dict) and isinstance(plan.get("topic"), dict):
+        t = plan["topic"]
+        topic = " / ".join(str(x) for x in (t.get("service_label"), t.get("city")) if x)
+    projection = _read_json_file(Path(paths["out"]) / "projection.json")
+    if not (isinstance(projection, dict) and projection.get("attempt_id") == block.get("attempt_id")):
+        projection = None
+    error = None if ok else (
+        f"new pipeline attempt {status}" + (f": {block.get('error')}" if block.get("error") else "")
+    )
+    # write_runner_health replaces the whole file, so the attempt block is merged back after it.
+    write_runner_health("success" if ok else "failed", topic=topic,
+                        returncode=child.get("returncode"), error=error or "")
+    _merge_shadow_block(paths, block)
+    _write_approval_notify(block, projection)
+    if ok and projection:
+        approved = projection.get("approved") or {}
+        verdict = (f"auto-approved ({approved.get('count')} post(s))" if approved.get("ok")
+                   else ("pending approval in MCC" if not projection.get("auto_approve")
+                         else f"auto-approve refused ({approved.get('reason') or 'unknown'})"))
+        log_line(f"[run-weekly-seo] projected seo_runs {projection.get('runId')}: "
+                 f"{projection.get('posts')} post(s), {projection.get('tasks')} task(s), {verdict}")
+    elif ok:
+        log_line("[run-weekly-seo] WARNING: attempt finished but no projection.json for it — "
+                 "nothing reached weekly_posts; check the attempt's `project` stage")
+    log_line(f"[run-weekly-seo] new pipeline: {status}{f' ({error})' if error else ''}")
+    return 0 if ok else 1
+
+
 def run_shadow_pipeline() -> None:
     """Run the rebuilt pipeline (scripts/weekly) after a successful legacy run when
     SEO_PIPELINE is `shadow` (live collectors, real store) or `offline` (the
     isolated rehearsal). Shadow mode writes only to the new tables and to
     outputs/shadow/; it never touches weekly_posts, website_tasks, or the legacy
     outputs, so a failure here is logged and recorded but never changes this
-    wrapper's exit code or health status.
+    wrapper's exit code or health status. `new` never reaches here: main()
+    routes it to run_new_pipeline() before the crews.
     See docs/rebuild/2026-09-06-weekly-pipeline-rebuild-plan.md."""
-    mode = (os.environ.get("SEO_PIPELINE") or "legacy").strip().lower()
-    if mode not in PIPELINE_MODES:
+    mode = pipeline_mode()
+    if mode not in PIPELINE_MODES or mode == "new":
         return
     runner = PROJECT_ROOT / "scripts" / "weekly" / "run.mjs"
     if not runner.exists():
@@ -704,6 +855,12 @@ def main() -> None:
     # even if topic selection or the crew launch fails below.
     write_runner_health("started")
     log_line(f"[run-weekly-seo] Starting — {date.today().isoformat()} (Friday run)")
+
+    # Phase C cutover: `new` replaces the crew launch entirely (no research /
+    # execute / schedule crews, no supabase-sync). `legacy` and `shadow` keep the
+    # crew path below byte-for-byte.
+    if pipeline_mode() == "new":
+        sys.exit(run_new_pipeline())
 
     fatal = preflight()
     if fatal:

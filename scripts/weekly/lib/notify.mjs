@@ -23,7 +23,7 @@ export function attemptRuntime(attempt) {
   return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 }
 
-export function formatAttemptMessage({ attempt, event, plan = null, validation = null, summary = {} } = {}) {
+export function formatAttemptMessage({ attempt, event, plan = null, validation = null, summary = {}, projection = null } = {}) {
   const lines = [];
   const mode = attempt?.mode ? `[${attempt.mode}]` : '';
   const head = {
@@ -47,6 +47,19 @@ export function formatAttemptMessage({ attempt, event, plan = null, validation =
   if (attempt?.error && event === 'failed') lines.push(`Error: ${String(attempt.error).slice(0, 300)}`);
   if (summary.path) lines.push(`Summary: ${summary.path}`);
   if (attempt?.mode === 'shadow') lines.push('Shadow mode: nothing was published.');
+  if (attempt?.mode === 'new') {
+    // Live mode: the alert is the owner's cue that rows now sit at the MCC gate
+    // (or were auto-approved), so the projection outcome is stated explicitly.
+    if (projection && projection.runId) {
+      const approved = projection.approved;
+      const verdict = projection.auto_approve
+        ? (approved && approved.ok ? `auto-approved (${approved.count ?? '?'} post(s))` : `auto-approve refused: ${(approved && approved.reason) || 'unknown'} — still pending approval`)
+        : 'pending approval in MCC';
+      lines.push(`Projected: ${projection.posts ?? '?'} post(s) + ${projection.tasks ?? '?'} task(s) → seo_runs ${short(projection.runId)}, ${verdict}`);
+    } else {
+      lines.push('Live mode: nothing was projected into weekly_posts / website_tasks.');
+    }
+  }
   return lines.join('\n');
 }
 

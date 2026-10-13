@@ -3,8 +3,11 @@
 // Facebook day and per website action go to the Store — atomically through
 // `store.stageRevision` when the store offers it (Supabase RPC), else
 // `putRevision` then `putItems` (file store). In shadow/offline mode the
-// rendered legacy Markdown and the JSON snapshots are exported to `outDir` so
-// the legacy parsers and compare.mjs can read them.
+// rendered legacy Markdown and the JSON snapshots are exported to `outDir`
+// (default outputs/shadow) so the legacy parsers and compare.mjs can read
+// them. In `new` mode the same files are exported to `outDir` defaulting to
+// outputs/ itself, because gbp-photo-pick, sync-gbp-schedule, facebook-poster,
+// fb-boost-ledger and fb-photo-pick read outputs/*_posting_schedule.md.
 //
 // Nothing here writes weekly_posts or website_tasks. The only route to those
 // tables is the `project` function an S7 caller passes in, and it is invoked
@@ -15,14 +18,17 @@ import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { GenerationInvalid, ValidationFailed } from './errors.mjs';
-import { SHADOW_DIR } from './paths.mjs';
+import { OUTPUTS_DIR, SHADOW_DIR } from './paths.mjs';
 import { PlanItemSchema, PlanSchema, RevisionSchema, parseOrIssues } from './schemas.mjs';
 
 /** Every attempt mode stagePlan accepts (the AttemptSchema enum). */
 export const STAGE_MODES = Object.freeze(['legacy', 'shadow', 'new', 'offline']);
 
 /** Modes in which the legacy-shaped files are exported to `outDir`. */
-export const EXPORT_MODES = Object.freeze(['shadow', 'offline']);
+export const EXPORT_MODES = Object.freeze(['shadow', 'new', 'offline']);
+
+/** Default export dir per export mode when the caller names none. */
+export const DEFAULT_EXPORT_DIRS = Object.freeze({ shadow: SHADOW_DIR, offline: SHADOW_DIR, new: OUTPUTS_DIR });
 
 /** File names written to `outDir` in an export mode. */
 export const EXPORT_FILES = Object.freeze({
@@ -305,7 +311,7 @@ export async function stagePlan({
     throw new TypeError(`stagePlan: plan.attempt_id ${validPlan.attempt_id} does not match attempt.id ${attempt.id}`);
   }
   const verdict = normalizeValidation(validation);
-  const exportDir = EXPORT_MODES.includes(effectiveMode) ? path.resolve(outDir || SHADOW_DIR) : null;
+  const exportDir = EXPORT_MODES.includes(effectiveMode) ? path.resolve(outDir || DEFAULT_EXPORT_DIRS[effectiveMode] || SHADOW_DIR) : null;
 
   const revisionNumber = await nextRevisionNumber(store, validPlan.week_of);
   const revision = assertSchema(RevisionSchema, buildRevision({
