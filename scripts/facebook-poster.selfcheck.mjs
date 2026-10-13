@@ -6,7 +6,7 @@
  * caption building, and schedule parsing.
  */
 import assert from 'node:assert/strict';
-import { classifyDebugToken, buildCaption, parseScheduleText } from './facebook-poster.mjs';
+import { classifyDebugToken, buildCaption, parseScheduleText, hasRetiredMainNumber } from './facebook-poster.mjs';
 
 const NOW = 1_700_000_000; // fixed reference second
 
@@ -25,6 +25,24 @@ assert.equal(
   'caption assembles hook/body/hashtags/cta',
 );
 assert.equal(buildCaption({ headline: 'Only headline' }), 'Only headline', 'falls back to headline when no body');
+
+// ── Retired-number guard ──────────────────────────────────────────────
+assert.equal(hasRetiredMainNumber('(469) 863-9804'), true, 'parenthesized retired main');
+assert.equal(hasRetiredMainNumber('469-863-9804'), true, 'hyphenated retired main');
+assert.equal(hasRetiredMainNumber('+1 469 863 9804'), true, 'prefixed retired main');
+assert.equal(hasRetiredMainNumber('4698639804'), true, 'plain retired main');
+assert.equal(hasRetiredMainNumber('Call (469) 716-9870'), false, 'new main is not retired');
+assert.equal(hasRetiredMainNumber('Text (469) 896-3862'), false, 'text line is not retired');
+assert.throws(
+  () => buildCaption({ hook: 'Old panel?', body: 'Call (469) 863-9804 today.' }),
+  /retired published main number/i,
+  'queued retired number blocks the caption',
+);
+assert.equal(
+  buildCaption({ hook: 'Old panel?', body: 'Call (469) 716-9870 today.' }),
+  'Old panel?\nCall (469) 716-9870 today.',
+  'new main number still builds normally',
+);
 
 // ── Schedule parsing ──────────────────────────────────────────────────
 const md = `

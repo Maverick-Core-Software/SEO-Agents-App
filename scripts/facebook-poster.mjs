@@ -119,20 +119,48 @@ export function auditPhotosInManifest({ date, service, photoPath, manifest = pho
 const SCHEDULE_FILE = path.join(PROJECT_ROOT, 'outputs', 'facebook_posting_schedule.md');
 const LOGO_PATH = process.env.GRIZZLY_LOGO_PATH || path.join(PROJECT_ROOT, 'assets', 'grizzly-logo.png');
 const ENDCARD_PATH = process.env.GRIZZLY_ENDCARD_PATH || path.join(PROJECT_ROOT, 'assets', 'grizzly-endcard.jpg');
+
+// Canonical phone guard. Source of truth: knowledge/baselines/grizzly-business-facts.md.
+// The retired published main (469) 863-9804 must never be re-published — not from a
+// stale env override and not from queued schedule text.
+const RETIRED_MAIN_DIGITS = '4698639804';
+
+function digitsOnly(text) {
+  return String(text || '').replace(/\D/g, '');
+}
+
+/** True when `text` contains the retired published main number in any format. */
+export function hasRetiredMainNumber(text) {
+  return digitsOnly(text).includes(RETIRED_MAIN_DIGITS);
+}
+
+/** Resolve a phone-line env override, refusing the retired main number. */
+function resolvePhoneLine(envValue, fallback, envName) {
+  const raw = String(envValue || '').trim();
+  if (hasRetiredMainNumber(raw)) {
+    console.error(`[facebook-poster] ${envName} contains the retired main number — using ${fallback} instead.`);
+    return fallback;
+  }
+  return raw || fallback;
+}
+
 // Brand info stamped onto every video's end card so viewers always see the
 // correct name + phone, regardless of what the video model hallucinates on
 // shirts or signs inside the clip.
 const BRAND_NAME = process.env.GRIZZLY_BRAND_NAME || 'Grizzly Electrical Solutions';
-const BRAND_PHONE = process.env.GRIZZLY_BRAND_PHONE || '(469) 863-9804';
-const BRAND_TEXT_LINE = process.env.GRIZZLY_TEXT_LINE || '(469) 896-3862';
+const BRAND_PHONE = resolvePhoneLine(process.env.GRIZZLY_BRAND_PHONE, '(469) 716-9870', 'GRIZZLY_BRAND_PHONE');
+const BRAND_TEXT_LINE = resolvePhoneLine(process.env.GRIZZLY_TEXT_LINE, '(469) 896-3862', 'GRIZZLY_TEXT_LINE');
 const BRAND_LOCATION = process.env.GRIZZLY_BRAND_LOCATION || 'Rowlett, TX';
 // First comment posted under every FB post. Fixed copy here (not the schedule's
 // CONTACT text) so the LLM can never garble a public-facing phone number.
 // (469) 896-3862 is the customer-chat Twilio text line (canonical:
 // Hermes-Supervisor hermes-config/operational-facts.yaml); the schedule's
 // CONTACT field now only gates whether the comment is posted.
-const FIRST_COMMENT = process.env.FB_FIRST_COMMENT
-  || '📲 Text us at (469) 896-3862 to get a free instant quote — calls welcome too!';
+const FIRST_COMMENT = resolvePhoneLine(
+  process.env.FB_FIRST_COMMENT,
+  '📲 Text us at (469) 896-3862 to get a free instant quote — calls welcome too!',
+  'FB_FIRST_COMMENT',
+);
 const ENDCARD_FONT = process.env.GRIZZLY_ENDCARD_FONT
   || (process.platform === 'win32'
     ? String.raw`C\:/Windows/Fonts/arialbd.ttf`
@@ -210,7 +238,7 @@ function trackPostEngagement(postId, postGoal, postDay) {
 const FIRST_COMMENT_STATE_FILE = path.join(PROJECT_ROOT, 'state', 'fb-first-comments.json');
 const PENDING_FIRST_COMMENT_FILE = path.join(PROJECT_ROOT, 'state', 'fb-pending-first-comments.json');
 const PHONE_IN_TEXT_RE = /\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/;
-const CONTACT_STYLE_RE = /text us|instant quote|896-3862|863-9804/i;
+const CONTACT_STYLE_RE = /text us|instant quote|896-3862|716-9870|863-9804/i;
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -469,7 +497,14 @@ export function buildCaption(post) {
   // posts with sales-style phone CTAs in the caption. Contact info goes in
   // the first comment instead (see postFirstComment below).
   if (post.cta && !hasPhoneNumber(post.cta)) parts.push(`\n\n${post.cta}`);
-  return parts.join('').trim();
+  const caption = parts.join('').trim();
+  // A stale schedule (or queued single payload) may still carry the retired
+  // published main number in HOOK/BODY/HASHTAGS. Fail loudly instead of
+  // republishing it: "call us" copy belongs to the new main number.
+  if (hasRetiredMainNumber(caption)) {
+    throw new Error('Retired published main number (469) 863-9804 found in post text — refusing to publish. Use (469) 716-9870 for "call us" copy.');
+  }
+  return caption;
 }
 
 function stripMd(str) {
