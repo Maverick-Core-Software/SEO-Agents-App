@@ -497,13 +497,16 @@ export function contentTypeForImage(imagePath) {
 }
 
 export async function createLocalPost(locationName, payload, ctaUrl, mediaRef, { gbpFetch }) {
+  // The photo rule is structural here, not only by call order (N3): a create
+  // without an uploaded media resource is a text-only post and is refused.
+  if (!mediaRef) throw new Error(`createLocalPost: no mediaRef for ${payload?.date || 'post'} — text-only GBP posts are not allowed`);
   const body = {
     languageCode: 'en-US',
     topicType: 'STANDARD',
     summary: payload.caption,
+    media: [{ mediaFormat: 'PHOTO', dataRef: { resourceName: mediaRef } }],
   };
   if (ctaUrl) body.callToAction = { actionType: 'LEARN_MORE', url: ctaUrl };
-  if (mediaRef) body.media = [{ mediaFormat: 'PHOTO', dataRef: { resourceName: mediaRef } }];
   return gbpFetch(`${V4}/${locationName}/localPosts`, { method: 'POST', body: JSON.stringify(body) });
 }
 

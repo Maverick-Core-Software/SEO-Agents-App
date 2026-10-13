@@ -25,10 +25,10 @@ Nothing else in it changed.
 
 ## Follow-ups (not implemented in B4)
 
-1. **mav-bridge bind host.** `scripts/mav-bridge.mjs:1473` hard-codes `listen(BRIDGE_PORT, '127.0.0.1')`, with no bind env. MCC on CT 103 cannot reach `:8790` from another host until the bind is configurable. The fix is one line plus an env name (for example `MAV_BRIDGE_BIND`). Owner: next item, not B4.
-2. **fb-comment-agent binds all interfaces.** `scripts/facebook-comment-agent.mjs:380` calls `listen(port)` with no host. B6 moves it to `127.0.0.1` by default.
+1. **mav-bridge bind host.** Done in rc1 (B8 + F13): `MAV_BRIDGE_BIND` (`scripts/lib/bridge-bind.mjs`), loopback default, `0.0.0.0` refused unless `MAV_BRIDGE_ALLOW_ANY=1`, loud warning for any non-loopback bind. The CT-103-only firewall rule is a hard E3 gate (RUNBOOK 3a).
+2. **fb-comment-agent bind.** Done in rc1 (B6): `FB_COMMENT_AGENT_BIND` defaults to `127.0.0.1`.
 3. **seo-monitor pm2 and `net use`.** `scripts/seo-monitor.mjs:152-198` runs `pm2 jlist/restart/resurrect` and a Windows `net use M:` remount. On Linux these need B3 (`SEO_MONITOR_PM2=0` and the `GBP_ARCHIVE_FOLDER` existence check) before `seo-monitor.timer` is enabled in phase F3.
-4. **`SEO_PIPELINE=new` is not in this branch.** The `seo-weekly-run` unit calls `run-weekly-seo.py`, which only knows the legacy and shadow pipelines until cutover V1 lands. Keep `seo-weekly-run.timer` disabled until V1 is in rc1.
+4. **`SEO_PIPELINE=new`.** Landed in rc1 (C/V1): `run-weekly-seo.py` runs `scripts/weekly/run.mjs --mode new`; an unknown mode fails closed (exit 2, F5). `seo-weekly-run.timer` stays disabled until phase F3 regardless.
 5. **rclone `sync` mirrors deletions into the inbox.** Files removed from Drive are removed from `/srv/seo/photos-inbox`. The library at `/srv/seo/photos` is the copy that matters. For an additive inbox, change the `ExecStartPre` in `systemd/seo-photo-sync.service` to `rclone copy`.
 6. **systemd EnvironmentFile wins over `Environment=`.** The unit-level `GBP_PHOTOS_FOLDER` and `GBP_PHOTOS_LOCAL_CACHE` are defaults only. The values in `.env` take effect, so `env.required` lists them.
 7. **Legacy crew (D5) is not covered.** `SEO_PIPELINE=legacy` needs the CrewAI key set and the B7 path changes. None of that is in `env.required`.

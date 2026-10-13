@@ -6,8 +6,8 @@
 // PROJECT_ROOT (mav-bridge.mjs:43-47, gbp-worker.mjs:34-36, facebook-comment-agent.mjs:35-37),
 // so no env_file option is needed. The .env is shipped and checked by render-env.sh (decision D2).
 //
-// Known gap: mav-bridge.mjs listens on a hard-coded 127.0.0.1 (scripts/mav-bridge.mjs:1473) and
-// has no bind-host env. MCC on CT 103 cannot reach it until one exists. See deploy/aiwa/README.md.
+// mav-bridge listens on MAV_BRIDGE_BIND (scripts/lib/bridge-bind.mjs; loopback by default, 0.0.0.0
+// refused). On AIWA .env sets the LXC address so MCC on CT 103 can reach it; firewall gate per RUNBOOK 3a.
 //
 // Deploy: pm2 start deploy/aiwa/ecosystem.linux.config.cjs && pm2 save
 // install.sh does NOT start these apps. Each start is a Carter-approved step.
@@ -58,7 +58,7 @@ module.exports = {
       script: `${APP_ROOT}/scripts/facebook-comment-agent.mjs`,
       restart_delay: 5000,
       // The PC file sets PORT, which this script never reads. The port variable is FB_COMMENT_AGENT_PORT.
-      // The script still listens on all interfaces; B6 moves it to 127.0.0.1 by default.
+      // The script listens on FB_COMMENT_AGENT_BIND, 127.0.0.1 by default (B6).
       env: { ...ENV, FB_COMMENT_AGENT_PORT: '8795' },
     },
   ],

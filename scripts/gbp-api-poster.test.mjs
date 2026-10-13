@@ -17,6 +17,7 @@ import {
   resolveManifestEntry,
   preparePhoto,
   probeV4,
+  createLocalPost,
   SUMMARY_PREFIX_CHARS,
 } from './gbp-api-poster.mjs';
 import { loadSelectionManifest, sha256Buffer } from './lib/photo-selection.mjs';
@@ -244,6 +245,18 @@ describe('G3 photo rule: manifest-only image, never text-only', () => {
     assert.equal(r.result.manifest_ok, false);
     assert.equal(api.calls.length, 0, 'refused before any network call');
     assert.equal(api.created.length, 0);
+  });
+
+  it('createLocalPost itself refuses a falsy mediaRef (N3: structural, not only call order)', async () => {
+    const calls = [];
+    const deps = { gbpFetch: async (url, o) => { calls.push({ url, o }); return { name: 'x' }; } };
+    for (const bad of [undefined, null, '']) {
+      await assert.rejects(createLocalPost(LOCATION, { caption: 'c', date: DATE }, '', bad, deps), /text-only GBP posts are not allowed/);
+    }
+    assert.equal(calls.length, 0, 'no create call without media');
+    await createLocalPost(LOCATION, { caption: 'c', date: DATE }, '', 'media/1', deps);
+    assert.equal(calls.length, 1);
+    assert.deepEqual(JSON.parse(calls[0].o.body).media, [{ mediaFormat: 'PHOTO', dataRef: { resourceName: 'media/1' } }]);
   });
 
   it('a `<date>-` file in the folder without a manifest entry is still image_missing (no prefix scan)', async () => {
