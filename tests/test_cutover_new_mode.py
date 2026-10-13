@@ -311,3 +311,37 @@ def test_refusal_line_lifts_the_engine_refusal_from_the_log(tmp_path):
     assert m._refusal_line(tmp_path / "missing.log") is None
     (tmp_path / "clean.log").write_text("[weekly] attempt ok\n", encoding="utf-8")
     assert m._refusal_line(tmp_path / "clean.log") is None
+
+
+def test_new_mode_succeeded_attempt_without_its_projection_is_failed(monkeypatch, tmp_path):
+    """R9: a succeeded attempt with no projection.json (or one for another attempt)
+    delivered nothing to weekly_posts; the wrapper must exit 1 with health failed."""
+    m = _load_run_weekly_seo()
+    outputs = _isolate(m, monkeypatch, tmp_path)
+    _new_mode_env(monkeypatch, tmp_path)
+    _forbid_crew(m, monkeypatch)
+    monday = date.today() + timedelta(days=(7 - date.today().weekday()) % 7)
+    (outputs / "week_spec.json").write_text(json.dumps({"week_of": monday.isoformat()}), encoding="utf-8")
+
+    def fake_run_pipeline(mode, paths=None, week_of=None, *, cmd=None, timeout_s=None):
+        out = Path(paths["out"])
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "projection.json").write_text(json.dumps({"runId": "run-old", "attempt_id": "att-OLD"}), encoding="utf-8")
+        block = {
+            "status": "succeeded", "mode": mode, "source": "attempt", "attempt_id": "att-1", "week_of": week_of,
+            "launched_at": m._now_iso(), "at": m._now_iso(), "log_file": str(paths["log"]),
+            "child": {"returncode": 0, "error": None, "timed_out": False},
+            "notify_expected": True, "notify": {"event": "succeeded", "sent": True, "status": "ok", "channel": "hermes", "at": m._now_iso(), "error": None},
+        }
+        m._merge_shadow_block(paths, block)
+        return block
+
+    monkeypatch.setattr(m, "run_pipeline", fake_run_pipeline)
+    monkeypatch.setattr(sys, "argv", ["run-weekly-seo.py"])
+    with pytest.raises(SystemExit) as exc:
+        m.main()
+    assert exc.value.code == 1
+    health = json.loads((outputs / "weekly-runner-health.json").read_text(encoding="utf-8"))
+    assert health["status"] == "failed"
+    assert "nothing reached weekly_posts" in health["error"]
+    assert "att-1" in health["error"]

@@ -823,21 +823,24 @@ def run_new_pipeline() -> int:
         f"new pipeline refused (exit 2): {refusal}" if refusal else
         f"new pipeline attempt {status}" + (f": {block.get('error')}" if block.get("error") else "")
     )
+    # A good attempt whose projection.json is missing (or belongs to another attempt)
+    # delivered nothing to weekly_posts: that is a failed Friday, not a warning (R9).
+    if ok and not projection:
+        ok = False
+        error = (f"new pipeline attempt {status} but no projection for attempt "
+                 f"{block.get('attempt_id') or '?'} — nothing reached weekly_posts; check the attempt's `project` stage")
     # write_runner_health replaces the whole file, so the attempt block is merged back after it.
     write_runner_health("success" if ok else "failed", topic=topic,
                         returncode=child.get("returncode"), error=error or "")
     _merge_shadow_block(paths, block)
     _write_approval_notify(block, projection)
-    if ok and projection:
+    if ok:
         approved = projection.get("approved") or {}
         verdict = (f"auto-approved ({approved.get('count')} post(s))" if approved.get("ok")
                    else ("pending approval in MCC" if not projection.get("auto_approve")
                          else f"auto-approve refused ({approved.get('reason') or 'unknown'})"))
         log_line(f"[run-weekly-seo] projected seo_runs {projection.get('runId')}: "
                  f"{projection.get('posts')} post(s), {projection.get('tasks')} task(s), {verdict}")
-    elif ok:
-        log_line("[run-weekly-seo] WARNING: attempt finished but no projection.json for it — "
-                 "nothing reached weekly_posts; check the attempt's `project` stage")
     log_line(f"[run-weekly-seo] new pipeline: {status}{f' ({error})' if error else ''}")
     return 0 if ok else 1
 

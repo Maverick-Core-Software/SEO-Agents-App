@@ -636,10 +636,15 @@ export async function runPoster(args, rawDeps = {}) {
 
   // The post exists from here on: record the hash before the verify GET so a
   // crash between create and verify still leaves the manifest truthful.
+  let manifestAppendError = null;
   try {
     appendPostedManifestEntry({ manifestPath, entry: photo.entry, photo, date: payload.date, localPostName: postName, now: deps.now() });
   } catch (e) {
-    log(`WARNING: post ${postName} created but the manifest append failed: ${e.message}`);
+    // The post exists; the hash is not recorded, so the 8-week no-reuse check is
+    // weaker for this image. Said in the result (the runner stores it as the
+    // row error text is not touched, but the log and JSON carry it), not only here.
+    manifestAppendError = `manifest append failed (${manifestPath}): ${e.message}`;
+    log(`WARNING: post ${postName} created but the ${manifestAppendError}`);
   }
 
   const verified = await verifyPost(postName, deps);
@@ -648,12 +653,13 @@ export async function runPoster(args, rawDeps = {}) {
   // The name is reported on exit 3 too: the post exists, so the runner closes
   // the workbook Posted gate (G1) and nothing creates it a second time.
   const postUrl = created.name;
+  const extra = manifestAppendError ? { manifestAppendError, image_sha256: photo.sha256 } : {};
   if (verified) {
-    emit({ result: 'posted', date: payload.date, verified: true, postUrl, name: postName, verificationAttempts: 1 });
+    emit({ result: 'posted', date: payload.date, verified: true, postUrl, name: postName, verificationAttempts: 1, ...extra });
     log(`Post created and LIVE: ${postName}`);
     return 0;
   }
-  emit({ result: 'posted', date: payload.date, verified: false, postUrl, name: postName, verificationAttempts: 1 });
+  emit({ result: 'posted', date: payload.date, verified: false, postUrl, name: postName, verificationAttempts: 1, ...extra });
   log(`Post created (${postName}) but state not confirmed LIVE on GET-back — treat as posted-but-unverified.`);
   return 3;
 }
