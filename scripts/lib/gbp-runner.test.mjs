@@ -15,6 +15,8 @@ import {
   runGbpForApprovedRun,
   gbpGateKindForResult,
   createGbpApiGateLatch,
+  photoColumnIndex,
+  markGbpPostedAndArchive,
 } from './gbp-runner.mjs';
 
 // excelDateToIso: Date, Excel serial, and string forms
@@ -748,3 +750,40 @@ console.log('ok gbp-runner api-gated exit 6');
 }
 
 console.log('ok gbp-runner F4 api-gate alert latch');
+
+// photoColumnIndex: AssetSource sits BEFORE AssetIdOrDescription in the workbook. The old
+// findIndex(includes('asset')) returned AssetSource (3) and archived nothing.
+assert.equal(photoColumnIndex(['Date', 'PostType', 'Topic', 'AssetSource', 'AssetIdOrDescription', 'Posted']), 4, 'exact name wins over AssetSource');
+assert.equal(photoColumnIndex(['Date', 'AssetSource', 'Related Picture']), 2, 'Related Picture is the second exact name');
+assert.equal(photoColumnIndex(['Date', 'AssetSource', 'Posted']), -1, 'AssetSource alone is not a photo column');
+assert.equal(photoColumnIndex(['Date', 'PhotoAsset', 'Posted']), 1, 'fuzzy fallback still finds a renamed asset column');
+
+// markGbpPostedAndArchive end to end on that header order: the photo must be archived.
+{
+  const fs2 = await import('node:fs');
+  const os2 = await import('node:os');
+  const path2 = await import('node:path');
+  const xlsx2 = (await import('xlsx')).default;
+  const dir = fs2.mkdtempSync(path2.join(os2.tmpdir(), 'gbp-photo-col-'));
+  const photo = path2.join(dir, 'IMG_0001.jpg');
+  fs2.writeFileSync(photo, 'x');
+  const book = path2.join(dir, 'schedule.xlsx');
+  const ws = xlsx2.utils.aoa_to_sheet([
+    ['Date', 'PostType', 'Topic', 'AssetSource', 'AssetIdOrDescription', 'Posted'],
+    ['2026-10-17', 'STANDARD', 'Install', 'Workspace Shared', photo, false],
+  ]);
+  const wb = xlsx2.utils.book_new();
+  xlsx2.utils.book_append_sheet(wb, ws, 'Posts');
+  xlsx2.writeFile(wb, book);
+  const archive = path2.join(dir, 'archive');
+  await markGbpPostedAndArchive({
+    postDate: '2026-10-17', exitCode: 0, runId: 'r-photo-col', log: async () => {},
+    env: { GBP_WORKBOOK_PATH: book, GBP_ARCHIVE_FOLDER: archive },
+  });
+  assert.equal(fs2.existsSync(photo), false, 'photo left its library folder');
+  assert.equal(fs2.existsSync(path2.join(archive, '2026-10', 'IMG_0001.jpg')), true, 'photo archived to YYYY-MM');
+  const rows = xlsx2.utils.sheet_to_json(xlsx2.readFile(book).Sheets.Posts, { defval: '' });
+  assert.equal(rows[0].Posted, true, 'Posted gate closed');
+}
+
+console.log('ok gbp-runner photo column header match');
