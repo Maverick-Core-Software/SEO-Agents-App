@@ -16,12 +16,14 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import https from 'node:https';
 import http from 'node:http';
 import { execSync, execFile } from 'node:child_process';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { sendHermesAlert } from './lib/hermes-alert.mjs';
+import { createPm2SelfHeal, netUseEnabled, gbpArchiveFolder } from './lib/monitor-host.mjs';
 // The rebuilt pipeline's alert rules live with the watchdog so the daily watchdog
 // and this monitor cannot disagree about what a clean shadow/new run looks like.
 import { evaluatePipelineWatchdog } from './seo-watchdog.mjs';
@@ -47,7 +49,7 @@ const SMTP_TO             = process.env.SMTP_TO             || 'barnscarter@gmai
 const MAV_BRIDGE_PORT     = parseInt(process.env.MAV_BRIDGE_PORT || '8790', 10);
 const MCC_PORT            = parseInt(process.env.MCC_PORT || '3000', 10);
 const POLL_MS             = 30_000;
-const GBP_ARCHIVE_FOLDER  = process.env.GBP_ARCHIVE_FOLDER || 'M:\\backups\\gbp-archive';
+const GBP_ARCHIVE_FOLDER  = gbpArchiveFolder(process.env);
 
 // Expected weekly run: Task Scheduler launches run-weekly-seo.py at 8:30 local.
 // If the wrapper hasn't written its "started" marker by NO_SHOW_DEADLINE (local
@@ -152,23 +154,17 @@ function httpGet(port, path, timeout = 5000) {
 }
 
 // ── PM2 helpers ───────────────────────────────────────────────────────────────
+// SEO_MONITOR_PM2=0 turns every pm2 command off; the monitor then relies on the
+// HTTP health checks alone (see lib/monitor-host.mjs).
+const pm2 = createPm2SelfHeal({ log });
+const PM2_SELF_HEAL = pm2.enabled;
+
 function pm2List() {
-  try {
-    const out = execSync('pm2 jlist', { encoding: 'utf8', timeout: 10000, windowsHide: true });
-    return JSON.parse(out);
-  } catch {
-    return [];
-  }
+  return pm2.list();
 }
 
 function pm2Restart(name) {
-  try {
-    execSync(`pm2 restart "${name}"`, { encoding: 'utf8', timeout: 15000, windowsHide: true });
-    return true;
-  } catch (e) {
-    log('error', `pm2 restart failed for ${name}`, { error: e.message });
-    return false;
-  }
+  return pm2.restart(name);
 }
 
 // Cold-boot recovery: `pm2 restart` only works on processes the daemon already
@@ -176,13 +172,7 @@ function pm2Restart(name) {
 // case), the process list is empty and restart is useless — we must reload the
 // saved dump with `pm2 resurrect`. Tried at most once per monitor run.
 function pm2Resurrect() {
-  try {
-    execSync('pm2 resurrect', { encoding: 'utf8', timeout: 30000, windowsHide: true });
-    return true;
-  } catch (e) {
-    log('error', 'pm2 resurrect failed', { error: e.message });
-    return false;
-  }
+  return pm2.resurrect();
 }
 
 // ── Drive helpers ─────────────────────────────────────────────────────────────
@@ -359,7 +349,7 @@ async function checkPM2Processes() {
         'FAILED: core PM2 processes missing and pm2 resurrect did not restore them',
         `Still missing after resurrect: ${stillMissing.join(', ') || '(resurrect reported an error)'}\n\n` +
         `This usually means PM2 has no saved dump (run "pm2 save" once after starting everything) or the PM2 daemon is not running.\n\n` +
-        `Recover manually on CMB-Workbench:\n  pm2 resurrect\n  # or, if there is no saved dump:\n  pm2 start C:\\Workspace\\Active\\MCC\\ecosystem.config.cjs\n  pm2 save\n\nMonitor log: ${logFile}`);
+        `Recover manually on ${os.hostname()}:\n  pm2 resurrect\n  # or, if there is no saved dump:\n  pm2 start C:\\Workspace\\Active\\MCC\\ecosystem.config.cjs\n  pm2 save\n\nMonitor log: ${logFile}`);
     }
   }
 
@@ -378,8 +368,17 @@ async function checkPM2Processes() {
   }
 }
 
+// Without the net use remount (default off-Workbench, or SEO_MONITOR_NET_USE unset),
+// the check is whether the archive folder itself exists.
+const NET_USE_REMOUNT = netUseEnabled(process.env);
+
 async function checkMDrive() {
-  const archiveNeeded = fs.existsSync(GBP_ARCHIVE_FOLDER.split('\\')[0] + '\\');
+  if (!NET_USE_REMOUNT) {
+    if (!fs.existsSync(GBP_ARCHIVE_FOLDER)) {
+      log('warn', `GBP archive folder not reachable: ${GBP_ARCHIVE_FOLDER} — GBP photo archiving will fail`);
+    }
+    return;
+  }
   if (!isMDriveMounted()) {
     log('warn', 'M: drive not mounted — GBP photo archiving will fail');
     await fixMDrive();
@@ -560,7 +559,7 @@ async function poll() {
     await Promise.all([
       checkMavBridge(),
       checkMCCDashboard(),
-      checkPM2Processes(),
+      ...(PM2_SELF_HEAL ? [checkPM2Processes()] : []),
     ]);
     await checkMDrive();
     await checkRunStarted();
@@ -582,7 +581,7 @@ async function main() {
 
   sendAlert(
     `SEO Monitor Started (${today})`,
-    `The SEO Monitor is active for today's run.\n\nMonitor log: ${logFile}\nRun duration: ${RUN_DURATION_HOURS} hours\n\nYou will receive alerts if:\n- The SEO pipeline fails at any phase\n- Any post fails to publish\n- GBP posts need manual verification\n- mav-bridge or MCC dashboard goes offline\n\nAuto-fixes enabled: PM2 process restart, M: drive reconnect.`
+    `The SEO Monitor is active for today's run.\n\nMonitor log: ${logFile}\nRun duration: ${RUN_DURATION_HOURS} hours\n\nYou will receive alerts if:\n- The SEO pipeline fails at any phase\n- Any post fails to publish\n- GBP posts need manual verification\n- mav-bridge or MCC dashboard goes offline\n\nAuto-fixes enabled: ${[PM2_SELF_HEAL && 'PM2 process restart', NET_USE_REMOUNT && 'M: drive reconnect'].filter(Boolean).join(', ') || 'none (HTTP health checks only)'}.`
   );
 
   // Initial check immediately

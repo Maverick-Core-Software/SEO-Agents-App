@@ -38,6 +38,7 @@
  */
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
@@ -143,7 +144,7 @@ export function evaluateWatchdog({
       `NO-SHOW: today is ${DOW_NAMES[expectedDow]} (run day), it is past ` +
       `${deadline} local, and the weekly runner never started ` +
       `(health marker ${health ? `is from ${health.date}` : 'does not exist'}). ` +
-      `Check the 'Grizzly SEO Weekly Run' scheduled task on CMB-Workbench.`
+      `Check the 'Grizzly SEO Weekly Run' scheduled task on ${os.hostname()}.`
     );
   } else if (isRunDay && health?.date === today && health.status === 'failed') {
     problems.push(
@@ -194,7 +195,7 @@ export function evaluateWatchdog({
       problems.push(
         `STALE: last weekly-runner activity was ${health.date} (${ageDays.toFixed(1)} days ago, ` +
         `threshold ${staleDays}d). The Friday trigger is likely dead or disabled — a full week ` +
-        `has been missed. Check Task Scheduler on CMB-Workbench.`
+        `has been missed. Check Task Scheduler on ${os.hostname()}.`
       );
     }
   }
@@ -325,7 +326,7 @@ async function main() {
   }
 
   const subject = 'Weekly SEO run problem detected';
-  const body = problems.join('\n\n') + `\n\nChecked at ${now.toISOString()} by the daily watchdog on CMB-Workbench.`;
+  const body = problems.join('\n\n') + `\n\nChecked at ${now.toISOString()} by the daily watchdog on ${os.hostname()}.`;
   log('error', subject, { problems });
   const delivered = await sendAlert(subject, body);
   if (!delivered) {

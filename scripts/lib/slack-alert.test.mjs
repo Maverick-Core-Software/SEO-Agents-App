@@ -1,6 +1,6 @@
 // scripts/lib/slack-alert.test.mjs
 import assert from 'node:assert/strict';
-import { getSlackConfig, approvalBlocks, sendSlackBlocks } from './slack-alert.mjs';
+import { getSlackConfig, approvalBlocks, sendSlackBlocks, _resolveSlackConfig } from './slack-alert.mjs';
 
 // Fail closed: every combination of missing config disables delivery.
 assert.equal(getSlackConfig({}).enabled, false);
@@ -76,6 +76,42 @@ assert.equal(explicit.channel, 'C-local');
   const disabled = getSlackConfig({});
   assert.equal(await sendSlackBlocks({ blocks: [], text: 'T', config: disabled, fetchImpl }), false);
   assert.equal(called, false);
+}
+
+// Linux with env token+channel: the %LOCALAPPDATA% Hermes file is never read, and
+// the resolved config is exactly the env values.
+{
+  let reads = 0;
+  const readFile = () => { reads += 1; return { SLACK_BOT_TOKEN: 'xoxb-file', SLACK_ALERT_CHANNEL: 'C-file' }; };
+  const cfg = _resolveSlackConfig({ SLACK_BOT_TOKEN: 'xoxb-env', SLACK_ALERT_CHANNEL: '#env' }, 'linux', readFile);
+  assert.deepEqual(cfg, { enabled: true, token: 'xoxb-env', channel: '#env' });
+  assert.equal(reads, 0);
+}
+
+// Linux with only the token set: still no file read, and delivery stays disabled.
+{
+  let reads = 0;
+  const cfg = _resolveSlackConfig({ SLACK_BOT_TOKEN: 'xoxb-env' }, 'linux', () => { reads += 1; return { SLACK_ALERT_CHANNEL: 'C-file' }; });
+  assert.equal(cfg.enabled, false);
+  assert.equal(reads, 0);
+}
+
+// Linux with everything unset: a disabled no-op. No throw, no network call.
+{
+  let reads = 0;
+  const cfg = _resolveSlackConfig({}, 'linux', () => { reads += 1; return {}; });
+  assert.deepEqual(cfg, { enabled: false, token: '', channel: '' });
+  assert.equal(reads, 0);
+  let called = false;
+  const fetchImpl = async () => { called = true; return { json: async () => ({ ok: true }) }; };
+  assert.equal(await sendSlackBlocks({ blocks: [], text: 'T', config: cfg, fetchImpl }), false);
+  assert.equal(called, false);
+}
+
+// win32 with the channel unset: the Hermes file fills only the gap, and env still wins per field.
+{
+  const cfg = _resolveSlackConfig({ SLACK_ALERT_CHANNEL: '#env' }, 'win32', () => ({ SLACK_BOT_TOKEN: 'xoxb-file', SLACK_HOME_CHANNEL: 'C-file' }));
+  assert.deepEqual(cfg, { enabled: true, token: 'xoxb-file', channel: '#env' });
 }
 
 console.log('ok slack-alert');

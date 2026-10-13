@@ -92,8 +92,11 @@ _PHASE_LABELS = {
 }
 
 
+# HERMES_CLI overrides. Default: the Windows venv on nt, `hermes` on PATH elsewhere.
 _DEFAULT_HERMES_CLI = (
     r"C:\Users\carte\AppData\Local\hermes\hermes-agent\venv\Scripts\hermes.exe"
+    if os.name == "nt"
+    else "hermes"
 )
 
 

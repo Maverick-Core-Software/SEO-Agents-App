@@ -8,10 +8,20 @@ Run by Windows Task Scheduler every Friday at 8:30 AM.
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from datetime import date, datetime, timezone
 from pathlib import Path
+
+
+def _default_hermes_cli() -> str:
+    """Platform default for the `hermes` CLI when HERMES_CLI is unset: the Windows
+    venv on nt, `hermes` on PATH elsewhere."""
+    if os.name == "nt":
+        return r"C:\Users\carte\AppData\Local\hermes\hermes-agent\venv\Scripts\hermes.exe"
+    return "hermes"
+
 
 # Load .env before anything else so DEEPSEEK_API_KEY, ANTHROPIC_API_KEY etc. are available to the crew
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -287,12 +297,14 @@ def preflight() -> list[str]:
     ).strip():
         errors.append("SUPABASE_URL / SUPABASE_SERVICE_KEY missing")
 
-    hermes = Path(
-        os.environ.get("HERMES_CLI")
-        or r"C:\Users\carte\AppData\Local\hermes\hermes-agent\venv\Scripts\hermes.exe"
+    hermes = os.environ.get("HERMES_CLI") or _default_hermes_cli()
+    # An absolute CLI path is checked on disk; a bare name (posix default `hermes`)
+    # is resolved on PATH.
+    hermes_found = (
+        Path(hermes).exists() if os.path.isabs(hermes) else shutil.which(hermes) is not None
     )
     smtp = (os.environ.get("SMTP_APP_PASSWORD") or "").strip()
-    if not hermes.exists() and not smtp:
+    if not hermes_found and not smtp:
         errors.append(
             f"both alert channels dead: hermes missing ({hermes}) and SMTP_APP_PASSWORD empty"
         )
