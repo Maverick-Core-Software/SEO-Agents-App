@@ -293,3 +293,21 @@ class TestNewModeHealthLift:
     def test_subprocess_module_is_the_real_one(self):
         m = _load_run_weekly_seo()
         assert m.subprocess is subprocess
+
+
+def test_refusal_line_lifts_the_engine_refusal_from_the_log(tmp_path):
+    """V4: a refused `--mode new` (exit 2) writes no attempt record, so the health
+    error must carry the engine's `[weekly] refused: ...` reason, not just
+    'failed (no attempt written)'."""
+    m = _load_run_weekly_seo()
+    log = tmp_path / "pipeline.log"
+    log.write_text(
+        "[weekly] attempt lookup\n"
+        "[weekly] refused: seo_runs run-1 for week 2026-10-19 already exists (pending_approval, 11 pending_approval row(s)); pass --force-replan to replace the pending rows\n"
+        "[run-weekly-seo] new pipeline: attempt status failed (no attempt written)\n",
+        encoding="utf-8",
+    )
+    assert m._refusal_line(log).startswith("seo_runs run-1 for week 2026-10-19 already exists")
+    assert m._refusal_line(tmp_path / "missing.log") is None
+    (tmp_path / "clean.log").write_text("[weekly] attempt ok\n", encoding="utf-8")
+    assert m._refusal_line(tmp_path / "clean.log") is None

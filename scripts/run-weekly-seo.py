@@ -757,6 +757,20 @@ def _write_approval_notify(block: dict, projection: dict | None) -> None:
         print(f"[run-weekly-seo] WARNING: could not write {APPROVAL_NOTIFY_FILE}: {e}", flush=True)
 
 
+def _refusal_line(log_path) -> str | None:
+    """The engine's last `[weekly] refused: ...` line from the pipeline log, if any
+    (run.mjs prints it before exiting 2 for RerunRefused / StoreRefused)."""
+    try:
+        lines = Path(log_path).read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+    for line in reversed(lines):
+        idx = line.find("[weekly] refused:")
+        if idx != -1:
+            return line[idx + len("[weekly] refused:"):].strip()[:300] or None
+    return None
+
+
 def run_new_pipeline() -> int:
     """SEO_PIPELINE=new: the rebuilt pipeline IS the Friday run (Phase C cutover).
 
@@ -801,7 +815,12 @@ def run_new_pipeline() -> int:
     projection = _read_json_file(Path(paths["out"]) / "projection.json")
     if not (isinstance(projection, dict) and projection.get("attempt_id") == block.get("attempt_id")):
         projection = None
+    # V4: a refused run (exit 2: rerun guard or store refusal) writes no attempt, so the
+    # block can only say "failed (no attempt written)". Lift the engine's refusal line
+    # into the health error so the watchdog FAILED alert carries the reason.
+    refusal = _refusal_line(paths["log"]) if child.get("returncode") == 2 else None
     error = None if ok else (
+        f"new pipeline refused (exit 2): {refusal}" if refusal else
         f"new pipeline attempt {status}" + (f": {block.get('error')}" if block.get("error") else "")
     )
     # write_runner_health replaces the whole file, so the attempt block is merged back after it.
