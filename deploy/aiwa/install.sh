@@ -117,7 +117,10 @@ if [ -f "$APP_ROOT/package-lock.json" ]; then
 fi
 if [ -f "$APP_ROOT/uv.lock" ]; then
   log "uv: sync --locked as $SEO_USER"
-  (cd "$APP_ROOT" && runuser -u "$SEO_USER" -- env UV_PROJECT_ENVIRONMENT="$APP_ROOT/.venv" uv sync --locked --project "$APP_ROOT")
+  # pct exec / lxc-attach may enter the container with a PATH that lacks /usr/local/bin,
+  # so call uv by absolute path (observed 2026-10-13 on seo-prod: "env: 'uv': No such file").
+  UV_BIN="$(command -v uv 2>/dev/null || echo /usr/local/bin/uv)"
+  (cd "$APP_ROOT" && runuser -u "$SEO_USER" -- env PATH="/usr/local/bin:$PATH" UV_PROJECT_ENVIRONMENT="$APP_ROOT/.venv" "$UV_BIN" sync --locked --project "$APP_ROOT")
 fi
 
 # 8. systemd units: copy and reload. Nothing is enabled.
