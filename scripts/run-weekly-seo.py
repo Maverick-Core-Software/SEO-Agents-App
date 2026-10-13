@@ -363,9 +363,19 @@ APPROVAL_NOTIFY_FILE = OUTPUTS_DIR / "approval-notify.json"
 PIPELINE_GOOD_STATUSES = ("succeeded", "degraded")
 
 
+# Every mode this wrapper knows. Anything else is refused in main() (F5): an
+# unknown or mistyped SEO_PIPELINE must never fall through to the legacy crews.
+KNOWN_PIPELINE_MODES = ("legacy",) + PIPELINE_MODES
+
+
 def pipeline_mode() -> str:
-    """SEO_PIPELINE, normalized; `legacy` when unset."""
-    return (os.environ.get("SEO_PIPELINE") or "legacy").strip().lower()
+    """SEO_PIPELINE, normalized: surrounding whitespace and one pair of matching
+    quotes stripped (`"new"` / `'shadow'` as a dotenv line), lower-cased; `legacy`
+    when unset or blank. Validity is checked by main(), not here."""
+    raw = (os.environ.get("SEO_PIPELINE") or "").strip()
+    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "\"'":
+        raw = raw[1:-1].strip()
+    return raw.lower() or "legacy"
 
 
 def pipeline_paths(mode: str) -> dict:
@@ -893,10 +903,20 @@ def main() -> None:
     write_runner_health("started")
     log_line(f"[run-weekly-seo] Starting — {date.today().isoformat()} (Friday run)")
 
+    # F5: fail closed on an unknown mode. A typo or an unstripped value must not
+    # run the legacy crews under a health that reads like a mode problem elsewhere.
+    mode = pipeline_mode()
+    if mode not in KNOWN_PIPELINE_MODES:
+        msg = (f"SEO_PIPELINE={os.environ.get('SEO_PIPELINE')!r} is not one of "
+               f"{KNOWN_PIPELINE_MODES}; refusing to run (never falls back to legacy)")
+        log_line(f"[run-weekly-seo] REFUSED: {msg}")
+        write_runner_health("failed", error=msg)
+        sys.exit(2)
+
     # Phase C cutover: `new` replaces the crew launch entirely (no research /
     # execute / schedule crews, no supabase-sync). `legacy` and `shadow` keep the
     # crew path below byte-for-byte.
-    if pipeline_mode() == "new":
+    if mode == "new":
         sys.exit(run_new_pipeline())
 
     fatal = preflight()
