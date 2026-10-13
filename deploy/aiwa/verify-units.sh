@@ -60,6 +60,9 @@ else
   for t in "${timers[@]}"; do
     n="$(basename "$t")"
     need "$t" '^OnCalendar=' 'OnCalendar'
+    # F10: every timer names its zone explicitly (systemd >= 247; Debian 12 has 252), so a
+    # host timezone reset cannot move the Friday timers to 08:30 UTC.
+    need "$t" '^OnCalendar=.* America/Chicago$' 'OnCalendar ... America/Chicago suffix'
     need "$t" '^Persistent=(true|false)$' 'Persistent=true|false'
     need "$t" '^Unit=seo-[a-z-]+\.service$' 'Unit=<service>'
     unit="$(sed -n 's/^Unit=//p' "$t")"
@@ -72,7 +75,7 @@ else
       bad "$n: daily timer should set Persistent=true"
     fi
   done
-  if [ "$fail" -eq 0 ]; then ok "grep lint: ${#services[@]} services, ${#timers[@]} timers (OnCalendar, EnvironmentFile, TZ, Persistent, Unit)"; fi
+  if [ "$fail" -eq 0 ]; then ok "grep lint: ${#services[@]} services, ${#timers[@]} timers (OnCalendar + America/Chicago, EnvironmentFile, TZ, Persistent, Unit)"; fi
 fi
 
 # 4. ecosystem loads

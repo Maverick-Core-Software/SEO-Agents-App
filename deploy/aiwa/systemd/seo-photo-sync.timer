@@ -4,7 +4,7 @@ Description=Grizzly SEO photo sync, Fridays 08:25 America/Chicago
 [Timer]
 # The clock is the host clock: timedatectl set-timezone America/Chicago (install.sh does this).
 # systemd ignores Environment=TZ for timers.
-OnCalendar=Fri *-*-* 08:25:00
+OnCalendar=Fri *-*-* 08:25:00 America/Chicago
 AccuracySec=1s
 # A missed Friday must not fire later. Matches the PC scheduled task semantics for this job.
 Persistent=false

@@ -10,9 +10,9 @@ Target: Debian 12 LXC `seo-prod`, app root `/opt/seo`, photo library `/srv/seo/p
 | `ecosystem.linux.config.cjs` | pm2 apps: mav-bridge, gbp-worker (via `gbp-worker-service.mjs`), fb-comment-agent. Logs to `/opt/seo/logs/<app>.log`. No secrets. |
 | `systemd/*.service`, `systemd/*.timer` | seo-photo-sync (Fri 08:25, rclone then cache sync), seo-weekly-run (Fri 08:30), seo-monitor (Fri 08:30, 14 h), seo-watchdog (daily 10:00), seo-reconcile (daily 10:10). Every service sets TZ, `EnvironmentFile=/opt/seo/.env`, `User=seo`. |
 | `install.sh` | Idempotent Debian 12 provisioning. Enables nothing, except with the opt-in `--pm2-startup` flag (installs and enables `pm2-seo.service` for boot persistence; the Carter-approved F3 step). |
-| `render-env.sh` | Validates a PC-built `.env` against `env.required`. Names only, never values. |
+| `render-env.sh` | Validates a PC-built `.env` against `env.required`, enforces the pinned values (`GBP_POSTER`, `SEO_PIPELINE`, `MAV_BRIDGE_GBP`, `SEO_AUTO_APPROVE`, `FB_BOOST_API`, `MAV_BRIDGE_BIND`) and, with `--check-paths`, that every path name resolves (`seo-weekly-run.service` runs it as `ExecStartPre`). Names only, never values. |
 | `env.required` | Names the `.env` must define, tagged by service. |
-| `verify-units.sh` | `bash -n`, shellcheck if present, `systemd-analyze verify` if present, else a grep lint. Also checks that the ecosystem loads. |
+| `verify-units.sh` | `bash -n`, shellcheck if present, `systemd-analyze verify` if present, else a grep lint (incl. the ` America/Chicago` suffix on every `OnCalendar`). Also checks that the ecosystem loads. |
 
 Also changed: the Windows `ecosystem.config.cjs` at the repo root has a one-line pointer to this directory.
 Nothing else in it changed.

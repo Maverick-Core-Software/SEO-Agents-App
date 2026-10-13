@@ -2,7 +2,7 @@
 Description=Grizzly SEO monitor, Fridays 08:30 America/Chicago
 
 [Timer]
-OnCalendar=Fri *-*-* 08:30:00
+OnCalendar=Fri *-*-* 08:30:00 America/Chicago
 AccuracySec=1s
 # A missed Friday must not fire later.
 Persistent=false

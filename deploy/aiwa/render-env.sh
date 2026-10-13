@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# render-env.sh [--no-perm-check] [ENV_FILE]
+# render-env.sh [--no-perm-check] [--check-paths] [ENV_FILE]
 #
 # Validates a PC-built .env for the AIWA SEO host (decision D2). Nothing here fetches or
 # writes secrets: the file is built on the PC and shipped through the Orca release path.
@@ -8,8 +8,13 @@
 # Checks:
 #   1. every name listed in deploy/aiwa/env.required is present and non-empty
 #   2. TZ=America/Chicago
-#   3. GBP_POSTER and SEO_PIPELINE explicitly set to allowed values
-#   4. mode 600 and owner seo (skip with --no-perm-check for Windows or dev dry runs only)
+#   3. the pins the runbook relies on carry an allowed value (F10): GBP_POSTER (api|playwright),
+#      SEO_PIPELINE (legacy|shadow|new), MAV_BRIDGE_GBP (on|off), SEO_AUTO_APPROVE (0|1),
+#      FB_BOOST_API (0|1); MAV_BRIDGE_BIND is not an unspecified address (0.0.0.0 / ::)
+#   4. --check-paths: directory names point at existing directories and file names at
+#      existing files (binaries may also be bare names on PATH). seo-weekly-run.service runs
+#      this as ExecStartPre, so a missing path fails the unit before anything launches.
+#   5. mode 600 and owner seo (skip with --no-perm-check for Windows or dev dry runs only)
 #
 # Exit: 0 valid, 1 validation failed (problems listed), 2 usage or read error.
 set -u
@@ -18,11 +23,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REQUIRED_FILE="$SCRIPT_DIR/env.required"
 ENV_FILE="/opt/seo/.env"
 PERM_CHECK=1
+PATH_CHECK=0
 
 for arg in "$@"; do
   case "$arg" in
     --no-perm-check) PERM_CHECK=0 ;;
-    -h|--help) sed -n '2,13p' "$0"; exit 0 ;;
+    --check-paths) PATH_CHECK=1 ;;
+    -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
     -*) echo "unknown option: $arg" >&2; exit 2 ;;
     *) ENV_FILE="$arg" ;;
   esac
@@ -76,22 +83,50 @@ in_missing() {
   return 1
 }
 
+# allowed NAME value...: the name must be present (it is in env.required) and hold one of the values.
+allowed() {
+  local name="$1"; shift
+  in_missing "$name" && return 0   # already reported as missing
+  local v="${VALS[$name]:-}" ok=0 cand
+  for cand in "$@"; do [ "$v" = "$cand" ] && ok=1; done
+  [ "$ok" -eq 1 ] || problems+=("$name must be set to one of: $*")
+}
+
 if [ "${VALS[TZ]:-}" != "America/Chicago" ]; then
   problems+=("TZ must be exactly America/Chicago")
 fi
 
-if ! in_missing GBP_POSTER; then
-  case "${VALS[GBP_POSTER]:-}" in
-    api|playwright) ;;
-    *) problems+=("GBP_POSTER must be set to api or playwright") ;;
-  esac
-fi
+allowed GBP_POSTER api playwright
+allowed SEO_PIPELINE legacy shadow new
+allowed MAV_BRIDGE_GBP on off
+allowed SEO_AUTO_APPROVE 0 1
+allowed FB_BOOST_API 0 1
 
-if ! in_missing SEO_PIPELINE; then
-  case "${VALS[SEO_PIPELINE]:-}" in
-    legacy|shadow|new) ;;
-    *) problems+=("SEO_PIPELINE must be set to legacy, shadow or new") ;;
-  esac
+case "${VALS[MAV_BRIDGE_BIND]:-}" in
+  0.0.0.0|::|'[::]'|'*') problems+=("MAV_BRIDGE_BIND must be one LXC address, not an unspecified address (the bridge refuses it; RUNBOOK 3a)") ;;
+esac
+
+# --check-paths: every path-valued name resolves on this host.
+if [ "$PATH_CHECK" -eq 1 ]; then
+  DIR_NAMES=(GBP_WORKBOOK_DIR GBP_ARCHIVE_FOLDER GBP_PHOTOS_FOLDER GBP_PHOTOS_LOCAL_CACHE)
+  FILE_NAMES=(GBP_WORKBOOK_PATH GBP_CLIENT_SECRET GBP_TOKEN_FILE SEARCH_CONSOLE_TOKEN_FILE)
+  BIN_NAMES=(SEO_AGENTS_EXE HERMES_CLI)
+  for name in "${DIR_NAMES[@]}"; do
+    in_missing "$name" && continue
+    [ -d "${VALS[$name]}" ] || problems+=("$name does not point at an existing directory")
+  done
+  for name in "${FILE_NAMES[@]}"; do
+    in_missing "$name" && continue
+    [ -f "${VALS[$name]}" ] || problems+=("$name does not point at an existing file")
+  done
+  for name in "${BIN_NAMES[@]}"; do
+    in_missing "$name" && continue
+    v="${VALS[$name]}"
+    case "$v" in
+      */*) [ -x "$v" ] || problems+=("$name does not point at an executable file") ;;
+      *) command -v "$v" >/dev/null 2>&1 || problems+=("$name is not on PATH") ;;
+    esac
+  done
 fi
 
 if [ "$PERM_CHECK" -eq 1 ]; then
@@ -109,5 +144,5 @@ if [ "${#problems[@]}" -gt 0 ]; then
   exit 1
 fi
 
-echo "render-env: OK ${#REQUIRED[@]} required names present; TZ, GBP_POSTER, SEO_PIPELINE valid; perms $([ "$PERM_CHECK" -eq 1 ] && echo checked || echo skipped)"
+echo "render-env: OK ${#REQUIRED[@]} required names present; TZ, GBP_POSTER, SEO_PIPELINE, MAV_BRIDGE_GBP, SEO_AUTO_APPROVE, FB_BOOST_API valid; paths $([ "$PATH_CHECK" -eq 1 ] && echo checked || echo not checked); perms $([ "$PERM_CHECK" -eq 1 ] && echo checked || echo skipped)"
 exit 0

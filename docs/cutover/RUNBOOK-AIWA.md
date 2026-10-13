@@ -48,7 +48,11 @@ the LXC fetches secrets, and no agent prints values.
 3. Copy `client_secret_hermes_gbp.json`, `grizzly-search-console.json` and `grizzly-gbp.json` to `/opt/seo/secrets/`
    (mode 600, owner `seo`). `gbp-api-auth.mjs` rewrites the token file on refresh, so `seo` must own it.
 4. Validate. Output lists names only:
-   `bash /opt/seo/deploy/aiwa/render-env.sh /opt/seo/.env`. Expect `render-env: OK`.
+   `bash /opt/seo/deploy/aiwa/render-env.sh /opt/seo/.env`. Expect `render-env: OK`. It also enforces the pins
+   (`GBP_POSTER`, `SEO_PIPELINE`, `MAV_BRIDGE_GBP` on|off, `SEO_AUTO_APPROVE` 0|1, `FB_BOOST_API` 0|1, no unspecified
+   `MAV_BRIDGE_BIND`). After the data copy (section 4) re-run it with `--check-paths`: every directory and file name
+   must resolve. `seo-weekly-run.service` runs `render-env.sh --check-paths` as `ExecStartPre`, so a bad `.env` fails
+   the Friday unit before anything launches (F10).
 
 ## 3a. Network: mav-bridge bind (B8) [Carter approval: firewall + MCC env]
 
@@ -89,7 +93,9 @@ Evidence: file counts on both sides and a sample sha256 match. Record them in `d
 
 ## 5. Timezone check (E3, E5) [Carter approval: probe]
 
-1. `timedatectl show -p Timezone --value` must print `America/Chicago`. (read-only)
+1. `timedatectl show -p Timezone --value` must print `America/Chicago`. (read-only) Every timer also names
+   ` America/Chicago` on its `OnCalendar` line (F10), so a later host-timezone reset cannot move the Friday
+   timers to 08:30 UTC; `systemctl list-timers` must still show the Chicago wall time.
 2. Probe the service environment, not the shell:
    `systemd-run --pipe --wait --uid=seo -p EnvironmentFile=/opt/seo/.env -p WorkingDirectory=/opt/seo -- /usr/bin/node -e 'console.log(new Date().toString())'`
    Must print `CDT` (summer) or `CST`. Required before any timer is enabled.
