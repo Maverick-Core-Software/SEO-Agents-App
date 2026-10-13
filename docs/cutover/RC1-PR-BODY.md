@@ -73,14 +73,16 @@ non-zero child exit, module-level `int()`), N11 (import-time env reads), N13 (py
 editable install), N14 (junction artifact, below). Also open from RC1-NOTES: R1–R3 (orchestrator decisions on
 Phase A content), R4/R5 (manifest load/tag), R7 (reconcile-stale noise in shadow mode on the PC).
 
-## Gates (worktree `_wt/SEO-rc1b` on the PC, after the review fixes)
+## Gates (main checkout `D:\Workspace\Active\SEO-Agents-App` on `cutover/rc1` @ c8a05de, run by the orchestrator)
 
 | Gate | Command | Result |
 |---|---|---|
-| node | `node --test "scripts/**/*.test.mjs"` | tests 995, pass 994, fail 1 — the junction artifact only (`scripts/weekly/test/e2e-offline.test.mjs` "resolves the module to the real repo path through the alias" fails in every git worktree because `C:Workspace` resolves to the main checkout; passes from the main checkout) |
+| node | `node --test "scripts/**/*.test.mjs"` | **tests 995, suites 189, pass 995, fail 0, skipped 0** |
 | lint | `npm run lint` | exit 0 |
-| pytest | `uv run --with pytest pytest -q` | 428 passed, 1 failed — `tests/test_research_regression.py::TestDryRunCalibration::test_dry_run_no_live_adapter` (known, pre-existing) |
+| pytest | `uv run --with pytest pytest -q --ignore=GBP_API` | **429 passed, 0 failed** (`--ignore` only skips a foreign `GBP_API/` worktree someone placed inside the repo root; without it pytest collects that tree and errors on a duplicate `tests/conftest.py`) |
 | units | `bash deploy/aiwa/verify-units.sh` | PASS |
+
+(In git worktrees the same suite shows 1 node failure, the junction artifact `e2e-offline.test.mjs` "resolves the module to the real repo path through the alias", because `C:\Workspace` resolves to the main checkout.)
 
 Baseline before the merges (`cutover/phase-a-v2-merge`): node 901 tests.
 
