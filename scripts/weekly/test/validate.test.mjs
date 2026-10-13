@@ -40,7 +40,7 @@ const only = (list, re) => list.filter((m) => re.test(m));
 
 describe('fixture facts parse the way the validator expects', () => {
   it('phones, domain, founding year, tenure phrases, approved prices', () => {
-    assert.deepEqual(FACTS.phones, { customer_text: '(469) 896-3862', published_main: '(469) 863-9804' });
+    assert.deepEqual(FACTS.phones, { customer_text: '(469) 896-3862', published_main: '(469) 716-9870' });
     assert.equal(FACTS.domain, 'grizzlyelectricaltx.com');
     assert.equal(FACTS.founded_year, 2021);
     assert.deepEqual(FACTS.tenure_phrases, ['since 2021', 'five years']);
@@ -57,7 +57,7 @@ describe('findPhoneNumbers', () => {
     for (const f of forms) assert.deepEqual(findPhoneNumbers(`call ${f} now`), ['(469) 896-3862'], f);
   });
   it('returns every occurrence in order', () => {
-    assert.deepEqual(findPhoneNumbers('Text (469) 896-3862 or call 469-863-9804.'), ['(469) 896-3862', '(469) 863-9804']);
+    assert.deepEqual(findPhoneNumbers('Text (469) 896-3862 or call 469-716-9870.'), ['(469) 896-3862', '(469) 716-9870']);
   });
   it('ignores dates, zips, amounts, years, amp ratings and mixed-separator ranges', () => {
     const text = 'Rowlett, TX 75089 on 2026-09-04. Built in 1990, 200 amp, $1,200, 100-200 3000 watts, 8902 Merritt Rd.';
@@ -125,13 +125,13 @@ describe('findTenureClaims', () => {
 describe('textFactsErrors (strict text rules, used by compare)', () => {
   const opts = { facts: FACTS, weekSpec: WEEK };
   it('accepts copy that follows the facts', () => {
-    assert.deepEqual(textFactsErrors('Call (469) 863-9804 or text (469) 896-3862. Five years serving Rowlett since 2021. grizzlyelectricaltx.com. Service call $99.', opts), []);
+    assert.deepEqual(textFactsErrors('Call (469) 716-9870 or text (469) 896-3862. Five years serving Rowlett since 2021. grizzlyelectricaltx.com. Service call $99.', opts), []);
   });
   it('flags a phone that is not a business number', () => {
     const errors = textFactsErrors('Call 214-555-0100 today', { ...opts, label: 'legacy gbp' });
     assert.equal(errors.length, 1);
     assert.match(errors[0], /^legacy gbp: phone \(214\) 555-0100 is not a business number/);
-    assert.match(errors[0], /\(469\) 896-3862, \(469\) 863-9804/);
+    assert.match(errors[0], /\(469\) 896-3862, \(469\) 716-9870/);
   });
   it('flags a domain other than the website domain, including the nonexistent one', () => {
     const errors = textFactsErrors('Visit grizzlyelectricalsolutions.com and www.grizzlyelectricaltx.com', opts);
@@ -230,7 +230,7 @@ describe('validatePlan: phones, domains, tenure, prices', () => {
     assert.ok(has(result.errors, /^facebook day 1 on_screen_text: phone \(469\) 555-0123 is not a business number/));
   });
   it('accepts both business numbers in any shape', () => {
-    assert.equal(run((p) => { p.gbp[6].body += ' Call +1 469 863 9804 or text 4698963862.'; }).ok, true);
+    assert.equal(run((p) => { p.gbp[6].body += ' Call +1 469 716 9870 or text 4698963862.'; }).ok, true);
   });
   it('rejects a domain other than the website domain in GBP and Facebook copy', () => {
     const result = run((p) => { p.gbp[0].caption = 'More at grizzlyelectricalsolutions.com'; p.facebook[1].body += ' Details at www.grizzlyelectrical.net.'; });

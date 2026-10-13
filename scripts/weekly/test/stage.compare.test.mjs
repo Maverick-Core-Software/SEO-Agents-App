@@ -71,7 +71,7 @@ function legacyGbp({ day3Date = '2026-09-07', badPhone = true, decade = true, pr
   const dates = { ...WEEK.gbp_dates, 3: day3Date };
   const bodies = {
     1: 'Texas storms can send surges through your wiring. Contact Grizzly to talk through surge protection.',
-    2: `Breakers tripping? Call us at ${badPhone ? '(214) 555-0100' : '(469) 863-9804'} for a same-day look.`,
+    2: `Breakers tripping? Call us at ${badPhone ? '(214) 555-0100' : '(469) 716-9870'} for a same-day look.`,
     3: `We have served DFW ${decade ? 'for over a decade' : 'since 2021'} with honest panel work.`,
     4: `Level 2 charger installs start at ${price ? '$1,500' : '$450'} for most homes.`,
     5: 'Recessed lighting brightens a kitchen without the clutter of fixtures.',
@@ -202,7 +202,7 @@ describe('compareWithLegacy', () => {
     assert.match(legacySection, /- GBP day 3: .*over a decade/);
     assert.match(legacySection, /- GBP day 4: price \$1,500 is not an approved price/);
     assert.doesNotMatch(legacySection, /callw3\.com/, 'trend notes are not published copy');
-    assert.doesNotMatch(legacySection, /phone \(469\) 8(?:96-3862|63-9804) is not/, 'the business numbers are allowed');
+    assert.doesNotMatch(legacySection, /phone \(469\) (?:896-3862|716-9870) is not/, 'the business numbers are allowed');
     assert.equal(legacySection.match(/^- /gm).length, 3, 'exactly the three planted defects');
     const shadowSection = report.split('### Shadow copy')[1].split('## Topics')[0];
     assert.match(shadowSection, /_None\._/);

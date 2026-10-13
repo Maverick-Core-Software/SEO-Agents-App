@@ -40,7 +40,7 @@ describe('loadFacts (real knowledge/baselines/grizzly-business-facts.md)', () =>
   });
 
   it('contact: exactly the two publishable phone numbers, email, domain', () => {
-    assert.deepEqual(facts.phones, { customer_text: '(469) 896-3862', published_main: '(469) 863-9804' });
+    assert.deepEqual(facts.phones, { customer_text: '(469) 896-3862', published_main: '(469) 716-9870' });
     assert.equal(facts.email, 'contactus@grizzlyelectrical.net');
     assert.equal(facts.domain, 'grizzlyelectricaltx.com');
     assert.equal(facts.website_url, 'https://www.grizzlyelectricaltx.com/');
