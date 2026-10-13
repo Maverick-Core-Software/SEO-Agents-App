@@ -37,6 +37,7 @@ import { fetchApprovedWebsiteTasks, executeNextWebsiteTask, sweepOrphanWebsiteTa
 import { liveRunStatus as deriveLiveRunStatus, countRunStatuses } from './lib/seo-run-status.mjs';
 import { MAX_JSON_BODY_BYTES, parseJsonBody } from './lib/http-json.mjs';
 import { resolveBind } from './lib/bridge-bind.mjs';
+import { pythonChildEnv } from './lib/child-env.mjs';
 
 const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -1394,6 +1395,7 @@ async function handleHttpRequest(req, res) {
     await log(null, 'bridge', 'info', `Kicking off facebook-schedule: days=${safeDays}${startDate ? ` start=${startDate}` : ''}`);
     execFileAsync(SEO_AGENTS_EXE, args, {
       cwd: PROJECT_ROOT,
+      env: pythonChildEnv(),
       timeout: 30 * 60 * 1000,
       encoding: 'utf8',
       windowsHide: true,

@@ -55,6 +55,21 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def python_child_env(base: dict | None = None, os_name: str = os.name) -> dict:
+    """Environment for a Python child of this wrapper.
+
+    Windows CPython reads TZ itself and, with TZ=America/Chicago set, treats UTC as
+    local time (reproduced 2026-10-13: parent 15:18 CDT, child 21:18), so an
+    accidental TZ in the PC .env would shift every date the crew stamps. On nt
+    the child never sees TZ; on posix (AIWA) TZ is kept, it is how the units pin
+    Chicago time.
+    """
+    env = dict(os.environ if base is None else base)
+    if os_name == "nt":
+        env.pop("TZ", None)
+    return env
+
+
 NEG_INF = float("-inf")
 
 
@@ -285,7 +300,7 @@ def preflight(crew: bool = True) -> list[str]:
             capture_output=True,
             text=True,
             timeout=180,
-            env={**os.environ, "PYTHONPATH": "", "PYTHONUNBUFFERED": "1"},
+            env={**python_child_env(), "PYTHONPATH": "", "PYTHONUNBUFFERED": "1"},
         )
         if r.returncode != 0:
             tail = (r.stderr or r.stdout or f"exit {r.returncode}").strip().splitlines()
@@ -903,8 +918,9 @@ def main() -> None:
     log_line(f"[run-weekly-seo] Command: {cmd}")
 
     # Pass our env (which now includes the parsed .env) explicitly, and make sure the
-    # package is importable when we fall back to `-m seo_agents.main`.
-    child_env = os.environ.copy()
+    # package is importable when we fall back to `-m seo_agents.main`. On Windows the
+    # child never sees TZ (python_child_env): CPython would read UTC as local time.
+    child_env = python_child_env()
     # Clear PYTHONPATH to prevent module pollution from system env.
     # The package is installed editable (pip install -e .) so no path needed.
     child_env["PYTHONPATH"] = ""

@@ -4,6 +4,7 @@
 // optional hopPrefix so each process tags failures with its own source name.
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { pythonChildEnv } from './child-env.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -15,8 +16,10 @@ export function makeRunPhase({ log, hopError, projectRoot, hopPrefix = 'mav-brid
     const timeoutMs = opts.timeoutMs || 15 * 60 * 1000;
     await log(runId, phase, 'info', `Starting: ${exe} ${args.join(' ')}`);
     try {
+      // Children (and any Python adapter they spawn) never see TZ on win32 (F1).
       const { stdout, stderr } = await execFileAsync(exe, args, {
         cwd: cwd || projectRoot,
+        env: pythonChildEnv(),
         timeout: timeoutMs,
         maxBuffer: 16 * 1024 * 1024,
         encoding: 'utf8',
