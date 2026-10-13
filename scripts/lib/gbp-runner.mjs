@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { gbpListingUnverifiedMessage, isGbpSessionExpiredText } from './gbp-listing.mjs';
 import { defaultGbpPhotoDirs } from './gbp-paths.mjs';
+import { gbpArchiveFolder } from './monitor-host.mjs';
 import { syncGbpScheduleToWorkbook, gbpPostToScheduleMarkdown } from '../sync-gbp-schedule.mjs';
 
 export { gbpListingUnverifiedMessage, isGbpSessionExpiredText };
@@ -250,7 +251,7 @@ async function withExcelRetry(filePath, fn, { maxRetries = 6, delayMs = 5000, lo
 export async function markGbpPostedAndArchive({ postDate, exitCode, runId, env, log }) {
   if (exitCode !== 0) return;
   const GBP_WORKBOOK_PATH = env.GBP_WORKBOOK_PATH || '';
-  const GBP_ARCHIVE_FOLDER = env.GBP_ARCHIVE_FOLDER || 'M:\\backups\\gbp-archive';
+  const GBP_ARCHIVE_FOLDER = gbpArchiveFolder(env);
   if (!GBP_WORKBOOK_PATH) { await log(runId, 'gbp', 'info', 'GBP_WORKBOOK_PATH not set — skipping Excel update'); return; }
   if (!fs.existsSync(GBP_WORKBOOK_PATH)) { await log(runId, 'gbp', 'warn', `GBP workbook not found: ${GBP_WORKBOOK_PATH}`); return; }
 
