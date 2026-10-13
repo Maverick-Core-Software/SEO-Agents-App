@@ -47,6 +47,7 @@ import { ModelPlanSchema, ObservationSchema, SCHEMA_VERSION, parseOrIssues } fro
 import { addDays, computeWeekSpec, parseDate, weekSpecForWeekOf } from './lib/week-spec.mjs';
 import { createCostMeter } from './lib/cost-meter.mjs';
 import { createLlmClient, preflightModel } from './lib/llm.mjs';
+import { photoFilesIn, photoKey } from '../lib/photo-name.mjs';
 import { loadFacts } from './lib/facts.mjs';
 import { createFileStore } from './lib/store.mjs';
 import { createSupabaseStore } from './lib/store-supabase.mjs';
@@ -262,14 +263,13 @@ export function listPhotoInventory({ dirs, env = process.env } = {}) {
   return [...names].sort();
 }
 
-/** Inventory minus every photo the published history already used (basename, case-insensitive). */
+/** Inventory minus every photo the published history already used (basename, case-insensitive, either separator). */
 export function unusedPhotos(inventory, history) {
   const used = new Set();
   for (const post of (history && history.posts) || []) {
-    const file = post && post.photo_file;
-    if (typeof file === 'string' && file.trim()) used.add(path.basename(file.trim()).toLowerCase());
+    for (const file of photoFilesIn(post && post.photo_file)) used.add(photoKey(file));
   }
-  return (inventory || []).filter((name) => !used.has(path.basename(String(name)).toLowerCase()));
+  return (inventory || []).filter((name) => !used.has(photoKey(String(name))));
 }
 
 // ---------------------------------------------------------------------------

@@ -41,6 +41,7 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { normalizePhotoFile } from './lib/schedule-text.mjs';
 import { defaultGbpPhotoDirs, resolveWritableCuratedFolder } from './lib/gbp-paths.mjs';
+import { photoKey } from './lib/photo-name.mjs';
 import { checkImagePolicy, IMAGE_CONVERT_EXTS } from './gbp-poster/policy-check.mjs';
 import {
   NO_REUSE_WEEKS,
@@ -558,12 +559,12 @@ async function main() {
   if (!compatAllowlist.present) {
     console.log(`No cross-topic allowlist (${COMPAT_ALLOWLIST_FILE}) — a post with no photo of its own service goes text-only`);
   }
-  const usedBefore = new Set(priorManifest.flatMap(e => [e.sourceFilename, e.sourcePath && path.basename(e.sourcePath)])
-    .filter(Boolean).map(n => n.toLowerCase()));
+  const usedBefore = new Set(priorManifest.flatMap(e => [e.sourceFilename, e.sourcePath])
+    .filter(Boolean).map(photoKey));
   const usable = allFiles
     .map(f => cache[f])
     .filter(e => e && e.score >= MIN_SCORE)
-    .filter(e => !usedBefore.has(String(e.filename || '').toLowerCase()))
+    .filter(e => !usedBefore.has(photoKey(e.filename)))
     .map(e => ({ ...e, effectiveScore: e.score + recencyBonus(e) }))
     .sort((a, b) => b.effectiveScore - a.effectiveScore)
     .filter((e) => {

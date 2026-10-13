@@ -13,6 +13,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { photoBasename } from './photo-name.mjs';
 
 /**
  * Shared, deterministic rules for photo-to-post compatibility.
@@ -322,7 +323,7 @@ export function keyFromFilename(filename) {
  */
 export function labelForPhoto(entry = {}, labels = EMPTY_LABELS) {
   const hash = hashOfEntry(entry);
-  const names = [entry.filename, entry.sourceFilename, entry.path && path.basename(String(entry.path))]
+  const names = [entry.filename, entry.sourceFilename, entry.path && photoBasename(entry.path)]
     .filter(Boolean).map((n) => String(n).toLowerCase());
   if (labels && labels.present) {
     const found = (hash && labels.byHash.get(hash))
@@ -405,7 +406,7 @@ export function contextMatches(postContext, labelContext) {
 export function normalizePoolEntry(raw = {}) {
   return {
     path: raw.path || raw.usable || raw.srcPath || raw.filePath || '',
-    filename: raw.filename || (raw.path || raw.usable || raw.srcPath || raw.filePath ? path.basename(String(raw.path || raw.usable || raw.srcPath || raw.filePath)) : ''),
+    filename: raw.filename || (raw.path || raw.usable || raw.srcPath || raw.filePath ? photoBasename(raw.path || raw.usable || raw.srcPath || raw.filePath) : ''),
     score: Number.isFinite(Number(raw.score)) ? Number(raw.score) : 0,
     serviceType: normalizeServiceKey(raw.serviceType || raw.service_type),
     tags: [].concat(raw.tags || []),

@@ -15,6 +15,7 @@ import { fileURLToPath } from 'node:url';
 import xlsx from 'xlsx';
 import { excelDateToIso } from './lib/gbp-runner.mjs';
 import { defaultGbpPhotoDirs, resolveGbpImagePath } from './lib/gbp-paths.mjs';
+import { photoBasename } from './lib/photo-name.mjs';
 import { normalizePhotoFile } from './lib/schedule-text.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -138,7 +139,7 @@ function photoPathForPost(post, { curatedPreferred, localCache }) {
     fallback: false,
   });
   if (resolved && fs.existsSync(resolved)) return resolved;
-  const base = path.basename(post.photo_file);
+  const base = photoBasename(post.photo_file);
   if (localCache) return path.join(localCache, base);
   if (curatedPreferred) return path.join(curatedPreferred, base);
   return post.photo_file;

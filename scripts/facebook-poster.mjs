@@ -53,6 +53,7 @@ import { loadPhotoSelectionManifest, isManifestSelectionCompatible } from './lib
 import { postProcessVideo, enhanceVideo } from './video-postprocess.mjs';
 import { buildSlideshowReel, parseOnScreenText } from './slideshow-reel.mjs';
 import { defaultGbpPhotoDirs } from './lib/gbp-paths.mjs';
+import { photoBasename } from './lib/photo-name.mjs';
 import { resolveGbpPhotoPath, resolveEndcardFont } from './lib/platform-defaults.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -635,7 +636,7 @@ export function resolvePhotoPath(post) {
       const accepted = acceptExplicit(firstFile);
       if (accepted) return accepted;
     } else {
-      const basenames = [firstFile, path.basename(firstFile)];
+      const basenames = [firstFile, photoBasename(firstFile)];
       for (const name of basenames) {
         const candidates = [
           path.join(GBP_CURATED_FOLDER, name),
