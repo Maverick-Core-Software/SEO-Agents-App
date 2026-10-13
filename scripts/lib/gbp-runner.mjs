@@ -344,6 +344,11 @@ export async function applyDriverResult({ supabase, post, result, env, log, gbpM
   if (map.status === 'posted') {
     update.posted_at = new Date().toISOString();
     update.platform_post_id = map.platform_post_id;
+  } else if (apiCreated) {
+    // F3: the post exists (exit 3 = created, GET-back not LIVE yet). Persist the
+    // localPost resource name so the operator can GET it from the row and the
+    // Phase F "Day 1 platform_post_id" gate holds; it was only being reported.
+    update.platform_post_id = map.platform_post_id || parsed.postUrl;
   }
   if (map.status === 'error') {
     update.error = (map.error || result.stderr || result.error || 'GBP poster failed').slice(0, 300);

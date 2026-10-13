@@ -579,14 +579,22 @@ assert.equal(dailyTickDue({ cstHour: 9, todayDate: '', lastDailyGbpDate: '' }), 
   });
   assert.equal(apiStatus, 'needs_verification', 'exit 3 stays needs_verification for the operator');
   assert.equal(readPosted(apiBook), true, 'API mode: workbook Posted=TRUE for a created-but-unconfirmed post');
+  // F3: the DB write on exit 3 carries the resource name (it was only reported before).
+  assert.equal(apiUpdates.length, 1);
+  assert.equal(apiUpdates[0].status, 'needs_verification');
+  assert.equal(apiUpdates[0].platform_post_id, 'accounts/1/locations/2/localPosts/day2',
+    'F3: API exit 3 persists platform_post_id (the localPost resource name) on the row');
+  assert.equal('posted_at' in apiUpdates[0], false, 'exit 3 does not stamp posted_at');
 
   const pwDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gbp-runner-pw-'));
   const pwBook = makeWorkbook(pwDir);
+  const pwUpdates = [];
   await applyDriverResult({
-    supabase: makeQb([]), post: { id: 'p2', run_id: 'r1', post_date: '2026-10-17' }, result: exit3,
+    supabase: makeQb(pwUpdates), post: { id: 'p2', run_id: 'r1', post_date: '2026-10-17' }, result: exit3,
     env: { GBP_POSTER: 'playwright', GBP_WORKBOOK_PATH: pwBook, GBP_ARCHIVE_FOLDER: path.join(pwDir, 'archive') }, log: async () => {},
   });
   assert.notEqual(readPosted(pwBook), true, 'playwright mode: exit 3 leaves the Posted gate open (unchanged)');
+  assert.equal('platform_post_id' in pwUpdates[0], false, 'playwright mode: exit 3 DB write unchanged (no id)');
 
   const errDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gbp-runner-err-'));
   const errBook = makeWorkbook(errDir);
