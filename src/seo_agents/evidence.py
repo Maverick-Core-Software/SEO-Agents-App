@@ -8,6 +8,7 @@ Session 2 adds validation gates for provenance, staleness, contradictions, and c
 from __future__ import annotations
 
 import json
+import os
 import re
 import uuid
 from datetime import datetime, timezone, timedelta
@@ -229,7 +230,7 @@ def research_gap_result(
 # Output paths (must match PLAN.md target contract)
 # ---------------------------------------------------------------------------
 
-OUTPUT_DIR = Path(r"C:\Workspace\Active\SEO-Agents-App\outputs")
+OUTPUT_DIR = Path(os.getenv("SEO_OUTPUT_DIR") or (Path(__file__).resolve().parents[2] / "outputs"))
 
 EVIDENCE_PACKAGE_PATH = OUTPUT_DIR / "evidence_package.json"
 CLAIM_GRAPH_PATH = OUTPUT_DIR / "claim_graph.json"
