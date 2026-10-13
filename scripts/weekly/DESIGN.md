@@ -146,3 +146,39 @@ Pre-written. Fields: `services[]` (`key`, `label`, `priority` 1–5, `query_temp
 
 Every implementer and reviewer ends with a structured report: files created or changed, test
 command and counts, lint result, and any deviation from this contract with the reason.
+
+## Wave 2/3 interface notes (added by lane A, sole writer)
+
+The orchestrator, the wrapper (`scripts/run-weekly-seo.py`) and the watchdog
+(`scripts/seo-watchdog.mjs`, `scripts/seo-monitor.mjs`) depend on these hand-off surfaces.
+Names and shapes are binding; changing one is a material change (see the freeze table in
+`FRIDAY-RUNBOOK.md`).
+
+- **Alert receipt (T1)** — `lib/notify.mjs`: `notifyAttempt({ store, attempt, event, message,
+  now })` → `{ sent, channel, reason, skipped? }`, idempotent per attempt+event, event ∈
+  `succeeded|degraded|failed`. The delivery receipt is the attempt stage `notify:<event>`
+  (`status: ok|failed`; on success its `error` field carries the channel — `via
+  hermes+smtp`; on failure it carries the reason). `formatAttemptMessage` carries topic,
+  item counts, validation result, runtime, spend and the summary path. `--notify` is passed
+  for `shadow` only, so a rehearsal never touches an alert channel.
+- **Attempt identity (T6)** — `<outDir>/current-attempt.json` from `lib/attempt.mjs`
+  (`publishAttemptIdentity`/`readAttemptIdentity`): `{ attempt_id, week_of, mode, status,
+  started_at, finished_at, lease_until, updated_at }`, published at attempt creation and
+  refreshed at finish; a killed run leaves it `running`. It is the wrapper's finalization
+  guard, and it deliberately carries no `stages` — the receipt stays in the attempt record,
+  which the wrapper must therefore be able to read locally after the run.
+- **Attempt-derived health block** — `outputs/weekly-runner-health.json` → `shadow`
+  (`outputs/<rehearsal>/weekly-runner-health.json` in rehearsal): `{ status, mode, source:
+  'attempt', launched_at, at, week_of, log_file, child?, attempt_id?, started_at?,
+  finished_at?, runtime_s?, spent_usd?, budget_usd?, error?, notify_expected, notify }`.
+  `status` is the attempt record's own status, or the pre-launch `running` marker, or
+  `failed (no attempt written)` / `failed (stale attempt)` / `failed (killed at the
+  deadline)`. Legacy health keys are preserved alongside it.
+- **Memory freshness** — `outputs/reconcile-health.json` from `scripts/weekly/reconcile.mjs`:
+  `{ status, last_attempt_at, last_success_at, started_at, duration_ms, counts, error }`.
+  Only a clean pass advances `last_success_at`, and that is the only freshness the watchdog
+  reads (never table rows); a dry run writes nothing.
+- **Normalization call sites** — `lib/validate.mjs` exports two pure plan normalizers that
+  `run.mjs` calls before validation **and** render: `normalizeBoostPlan(plan, policy)` →
+  `{ plan, warnings }` (T12 deterministic boost arithmetic) and
+  `downgradeCarousels(plan)` → `{ plan, warnings }` (T14 every `carousel` → `photo`).

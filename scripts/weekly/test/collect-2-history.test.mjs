@@ -7,8 +7,10 @@ import { ObservationSchema, parseOrIssues } from '../lib/schemas.mjs';
 import {
   POSTS_TABLE,
   TASKS_TABLE,
+  PERF_TABLE,
   POST_COLUMNS,
   TASK_COLUMNS,
+  PERF_COLUMNS,
   METRIC_POST,
   METRIC_TASK,
   METRIC_SUMMARY,
@@ -22,6 +24,7 @@ import {
   normalizeTask,
   normalizeWeeks,
   policyCities,
+  resolvePerformanceMemory,
   sinceDate,
   toIsoDate,
 } from '../lib/collectors/history.mjs';
@@ -32,7 +35,13 @@ const policy = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', '..',
 
 const NOW = new Date('2026-09-04T17:00:00Z'); // Friday 2026-09-04, noon Chicago
 const ATTEMPT = 'attempt-test-collect-2';
-const READ_ONLY_OPS = new Set(['select', 'gte', 'order', 'limit', 'await']);
+const READ_ONLY_OPS = new Set(['select', 'gte', 'order', 'limit', 'eq', 'await']);
+/** Stored performance memory for the fixture posts, as reconcile writes it. */
+const MEMORY = [
+  { platform_post_id: 'fb-200', source: 'facebook', metric: 'fb_interactions', window_days: 7, value: 41, availability: 'ok', measured_at: '2026-09-02T14:00:00Z' },
+  { platform_post_id: 'fb-200', source: 'facebook', metric: 'fb_interactions', window_days: 28, value: 118, availability: 'ok', measured_at: '2026-09-23T14:00:00Z' },
+  { platform_post_id: 'fb-200', source: 'facebook', metric: 'fb_media_views', window_days: 28, value: null, availability: 'unavailable', measured_at: '2026-09-23T14:00:00Z' },
+];
 
 /**
  * Minimal supabase-js query-builder fake: records every call, resolves canned
@@ -69,6 +78,7 @@ function fixtureClient(overrides = {}) {
   return fakeClient({
     [POSTS_TABLE]: { data: fixture.weekly_posts, error: null },
     [TASKS_TABLE]: { data: fixture.website_tasks, error: null },
+    [PERF_TABLE]: { data: MEMORY, error: null },
     ...overrides,
   });
 }
@@ -159,11 +169,11 @@ describe('pure helpers', () => {
 });
 
 describe('collectHistory (injected supabase client)', () => {
-  it('issues exactly the documented read-only chains for both tables', async () => {
+  it('issues exactly the documented read-only chains for all three tables', async () => {
     const client = fixtureClient();
     await collectHistory({ attemptId: ATTEMPT, supabase: client, now: NOW, policy });
 
-    assert.equal(client.calls.length, 2);
+    assert.equal(client.calls.length, 3);
     assert.equal(client.calls[0].table, POSTS_TABLE);
     assert.deepEqual(client.calls[0].ops, [
       ['select', POST_COLUMNS],
@@ -180,6 +190,15 @@ describe('collectHistory (injected supabase client)', () => {
       ['limit', ROW_LIMIT],
       ['await'],
     ]);
+    assert.equal(client.calls[2].table, PERF_TABLE);
+    assert.deepEqual(client.calls[2].ops, [
+      ['select', PERF_COLUMNS],
+      ['eq', 'source', 'facebook'],
+      ['gte', 'measured_at', '2026-07-10'],
+      ['order', 'measured_at', { ascending: false }],
+      ['limit', ROW_LIMIT],
+      ['await'],
+    ]);
     assertReadOnly(client);
   });
 
@@ -190,6 +209,8 @@ describe('collectHistory (injected supabase client)', () => {
     assert.deepEqual(client.calls[0].ops[3], ['limit', 50]);
     assert.deepEqual(client.calls[1].ops[1], ['gte', 'updated_at', '2026-08-07']);
     assert.deepEqual(client.calls[1].ops[3], ['limit', 50]);
+    assert.deepEqual(client.calls[2].ops[2], ['gte', 'measured_at', '2026-08-21']);
+    assert.deepEqual(client.calls[2].ops[4], ['limit', 50]);
   });
 
   it('returns the compact history object from the fixture rows', async () => {
@@ -207,11 +228,14 @@ describe('collectHistory (injected supabase client)', () => {
     assert.deepEqual(history.website_tasks[1], {
       title: 'Fix footer phone number', type: 'seo_fix', status: 'waiting_on_owner', updated_at: '2026-07-01T10:00:00+00:00',
     });
+    assert.deepEqual(history.performance, [
+      { platform_post_id: 'fb-200', window_days: 28, metric: 'fb_interactions', value: 118, measured_at: '2026-09-23T14:00:00Z' },
+    ]);
   });
 
   it('emits one schema-valid observation per row plus a summary per table', async () => {
     const { observations } = await collectHistory({ attemptId: ATTEMPT, supabase: fixtureClient(), now: NOW, policy });
-    assert.equal(observations.length, 4 + 1 + 3 + 1);
+    assert.equal(observations.length, 4 + 1 + 3 + 1 + 1);
     observations.forEach(assertValidObservation);
     assert.equal(new Set(observations.map((o) => o.id)).size, observations.length, 'ids are unique');
     assert.ok(observations.every((o) => o.source === 'history' && o.status === 'ok' && o.attempt_id === ATTEMPT));
@@ -234,7 +258,7 @@ describe('collectHistory (injected supabase client)', () => {
     assert.equal(tasks[0].period, null);
 
     const summaries = observations.filter((o) => o.metric === METRIC_SUMMARY);
-    assert.deepEqual(summaries.map((o) => o.scope), [POSTS_TABLE, TASKS_TABLE]);
+    assert.deepEqual(summaries.map((o) => o.scope), [POSTS_TABLE, TASKS_TABLE, PERF_TABLE]);
     assert.deepEqual(summaries[0].value, { table: POSTS_TABLE, rows: 4, weeks: 8, since: '2026-07-10' });
     assert.deepEqual(summaries[0].period, { start: '2026-07-10', end: '2026-09-04' });
     assert.deepEqual(summaries[1].value, { table: TASKS_TABLE, rows: 3, weeks: 12, since: '2026-06-12' });
@@ -252,12 +276,12 @@ describe('collectHistory (injected supabase client)', () => {
     assertValidObservation(post);
   });
 
-  it('empty tables → empty history and two ok summaries with rows 0', async () => {
+  it('empty tables → empty history and three ok summaries with rows 0', async () => {
     const client = fakeClient();
     const { observations, history } = await collectHistory({ attemptId: ATTEMPT, supabase: client, now: NOW, policy });
-    assert.deepEqual(history, { posts: [], website_tasks: [] });
+    assert.deepEqual(history, { posts: [], website_tasks: [], performance: [] });
     assert.deepEqual(observations.map((o) => [o.metric, o.status, o.value.rows]), [
-      [METRIC_SUMMARY, 'ok', 0], [METRIC_SUMMARY, 'ok', 0],
+      [METRIC_SUMMARY, 'ok', 0], [METRIC_SUMMARY, 'ok', 0], [METRIC_SUMMARY, 'ok', 0],
     ]);
   });
 
@@ -273,7 +297,7 @@ describe('collectHistory (injected supabase client)', () => {
     assert.match(unavailable[0].note, /permission denied/);
     assert.equal(unavailable[0].value, null);
     assertValidObservation(unavailable[0]);
-    assert.equal(observations.length, 1 + 3 + 1);
+    assert.equal(observations.length, 1 + 3 + 1 + 1);
     assert.ok(observations.some((o) => o.metric === METRIC_SUMMARY && o.scope === TASKS_TABLE && o.status === 'ok'));
   });
 
@@ -297,10 +321,12 @@ describe('collectHistory (injected supabase client)', () => {
     assert.match(unavailable.note, /fetch failed/);
   });
 
-  it('no supabase client → both tables unavailable, empty history', async () => {
+  it('no supabase client → all three tables unavailable, empty history', async () => {
     const { observations, history } = await collectHistory({ attemptId: ATTEMPT, now: NOW, policy });
-    assert.deepEqual(history, { posts: [], website_tasks: [] });
-    assert.deepEqual(observations.map((o) => [o.scope, o.status]), [[POSTS_TABLE, 'unavailable'], [TASKS_TABLE, 'unavailable']]);
+    assert.deepEqual(history, { posts: [], website_tasks: [], performance: [] });
+    assert.deepEqual(observations.map((o) => [o.scope, o.status]), [
+      [POSTS_TABLE, 'unavailable'], [TASKS_TABLE, 'unavailable'], [PERF_TABLE, 'unavailable'],
+    ]);
     observations.forEach(assertValidObservation);
     assert.match(observations[0].note, /no supabase client/);
   });
@@ -386,29 +412,104 @@ describe('review hardening 2 (collect-2, adversarial)', () => {
     assert.deepEqual(client2.calls[0].ops[3], ['limit', 25]);
   });
 
-  it('a client whose from() returns an object without the query chain → both tables unavailable, no throw', async () => {
+  it('a client whose from() returns an object without the query chain → all three tables unavailable, no throw', async () => {
     const { observations, history } = await collectHistory({ attemptId: ATTEMPT, supabase: { from: () => ({}) }, now: NOW, policy });
-    assert.deepEqual(history, { posts: [], website_tasks: [] });
-    assert.deepEqual(observations.map((o) => [o.scope, o.status]), [[POSTS_TABLE, 'unavailable'], [TASKS_TABLE, 'unavailable']]);
+    assert.deepEqual(history, { posts: [], website_tasks: [], performance: [] });
+    assert.deepEqual(observations.map((o) => [o.scope, o.status]), [
+      [POSTS_TABLE, 'unavailable'], [TASKS_TABLE, 'unavailable'], [PERF_TABLE, 'unavailable'],
+    ]);
     observations.forEach(assertValidObservation);
     assert.match(observations[0].note, /not a function/);
   });
 
-  it('the selected columns exist in supabase/schema.sql for both tables', () => {
+  it('the selected columns exist in schema.sql or the weekly migration for all three tables', () => {
     const schema = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'supabase', 'schema.sql'), 'utf8');
-    const columnsOf = (table) => {
-      const block = schema.match(new RegExp(`create table if not exists ${table} \\(([\\s\\S]*?)\\n\\);`))[1];
+    const migration = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'supabase', 'migrations', '003_weekly_pipeline.sql'), 'utf8');
+    const columnsOf = (source, table) => {
+      const block = source.match(new RegExp(`create table if not exists ${table} \\(([\\s\\S]*?)\\n\\);`))[1];
       return new Set(block.split('\n').map((l) => l.trim().match(/^([a-z_]+)\s/)).filter(Boolean).map((m) => m[1]));
     };
-    const posts = columnsOf(POSTS_TABLE);
+    const posts = columnsOf(schema, POSTS_TABLE);
     for (const col of POST_COLUMNS.split(',')) assert.ok(posts.has(col), `${POSTS_TABLE}.${col} missing from schema.sql`);
-    const tasks = columnsOf(TASKS_TABLE);
+    const tasks = columnsOf(schema, TASKS_TABLE);
     for (const col of TASK_COLUMNS.split(',')) assert.ok(tasks.has(col), `${TASKS_TABLE}.${col} missing from schema.sql`);
+    const perf = columnsOf(migration, PERF_TABLE);
+    for (const col of PERF_COLUMNS.split(',')) assert.ok(perf.has(col), `${PERF_TABLE}.${col} missing from the weekly migration`);
   });
 
   it('a date-only since value is never affected by the host timezone (UTC arithmetic on the Chicago calendar date)', () => {
     // 2026-03-08 is the US DST switch; a week ending on it still subtracts exactly 7 calendar days.
     assert.equal(sinceDate(new Date('2026-03-09T02:00:00Z'), 1), '2026-03-01'); // Sun 2026-03-08 21:00 Chicago (CDT)
     assert.equal(sinceDate(new Date('2026-11-02T04:30:00Z'), 1), '2026-10-25'); // Sun 2026-11-01 23:30 Chicago (CDT → CST that day)
+  });
+});
+
+// ── T9: the durable performance memory selection reads ────────────────────
+
+describe('performance memory (T9)', () => {
+  const row = (over = {}) => ({
+    platform_post_id: 'p1', source: 'facebook', metric: 'fb_interactions', window_days: 7,
+    value: 10, availability: 'ok', measured_at: '2026-09-02T00:00:00Z', ...over,
+  });
+
+  it('resolves one window per post: the 28-day row when it exists, else 7-day, newest measured_at first', () => {
+    assert.deepEqual(resolvePerformanceMemory([
+      row({ window_days: 7, value: 41, measured_at: '2026-09-02T00:00:00Z' }),
+      row({ window_days: 28, value: 118, measured_at: '2026-09-23T00:00:00Z' }),
+      row({ platform_post_id: 'p2', window_days: 7, value: 7, measured_at: '2026-09-02T00:00:00Z' }),
+      row({ platform_post_id: 'p2', window_days: 7, value: 9, measured_at: '2026-09-09T00:00:00Z' }),
+    ]), [
+      { platform_post_id: 'p1', window_days: 28, metric: 'fb_interactions', value: 118, measured_at: '2026-09-23T00:00:00Z' },
+      { platform_post_id: 'p2', window_days: 7, metric: 'fb_interactions', value: 9, measured_at: '2026-09-09T00:00:00Z' },
+    ]);
+  });
+
+  it('treats an unavailable window as absent, never as zero engagement, and keeps a real zero', () => {
+    assert.deepEqual(resolvePerformanceMemory([
+      row({ window_days: 28, value: null, availability: 'unavailable' }),
+      row({ window_days: 7, value: null, availability: 'unavailable' }),
+      row({ platform_post_id: 'p2', window_days: 28, metric: 'fb_media_views', value: 0 }),
+    ]), [{ platform_post_id: 'p2', window_days: 28, metric: 'fb_media_views', value: 0, measured_at: '2026-09-02T00:00:00Z' }]);
+    assert.deepEqual(resolvePerformanceMemory([]), []);
+    assert.deepEqual(resolvePerformanceMemory(null), []);
+    assert.deepEqual(resolvePerformanceMemory([null, 'x', {}, row({ window_days: 14 }), row({ metric: 'fb_likes' })]), [], 'unknown windows and metrics are not evidence');
+  });
+
+  it('ignores Search Console rows and prefers interactions to media views inside one window', () => {
+    const resolved = resolvePerformanceMemory([
+      row({ source: 'search_console', metric: 'sc_clicks', window_days: 28, value: 3 }),
+      row({ metric: 'fb_media_views', window_days: 28, value: 900 }),
+      row({ metric: 'fb_interactions', window_days: 28, value: 12 }),
+    ]);
+    assert.deepEqual(resolved.map((r) => [r.metric, r.value]), [['fb_interactions', 12]]);
+    // No source column (older rows): still Facebook memory, not silently dropped.
+    assert.equal(resolvePerformanceMemory([row({ source: undefined })]).length, 1);
+  });
+
+  it('collectHistory reads the Facebook memory rows and exposes them on history.performance', async () => {
+    const client = fixtureClient();
+    const { history, observations } = await collectHistory({ attemptId: ATTEMPT, supabase: client, now: NOW, policy });
+    assert.deepEqual(history.performance, [
+      { platform_post_id: 'fb-200', window_days: 28, metric: 'fb_interactions', value: 118, measured_at: '2026-09-23T14:00:00Z' },
+    ]);
+    const summary = observations.find((o) => o.metric === METRIC_SUMMARY && o.scope === PERF_TABLE);
+    assert.deepEqual(summary.value, { table: PERF_TABLE, rows: MEMORY.length, weeks: 8, since: '2026-07-10' });
+    assert.deepEqual(summary.period, { start: '2026-07-10', end: '2026-09-04' });
+    assertValidObservation(summary);
+    assertReadOnly(client);
+  });
+
+  it('a failing memory read is unavailable for that table only and never throws', async () => {
+    const client = fixtureClient({ [PERF_TABLE]: { data: null, error: { message: 'permission denied for table performance_observations' } } });
+    const { history, observations } = await collectHistory({ attemptId: ATTEMPT, supabase: client, now: NOW, policy });
+    assert.deepEqual(history.performance, []);
+    assert.equal(history.posts.length, 4);
+    assert.equal(history.website_tasks.length, 3);
+    const unavailable = observations.filter((o) => o.status === 'unavailable');
+    assert.equal(unavailable.length, 1);
+    assert.equal(unavailable[0].scope, PERF_TABLE);
+    assert.equal(unavailable[0].id, `hist:unavailable:${PERF_TABLE}`);
+    assert.match(unavailable[0].note, /permission denied/);
+    assertValidObservation(unavailable[0]);
   });
 });

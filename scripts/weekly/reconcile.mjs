@@ -9,10 +9,22 @@
  * projected plan items. Writes only performance_observations and
  * plan_items.publish_status. Safe to run any time; idempotent per window.
  * Intended for the daily watchdog slot (see FRIDAY-RUNBOOK.md).
+ *
+ * Also writes outputs/reconcile-health.json: `status` + `last_attempt_at` for the
+ * pass just run, and `last_success_at`, which only a clean pass advances. The
+ * watchdog reads freshness from `last_success_at`, never from table rows. A dry
+ * run writes nothing.
  */
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createClient } from '@supabase/supabase-js';
 import { loadEnv } from './lib/env.mjs';
 import { copyPublishStatus, reconcilePerformance, recordPageMetrics } from './lib/reconcile.mjs';
+
+const PROJECT_ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+const HEALTH_FILE = path.join(PROJECT_ROOT, 'outputs', 'reconcile-health.json');
+const startedAt = new Date().toISOString();
 
 loadEnv();
 const argv = process.argv.slice(2);
@@ -26,6 +38,7 @@ const lookbackDays = lb !== -1 ? parseInt(argv[lb + 1], 10) || 42 : 42;
 const url = process.env.SUPABASE_URL || '';
 const key = process.env.SUPABASE_SERVICE_KEY || '';
 if (!url || !key) {
+  writeHealth({ status: 'failed', error: 'SUPABASE_URL / SUPABASE_SERVICE_KEY missing' });
   console.error('SUPABASE_URL / SUPABASE_SERVICE_KEY missing');
   process.exit(1);
 }
@@ -78,6 +91,33 @@ async function searchConsolePages(days) {
   }
 }
 
+/**
+ * Record what this pass did. `last_success_at` is the freshness the watchdog
+ * reads, so a failed pass moves `last_attempt_at`/`status` and carries the
+ * previous success timestamp forward instead of clearing it.
+ */
+function writeHealth({ status, error = null, counts = null }) {
+  const finishedAt = new Date().toISOString();
+  let previous = {};
+  try { previous = JSON.parse(fs.readFileSync(HEALTH_FILE, 'utf8')); } catch { previous = {}; }
+  const payload = {
+    status,
+    last_attempt_at: finishedAt,
+    last_success_at: status === 'ok' ? finishedAt : (previous.last_success_at || null),
+    started_at: startedAt,
+    duration_ms: Date.parse(finishedAt) - Date.parse(startedAt),
+    counts,
+    error: error || null,
+  };
+  try {
+    fs.mkdirSync(path.dirname(HEALTH_FILE), { recursive: true });
+    fs.writeFileSync(HEALTH_FILE, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+  } catch (e) {
+    console.error(`[reconcile] WARNING: could not write health (${HEALTH_FILE}): ${e.message || e}`);
+  }
+  return payload;
+}
+
 async function main() {
   if (dryRun) {
     log('dry run: reading only');
@@ -86,19 +126,29 @@ async function main() {
     return;
   }
   const fb = await facebookClient();
+  const counts = { facebook: null, search_console: [], plan_items_updated: 0 };
   if (fb) {
-    const r = await reconcilePerformance({ supabase, fbClient: fb, now, lookbackDays, videoFallback, retryAfterDays, log });
-    log(`facebook: posts=${r.posts} inserted=${r.inserted} skipped=${r.skipped} unavailable=${r.unavailable} videos=${r.videos}`);
+    const r = await reconcilePerformance({ supabase, fbClient: fb, now, lookbackDays, videoFallback, retryAfterDays, pageId: process.env.FB_PAGE_ID || null, log });
+    counts.facebook = { posts: r.posts, inserted: r.inserted, replaced: r.replaced, skipped: r.skipped, unavailable: r.unavailable, videos: r.videos };
+    log(`facebook: posts=${r.posts} inserted=${r.inserted} replaced=${r.replaced} skipped=${r.skipped} unavailable=${r.unavailable} videos=${r.videos}`);
+    for (const reason of r.reasons) log(`unavailable reason: ${reason.reason}`);
   } else {
     log('facebook: FB_PAGE_ID / FB_PAGE_ACCESS_TOKEN missing, skipped');
   }
   for (const days of [7, 28]) {
     const sc = await searchConsolePages(days);
     const r = await recordPageMetrics({ supabase, rows: sc.rows, windowDays: days, now });
+    counts.search_console.push({ window_days: days, pages: sc.rows.length, inserted: r.inserted, skipped: r.skipped, note: sc.note });
     log(`search console ${days}d (${sc.note}): pages=${sc.rows.length} inserted=${r.inserted} skipped=${r.skipped}`);
   }
   const c = await copyPublishStatus({ supabase });
+  counts.plan_items_updated = c.updated;
   log(`publish status copied to ${c.updated} plan item(s)`);
+  writeHealth({ status: 'ok', counts });
 }
 
-main().catch((e) => { console.error(`[reconcile] failed: ${e.message || e}`); process.exit(1); });
+main().catch((e) => {
+  writeHealth({ status: 'failed', error: e.message || String(e) });
+  console.error(`[reconcile] failed: ${e.message || e}`);
+  process.exit(1);
+});

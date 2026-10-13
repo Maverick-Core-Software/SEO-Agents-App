@@ -7,6 +7,7 @@ import {
   gbpListingUnverifiedMessage,
   gbpDailyStatusForExit,
   gbpScheduleStatusForExit,
+  gbpPolicyViolationMessage,
   gbpVerifyDisposition,
   isAbnormalExit,
   centralDateHour,
@@ -97,6 +98,23 @@ assert.equal(
   gbpDailyStatusForExit(1, { result: 'failed', failure_reason: 'captcha', error: 'unusual traffic' }).status,
   'error',
 );
+// G2: exit 5 (content policy) is an error on both paths, with the violation detail.
+const policyResult = {
+  result: 'policy_violation',
+  error: 'Post 2026-09-26 violates GBP content policy:\n- [phone] caption contains a phone number',
+  violations: [{ rule: 'phone' }],
+};
+assert.equal(gbpScheduleStatusForExit(5, policyResult).status, 'error',
+  'exit 5 must not fall through to scheduled (the legacy daily path would re-post it)');
+assert.ok(gbpScheduleStatusForExit(5, policyResult).error.includes('phone number'),
+  'exit 5 keeps the policy detail');
+assert.equal(gbpDailyStatusForExit(5, policyResult).status, 'error');
+assert.ok(gbpDailyStatusForExit(5, policyResult).error.includes('phone number'),
+  'the daily path keeps the policy detail too');
+assert.equal(gbpDailyStatusForExit(5, policyResult).archive, false);
+assert.ok(gbpPolicyViolationMessage({ violations: [{}, {}] }).includes('2 violations'),
+  'a detail-free policy result still names the violation count');
+assert.equal(gbpScheduleStatusForExit(5, {}).status, 'error');
 
 // centralDateHour: 2026-06-27 14:30 UTC is 09:30 CDT (UTC-5 in June)
 const { todayDate, cstHour, cstMinute } = centralDateHour(new Date('2026-06-27T14:30:00Z'));

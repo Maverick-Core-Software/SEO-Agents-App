@@ -9,9 +9,11 @@
  * Order (DESIGN.md, "integrator"): attempt → collect (every collector in parallel
  * with Promise.allSettled) → select → generate → validate (one regeneration with
  * the errors appended, then fail) → stage → compare (shadow, when legacy outputs
- * exist) → finish. Every stage is wrapped with stageStart/stageEnd; any throw
- * marks the attempt failed and exits 1; unavailable collectors degrade the run
- * instead of stopping it. Exit 0 on `succeeded` or `degraded`.
+ * exist) → finish. A live mode probes the pinned model once, tiny and metered,
+ * before the attempt record exists (T7). Every stage is wrapped with
+ * stageStart/stageEnd; any throw marks the attempt failed and exits 1;
+ * unavailable collectors degrade the run instead of stopping it. Exit 0 on
+ * `succeeded` or `degraded`.
  *
  * `offline` runs the whole chain with no network: fixture collectors and a fake
  * LLM that answers with a canned ModelPlan (test/fixtures/e2e). `shadow` runs the
@@ -35,21 +37,21 @@ import { LeaseHeld, ValidationFailed } from './lib/errors.mjs';
 import { ModelPlanSchema, ObservationSchema, SCHEMA_VERSION, parseOrIssues } from './lib/schemas.mjs';
 import { addDays, computeWeekSpec, parseDate, weekSpecForWeekOf } from './lib/week-spec.mjs';
 import { createCostMeter } from './lib/cost-meter.mjs';
-import { createLlmClient } from './lib/llm.mjs';
+import { createLlmClient, preflightModel } from './lib/llm.mjs';
 import { loadFacts } from './lib/facts.mjs';
 import { createFileStore } from './lib/store.mjs';
 import { createSupabaseStore } from './lib/store-supabase.mjs';
-import { createAttempt, errorText, finishAttempt, readGitSha, stageEnd, stageStart } from './lib/attempt.mjs';
+import { CURRENT_ATTEMPT_FILE, createAttempt, errorText, finalizeAbandonedAttempt, finishAttempt, publishAttemptIdentity, readGitSha, stageEnd, stageStart } from './lib/attempt.mjs';
 import { collectSearchConsole } from './lib/collectors/search-console.mjs';
 import { collectFacebook } from './lib/collectors/facebook.mjs';
-import { buildSerpQueries, collectSerp } from './lib/collectors/serpapi.mjs';
+import { buildSerpQueries, collectSerp, NOTE_QUOTA_EXHAUSTED } from './lib/collectors/serpapi.mjs';
 import {
   POSTS_TABLE, TASKS_TABLE, collectHistory, postObservation, summaryObservation, taskObservation,
   unavailableObservation as historyUnavailable, chicagoDate,
 } from './lib/collectors/history.mjs';
 import { rankCandidates } from './lib/select.mjs';
 import { buildGenerationInput, generatePlan, promptVersion } from './lib/generate.mjs';
-import { validatePlan } from './lib/validate.mjs';
+import { downgradeCarousels, normalizeBoostPlan, validatePlan } from './lib/validate.mjs';
 import { renderFacebookSchedule, renderGbpSchedule, renderPlanSummary, renderWebsiteQueue } from './lib/render.mjs';
 import { exportPaths, stagePlan } from './lib/stage.mjs';
 import { LEGACY_FILES, compareWithLegacy, redactSecrets } from './lib/compare.mjs';
@@ -496,6 +498,19 @@ export function formatRunSummary(result) {
     lines.push(`${pad('validate', 10)}${validation.ok ? 'ok' : 'FAILED'} — ${validation.errors.length} error(s), ${validation.warnings.length} warning(s)`);
     for (const e of validation.errors.slice(0, 5)) lines.push(`${pad('', 10)}- ${e}`);
   }
+  // T12: a rewritten boost allocation changes published numbers, so it is stated
+  // in the summary even when the plan validated clean. T14: a downgraded carousel
+  // changes the post type, so it is stated as well.
+  const boostWarnings = result.boostWarnings || [];
+  if (boostWarnings.length) {
+    lines.push(`${pad('boost', 10)}${boostWarnings.length} boost normalizer warning(s)`);
+    for (const w of boostWarnings.slice(0, 2)) lines.push(`${pad('', 10)}- ${w}`);
+  }
+  const carouselWarnings = result.carouselWarnings || [];
+  if (carouselWarnings.length) {
+    lines.push(`${pad('carousel', 10)}${carouselWarnings.length} downgraded to photo`);
+    for (const w of carouselWarnings.slice(0, 2)) lines.push(`${pad('', 10)}- ${w}`);
+  }
   const stages = Object.entries(attempt.stages || {}).map(([name, s]) => `${name} ${s.status}`);
   if (stages.length) lines.push(`${pad('stages', 10)}${stages.join(' · ')}`);
   const written = Object.values(paths).filter(Boolean);
@@ -520,14 +535,32 @@ async function writeText(file, text) {
   await fsp.writeFile(file, text, 'utf8');
 }
 
-/** The plan's degraded flag is a fact about the inputs; code owns it, the model only explains it. */
-function applyDegraded(plan, selection, reason) {
-  if (!plan || !plan.notes) return plan;
-  if (selection && selection.degraded && !plan.notes.degraded) {
-    plan.notes.degraded = true;
-    plan.notes.degraded_reason = plan.notes.degraded_reason || reason;
+/**
+ * SerpApi source availability/quota evidence (Lane S3): the collector's
+ * `quota_exhausted` marker, or a SerpApi source set that produced no ok
+ * observation at all. Returns the reason to degrade the plan, or null.
+ */
+function serpDegradedReason(availability = {}, observations = []) {
+  const a = (availability && availability.serpapi) || { ok: 0, unavailable: 0, error: 0 };
+  const failed = Number(a.unavailable || 0) + Number(a.error || 0);
+  if (observations.some((o) => o && o.source === 'serpapi'
+    && typeof o.note === 'string' && o.note.includes(NOTE_QUOTA_EXHAUSTED))) {
+    return 'SerpApi quota exhausted; this run carries no SERP evidence';
   }
-  if (plan.notes.degraded && !plan.notes.degraded_reason) plan.notes.degraded_reason = reason;
+  if (!a.ok && (failed > 0 || observations.some((o) => o && o.source === 'serpapi'))) {
+    return `SerpApi returned no usable results (${a.unavailable} unavailable, ${a.error} error); this run carries no SERP evidence`;
+  }
+  return null;
+}
+
+/** The plan's degraded flag is a fact about the inputs; code owns it, the model only explains it. */
+function applyDegraded(plan, selection, reason, sourceReason = null) {
+  if (!plan || !plan.notes) return plan;
+  if ((selection && selection.degraded) || sourceReason) {
+    if (!plan.notes.degraded) plan.notes.degraded = true;
+    plan.notes.degraded_reason = plan.notes.degraded_reason || sourceReason || reason;
+  }
+  if (plan.notes.degraded && !plan.notes.degraded_reason) plan.notes.degraded_reason = sourceReason || reason;
   return plan;
 }
 
@@ -567,9 +600,37 @@ export async function runWeekly(options = {}, deps = {}) {
     }
   }
 
+  // T7: one tiny metered probe of the pinned model, before the attempt record
+  // exists — a pinned id the provider no longer serves is visible up front
+  // instead of as a failed week. Offline runs use a fixture and skip it.
+  let preflight = null;
+  if (!offline) {
+    preflight = await preflightModel({ llm, meter });
+    if (preflight.ok) {
+      log(`preflight: ${preflight.requested} → ${preflight.served}`);
+      if (preflight.served !== preflight.requested) warn(`preflight: the API served ${preflight.served} for the pinned ${preflight.requested}`);
+      for (const issue of preflight.issues) warn(`preflight: ${issue.path || '(root)'}: ${issue.message}`);
+    } else {
+      warn(`preflight failed: ${preflight.error}`);
+    }
+  }
+
   const { store, kind: storeKind, supabase } = selectStore({ mode: opts.mode, storeDir: opts.storeDir, env, deps, warn });
   const collectors = deps.collectors
     || (offline ? createFixtureCollectors(opts.fixturesDir) : createLiveCollectors({ policy, env, meter, supabase, fetchImpl: deps.fetchImpl }));
+
+  // The identity of whatever run last used this export dir.
+  const identityFile = path.join(opts.outDir, CURRENT_ATTEMPT_FILE);
+  // A killed or timed-out run cannot finalize itself (a kill is uncatchable on
+  // Windows), so the next run finalizes the abandoned attempt the published
+  // identity names before taking the lease — otherwise that dead attempt still
+  // holds the week's lease and refuses this run.
+  try {
+    const reaped = await finalizeAbandonedAttempt({ store, identityFile, now });
+    if (reaped) log(`reaped abandoned attempt ${reaped.id}: marked failed, lease released`);
+  } catch (e) {
+    warn(`could not finalize the abandoned attempt: ${redactSecrets(errorText(e))}`);
+  }
 
   const attempt = await createAttempt({
     store,
@@ -582,10 +643,28 @@ export async function runWeekly(options = {}, deps = {}) {
     budgetUsd,
   });
   log(`attempt ${attempt.id} (${opts.mode}, week of ${weekSpec.week_of}, store ${storeKind}, budget $${budgetUsd})`);
+  // The preflight ran before this record existed; its outcome is written here so
+  // a failed probe is visible on the attempt and in the meter entry (T7).
+  if (preflight) {
+    try {
+      await stageEnd(store, attempt, 'preflight', preflight.ok ? {} : { error: preflight.error }, clock());
+    } catch (e) {
+      warn(`could not record the preflight stage: ${redactSecrets(errorText(e))}`);
+    }
+  }
+  // Publish the identity before any work starts (T6): the wrapper checks the
+  // attempt record it reads against this file and never patches a foreign
+  // attempt. A run killed mid-flight leaves this file saying `running`.
+  try {
+    publishAttemptIdentity(identityFile, attempt, clock());
+  } catch (e) {
+    warn(`could not publish ${identityFile}: ${redactSecrets(errorText(e))}`);
+  }
 
   const result = {
     attempt, weekSpec, storeKind, observations: [], history: null, selection: null, plan: null,
     validation: null, revision: null, compare: null, availability: {}, paths: {}, spentUsd: 0, llmCalls: 0,
+    boostWarnings: [], carouselWarnings: [],
   };
   const retrievedAt = now.toISOString();
   const outPaths = exportPaths(opts.outDir);
@@ -633,14 +712,36 @@ export async function runWeekly(options = {}, deps = {}) {
     const degradedReason = missing.length
       ? `unavailable this run: ${missing.join(', ')}; demand and opportunity fell back to policy defaults`
       : 'selection ran on partial data';
+    // Source availability/quota evidence, not inferred from the selection: the
+    // selection can stay un-degraded while SerpApi answered with nothing.
+    const serpReason = serpDegradedReason(result.availability, result.observations);
     const input = buildGenerationInput({ facts, selection, weekSpec, photos, history, policy });
-    let plan = applyDegraded(await generatePlan(input, { llm, meter, attemptId: attempt.id }), selection, degradedReason);
+    let plan = applyDegraded(await generatePlan(input, { llm, meter, attemptId: attempt.id }), selection, degradedReason, serpReason);
     result.llmCalls += 1;
     await stageEnd(store, attempt, 'generate', {}, clock());
 
     // ── validate (one regeneration with the errors appended) ─────────────
     await stageStart(store, attempt, 'validate', clock());
     const validateCtx = { facts, weekSpec, photos, history, policy };
+    // T12: the deterministic boost normalizer runs before BOTH validation and
+    // render. It preserves the model's YES choices exactly and only rewrites the
+    // arithmetic; anything it cannot express exactly is left for the validator to
+    // fail, so nothing is silently accepted.
+    const normalizeBoosts = (candidate) => {
+      const { plan: normalized, warnings } = normalizeBoostPlan(candidate, policy);
+      for (const w of warnings) log(`boost: ${w}`);
+      result.boostWarnings.push(...warnings);
+      return normalized;
+    };
+    // T14: every carousel becomes a photo before validation and render (the
+    // singular-photo schema cannot prove two attached photos), with a warning.
+    const normalizePlan = (candidate) => {
+      const { plan: downgraded, warnings } = downgradeCarousels(normalizeBoosts(candidate));
+      for (const w of warnings) log(`carousel: ${w}`);
+      result.carouselWarnings.push(...warnings);
+      return downgraded;
+    };
+    plan = normalizePlan(plan);
     let validation = validatePlan(plan, validateCtx);
     if (!validation.ok) {
       log(`validate: ${validation.errors.length} error(s); regenerating once`);
@@ -649,7 +750,7 @@ export async function runWeekly(options = {}, deps = {}) {
         task: `${input.task} A previous plan for this same request failed validation; every problem is listed under previous_attempt.validation_errors. Fix all of them and keep everything else within the rules.`,
         previous_attempt: { validation_errors: validation.errors, validation_warnings: validation.warnings, plan },
       };
-      plan = applyDegraded(await generatePlan(retryInput, { llm, meter, attemptId: attempt.id }), selection, degradedReason);
+      plan = normalizePlan(applyDegraded(await generatePlan(retryInput, { llm, meter, attemptId: attempt.id }), selection, degradedReason, serpReason));
       result.llmCalls += 1;
       validation = validatePlan(plan, validateCtx);
     }
@@ -709,6 +810,13 @@ export async function runWeekly(options = {}, deps = {}) {
     warn(`finishAttempt failed: ${redactSecrets(errorText(e))}`);
     if (!failure) failure = e;
   }
+  // Refresh the identity so the wrapper can tell a finished attempt from one that
+  // was killed (status stays `running` when finishAttempt itself did not land).
+  try {
+    publishAttemptIdentity(identityFile, attempt, clock());
+  } catch (e) {
+    warn(`could not refresh ${identityFile}: ${redactSecrets(errorText(e))}`);
+  }
 
   // Mirror the final records into --out (stage.mjs wrote the mid-run snapshot).
   try {
@@ -722,6 +830,20 @@ export async function runWeekly(options = {}, deps = {}) {
       }
       await writeJson(mirror.meter, { spent_usd: result.spentUsd, ceiling_usd: budgetUsd, entries: meter.entries() });
       result.paths.meter = mirror.meter;
+      if (result.compare) {
+        // The report was built during the compare stage, before the attempt was
+        // finished, so it still said "running". Rebuild it from the final record
+        // (a rebuild failure leaves the stage-time report in place).
+        try {
+          const report = compareWithLegacy({
+            shadowDir: opts.outDir, outputsDir: opts.legacyDir, facts, weekSpec, policy, attempt, spentUsd: result.spentUsd, now: clock(),
+          });
+          await writeText(mirror.compare, report);
+          result.compare = report;
+        } catch (e) {
+          warn(`compare refresh failed: ${redactSecrets(errorText(e))}`);
+        }
+      }
       if (result.plan) {
         await writeText(outPaths.summary, renderPlanSummary(result.plan, result.selection, attempt));
         result.paths.summary = outPaths.summary;
@@ -733,7 +855,9 @@ export async function runWeekly(options = {}, deps = {}) {
 
   if (opts.notify && opts.mode === 'shadow') {
     try {
-      const message = formatAttemptMessage({ attempt, event: finalStatus, plan: result.plan, summary: { path: result.paths.summary } });
+      const message = formatAttemptMessage({
+        attempt, event: finalStatus, plan: result.plan, validation: result.validation, summary: { path: result.paths.summary },
+      });
       const receipt = await notifyAttempt({ store, attempt, event: finalStatus, message, now: clock() });
       log(`notify: ${receipt.sent ? `sent via ${receipt.channel}` : `not sent (${receipt.reason})`}`);
     } catch (e) {

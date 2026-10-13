@@ -32,7 +32,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { normalizePhotoFile } from './lib/schedule-text.mjs';
 import { defaultGbpPhotoDirs } from './lib/gbp-paths.mjs';
 import {
@@ -42,7 +42,8 @@ import {
   serviceSlug,
 } from './lib/photo-selection.mjs';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 const PROJECT_ROOT = path.resolve(__dirname, '..');
 
 // .env loader — .env wins over any inherited PM2 env (mirrors facebook-poster.mjs).
@@ -66,7 +67,7 @@ const dryRun = process.argv.includes('--dry-run');
 // whose name starts with `${date}-${slug}` and has an image extension. Case-
 // insensitive — the picker preserves original extension case from the source
 // photo (e.g. .JPG vs .jpg), so we can't assume lowercase.
-function findCuratedPhoto(dateRaw, service, manifest) {
+function findCuratedPhoto(dateRaw, service, manifest, curatedFolder, currentPhoto = '') {
   if (!dateRaw || !service) return null;
   // The crew writes DATE as "2026-09-18 (Friday, September 18, 2026)"; curated
   // files and manifest entries use the bare date. Building the prefix from the
@@ -76,12 +77,19 @@ function findCuratedPhoto(dateRaw, service, manifest) {
   if (!slug) return null;
   const prefix = `${date}-${slug}`.toLowerCase();
   let files;
-  try { files = fs.readdirSync(CURATED_FOLDER); } catch { return null; }
+  try { files = fs.readdirSync(curatedFolder); } catch { return null; }
   const candidates = files
     .filter(f => f.toLowerCase().startsWith(prefix) && IMAGE_EXT_RE.test(f))
     .sort();
-  for (const candidate of candidates) {
-    const absolute = path.join(CURATED_FOLDER, candidate);
+  // Preserve the selected identity: a date+service can hold several curated
+  // files (fb-photo-pick writes -1/-2/…, gbp-photo-pick the bare name). The day
+  // already names the photo that was picked for it, so keep that file when it is
+  // itself an audited selection instead of re-picking by sort order.
+  const current = path.basename(String(currentPhoto || '').trim()).toLowerCase();
+  const kept = current ? candidates.find(c => c.toLowerCase() === current) : null;
+  const ordered = kept ? [kept, ...candidates.filter(c => c !== kept)] : candidates;
+  for (const candidate of ordered) {
+    const absolute = path.join(curatedFolder, candidate);
     const audit = isManifestSelectionCompatible({
       date,
       service,
@@ -99,7 +107,7 @@ function findCuratedPhoto(dateRaw, service, manifest) {
 // block-tracking pattern as gbp-photo-pick.mjs updateSchedulePhotoFile (172-186),
 // extended to also flip TYPE on no-match days.
 
-function rewriteSchedule(text, manifest) {
+export function rewriteSchedule(text, manifest, { curatedFolder = CURATED_FOLDER, dryRun: isDryRun = dryRun } = {}) {
   const lines = text.split('\n');
   const decisions = [];
   let inPhotoBlock = false;     // inside a TYPE: photo day block
@@ -107,16 +115,17 @@ function rewriteSchedule(text, manifest) {
   let blockDate = '';
   let blockService = '';
   let photoLineIdx = -1;
+  let photoLineValue = '';      // the photo this day currently points at
   let typeLineIdx = -1;
   let changedAny = false;
 
   function flushBlock() {
     if (!inPhotoBlock) return;
-    const curated = findCuratedPhoto(blockDate, blockService, manifest);
+    const curated = findCuratedPhoto(blockDate, blockService, manifest, curatedFolder, photoLineValue);
     if (curated) {
-      const abs = path.join(CURATED_FOLDER, curated);
+      const abs = path.join(curatedFolder, curated);
       if (photoLineIdx >= 0 && normalizePhotoFile(lines[photoLineIdx]) !== abs) {
-        if (!dryRun) lines[photoLineIdx] = `PHOTO_FILE: ${abs}`;
+        if (!isDryRun) lines[photoLineIdx] = `PHOTO_FILE: ${abs}`;
         changedAny = true;
       }
       decisions.push({ date: blockDate, service: blockService, status: 'matched', photo: curated });
@@ -124,11 +133,11 @@ function rewriteSchedule(text, manifest) {
       // No service-matched curated photo. Strip the PHOTO_FILE and flip TYPE
       // to text so facebook-poster posts text-only instead of an off-topic photo.
       if (photoLineIdx >= 0 && normalizePhotoFile(lines[photoLineIdx]) !== '') {
-        if (!dryRun) lines[photoLineIdx] = 'PHOTO_FILE:';
+        if (!isDryRun) lines[photoLineIdx] = 'PHOTO_FILE:';
         changedAny = true;
       }
       if (typeLineIdx >= 0 && !/^text/i.test(lines[typeLineIdx].replace(/^\*{0,2}TYPE:\*{0,2}\s*/i, '').trim())) {
-        if (!dryRun) lines[typeLineIdx] = 'TYPE: text';
+        if (!isDryRun) lines[typeLineIdx] = 'TYPE: text';
         changedAny = true;
       }
       decisions.push({
@@ -143,6 +152,7 @@ function rewriteSchedule(text, manifest) {
     blockDate = '';
     blockService = '';
     photoLineIdx = -1;
+    photoLineValue = '';
     typeLineIdx = -1;
   }
 
@@ -157,6 +167,7 @@ function rewriteSchedule(text, manifest) {
       blockDate = '';
       blockService = '';
       photoLineIdx = -1;
+      photoLineValue = '';
       typeLineIdx = -1;
       continue;
     }
@@ -175,6 +186,7 @@ function rewriteSchedule(text, manifest) {
       }
       if (inPhotoBlock && /^\*{0,2}PHOTO_FILE:\*{0,2}\s*/i.test(line)) {
         photoLineIdx = i;
+        photoLineValue = normalizePhotoFile(line);
       }
     }
   }
@@ -226,4 +238,9 @@ function main() {
   }
 }
 
-main();
+// Only run the CLI when invoked directly — the schedule rewrite is exported so
+// tests can exercise it against isolated fixtures.
+const invokedDirectly = process.argv[1]
+  && pathToFileURL(fs.realpathSync(process.argv[1])).href === pathToFileURL(fs.realpathSync(__filename)).href;
+
+if (invokedDirectly) main();

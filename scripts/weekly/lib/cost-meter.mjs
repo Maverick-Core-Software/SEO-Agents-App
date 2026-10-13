@@ -1,9 +1,11 @@
 /**
  * cost-meter.mjs — records every paid call (model tokens, search calls) and
  * enforces the attempt's dollar ceiling. Pricing comes from
- * config/weekly-policy.json `pricing` (USD per 1M tokens per model, plus
- * `serpapi_per_call`); when a model has no pricing the entry is kept with a
- * warning and costs 0, so a missing price is visible rather than silent.
+ * config/weekly-policy.json `pricing` (USD per 1M tokens per servable model id,
+ * plus `serpapi_per_call`); when a model has no pricing the entry is kept with a
+ * warning and costs 0, so a missing price is visible rather than silent. Each
+ * entry keeps the requested and the served model id and is priced from the
+ * served one, warning when the two differ (T7).
  */
 import { BudgetExceeded } from './errors.mjs';
 
@@ -39,24 +41,28 @@ export function createCostMeter({ ceilingUsd = Infinity, pricing = {} } = {}) {
     }
   }
 
-  function record({ kind = 'llm', model = null, fallbackModel = null, inputTokens = 0, outputTokens = 0, usd, label = '' } = {}) {
+  function record({ kind = 'llm', model = null, requestedModel = null, fallbackModel = null, inputTokens = 0, outputTokens = 0, usd, label = '', warning: given = null } = {}) {
+    // `model` is the served id, `requestedModel` the one that was asked for.
+    const requested = requestedModel ?? fallbackModel ?? null;
+    const notes = given ? [given] : [];
     let cost = usd;
-    let warning = null;
     if (cost === undefined || cost === null) {
-      // Providers may answer with a different model name than requested
-      // (DeepSeek serves "deepseek-chat" as "deepseek-v4-flash"); price by the
-      // served name first, then by the requested one.
+      // Price by the served name first, then by the requested one, so an
+      // unpriced served id still has a rate to fall back on.
       const est = kind === 'serpapi'
         ? (typeof pricing.serpapi_per_call === 'number' ? pricing.serpapi_per_call : null)
-        : (priceFor(pricing, model, inputTokens, outputTokens) ?? priceFor(pricing, fallbackModel, inputTokens, outputTokens));
+        : (priceFor(pricing, model, inputTokens, outputTokens) ?? priceFor(pricing, requested, inputTokens, outputTokens));
       if (est === null) {
         cost = 0;
-        warning = `no pricing for ${model || kind}`;
+        notes.push(`no pricing for ${model || kind}`);
       } else {
         cost = est;
       }
     }
-    const entry = { kind, model, inputTokens, outputTokens, usd: round6(cost), label, warning };
+    // T7: the served model is pinned, so a mismatch means the provider swapped
+    // models under us and the price (and the attempt's record) may be wrong.
+    if (requested && model && requested !== model) notes.push(`served ${model} but requested ${requested}`);
+    const entry = { kind, model, requested_model: requested, inputTokens, outputTokens, usd: round6(cost), label, warning: notes.length ? notes.join('; ') : null };
     entries.push(entry);
     return entry;
   }

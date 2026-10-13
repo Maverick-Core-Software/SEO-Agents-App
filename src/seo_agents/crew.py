@@ -157,7 +157,10 @@ def _serper_key_valid() -> bool:
 
 def build_tools() -> list:
     tools = [ScrapeWebsiteTool()]
-    if _serper_key_valid():
+    # The legacy SerpApi tool is skipped by default (thin SERP data is accepted,
+    # 2026-09-24 decision): opt back in with SEO_LEGACY_SERPAPI=1.
+    legacy_serpapi = os.getenv("SEO_LEGACY_SERPAPI", "").strip().lower() in {"1", "true", "yes", "on"}
+    if legacy_serpapi and _serper_key_valid():
         try:
             tools.insert(0, SerpApiGoogleSearchTool())
         except Exception:

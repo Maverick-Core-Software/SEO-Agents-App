@@ -1,5 +1,6 @@
 /**
- * Node test for gbp-worker's Grok-verdict decision policy.
+ * Node test for gbp-worker's Grok-verdict decision policy and the G3 session
+ * ownership/handoff + stuck-pass guard.
  * The Grok bot writes one verdict file per post-date (state/gbp-grok/<date>.json);
  * the worker applies each verdict to weekly_posts. The no-repost rule: a not_found
  * verdict triggers exactly one retry, then needs_verification (never an infinite
@@ -8,7 +9,15 @@
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { grokVerdictDecision, acquireGbpWorkerLock, gbpWorkerProcessExists } from './gbp-worker.mjs';
+import {
+  grokVerdictDecision,
+  acquireGbpWorkerLock,
+  gbpWorkerProcessExists,
+  createGbpSessionState,
+  createGbpPollGuard,
+  parseSessionProbe,
+} from './gbp-worker.mjs';
+import { exportSessionState, launchSessionContext, restrictStorageStateAcl, STORAGE_STATE_PATH } from './gbp-poster/driver.mjs';
 
 describe('grokVerdictDecision (Grok-verdict reconciliation policy)', () => {
   it('confirms a live verdict', () => {
@@ -69,6 +78,35 @@ describe('acquireGbpWorkerLock (single-instance)', () => {
     assert.equal(lock.ok, true);
     assert.equal(files['/tmp/gbp-worker.pid'], '7');
   });
+
+  it('refuses when a concurrent starter won the exclusive create', () => {
+    const lock = acquireGbpWorkerLock({
+      pidPath: '/tmp/gbp-worker.pid',
+      pid: 99,
+      isAlive: (pid) => pid === 555,
+      readFile: () => '555',
+      writeFile: () => { const e = new Error('EEXIST: file already exists'); e.code = 'EEXIST'; throw e; },
+    });
+    assert.equal(lock.ok, false);
+    assert.equal(lock.existingPid, 555);
+  });
+
+  it('takes over a stale pidfile that raced the exclusive create', () => {
+    let content = '4321';
+    const lock = acquireGbpWorkerLock({
+      pidPath: '/tmp/gbp-worker.pid',
+      pid: 99,
+      isAlive: () => false,
+      readFile: () => content,
+      unlink: () => { content = ''; },
+      writeFile: (p, c) => {
+        if (content) { const e = new Error('EEXIST'); e.code = 'EEXIST'; throw e; }
+        content = c;
+      },
+    });
+    assert.equal(lock.ok, true);
+    assert.equal(content, '99');
+  });
 });
 
 describe('gbpWorkerProcessExists', () => {
@@ -78,5 +116,323 @@ describe('gbpWorkerProcessExists', () => {
   it('returns false for pid 0 / garbage', () => {
     assert.equal(gbpWorkerProcessExists(0), false);
     assert.equal(gbpWorkerProcessExists('nope'), false);
+  });
+});
+
+describe('parseSessionProbe (driver --check-session contract)', () => {
+  it('accepts only a bounded ok:true result', () => {
+    assert.deepEqual(parseSessionProbe({ exitCode: 0, stdout: 'noise\n{"ok":true,"reason":"ok"}\n' }),
+      { ok: true, reason: 'ok' });
+  });
+  it('passes the failure reason through', () => {
+    assert.deepEqual(parseSessionProbe({ exitCode: 2, stdout: '{"ok":false,"reason":"captcha"}\n' }),
+      { ok: false, reason: 'captcha' });
+  });
+  it('never treats a crash, silence, or a live-post result as a pass', () => {
+    assert.deepEqual(parseSessionProbe({ exitCode: 1, stdout: '' }), { ok: false, reason: 'unknown' });
+    assert.deepEqual(parseSessionProbe({ exitCode: 1, stdout: '{"result":"failed"}' }), { ok: false, reason: 'unknown' });
+    assert.deepEqual(parseSessionProbe(undefined), { ok: false, reason: 'unknown' });
+  });
+});
+
+// The handoff under test: failed probe → release → interactive takeover → background
+// stays idle (including retries) → resumption needs exclusive reacquisition PLUS a
+// passing probe. `tick` mirrors one poll pass with every side effect recorded.
+function makeSessionHarness({
+  probeResult,
+  pid = 4242,
+  startClock = 1_700_000_000_000,
+  refreshState = async () => ({ ok: true, reason: 'ok' }),
+}) {
+  const health = [];
+  const released = [];
+  const alerts = [];
+  const probeCalls = [];
+  const refreshCalls = [];
+  const logs = [];
+  const state = { holder: null, probe: probeResult, clock: startClock };
+  const session = createGbpSessionState({
+    pid,
+    acquire: () => (state.holder
+      ? { ok: false, existingPid: state.holder }
+      : { ok: true, existingPid: null }),
+    release: () => { released.push(state.clock); },
+    probe: async (context) => { probeCalls.push(context); return state.probe(); },
+    refreshState: async () => { refreshCalls.push(state.clock); return refreshState(); },
+    recordHealth: (record) => { health.push(record); },
+    alert: async (reason) => { alerts.push(reason); },
+    log: async (message) => { logs.push(message); },
+    now: () => state.clock,
+    backoffMs: 15 * 60 * 1000,
+  });
+  const tick = async () => {
+    if (!session.owned) {
+      const lock = await session.tryAcquire();
+      if (!lock?.ok) return { idle: true, posted: false };
+    }
+    const ctx = session.probeDue({ cstHour: 9, todayDate: '2026-09-26' });
+    if (ctx) await session.runProbe(ctx, '2026-09-26');
+    const posted = session.canPost();
+    await session.settle();   // the worker releases here, after the pass settles
+    return { idle: false, posted };
+  };
+  return { session, tick, health, released, alerts, probeCalls, refreshCalls, logs, state };
+}
+
+describe('gbp session handoff (G3)', () => {
+  it('failed probe: alerts once, releases after the pass settles, records health', async () => {
+    const h = makeSessionHarness({ probeResult: () => ({ ok: false, reason: 'logged_out' }) });
+    const first = await h.tick();
+
+    assert.equal(first.posted, false, 'a failed probe must not post');
+    assert.equal(h.released.length, 1, 'ownership is released after the pass settles');
+    assert.equal(h.alerts.length, 1, 'one alert per failure episode');
+    assert.equal(h.health.length, 1, 'health recorded once');
+    const record = h.health[0];
+    assert.equal(record.ok, false);
+    assert.equal(record.reason, 'logged_out');
+    assert.equal(record.pid, 4242, 'health carries the probing PID');
+    assert.equal(record.context, 'daily', 'health carries the worker context');
+    assert.equal(record.mode, 'playwright');
+    assert.equal(record.ts, new Date(1_700_000_000_000).toISOString(), 'health carries a fresh timestamp');
+  });
+
+  it('idle forever while an interactive session holds the lock (including retries)', async () => {
+    const h = makeSessionHarness({ probeResult: () => ({ ok: false, reason: 'logged_out' }) });
+    await h.tick();
+    h.state.holder = 7777;   // interactive takeover: a live pid owns the pidfile
+
+    for (let i = 0; i < 3; i++) {
+      h.state.clock += 20 * 60 * 1000;
+      const t = await h.tick();
+      assert.deepEqual(t, { idle: true, posted: false });
+    }
+
+    assert.equal(h.probeCalls.length, 1, 'an idle process never reopens the profile');
+    assert.equal(h.health.length, 1, "an idle process never writes another owner's health record");
+    assert.equal(h.released.length, 1, "an idle process never touches a lock it does not own");
+    assert.equal(h.alerts.length, 1, 'retries do not re-alert while still broken');
+  });
+
+  it('resumption needs exclusive reacquisition AND a passing probe', async () => {
+    const h = makeSessionHarness({ probeResult: () => ({ ok: false, reason: 'logged_out' }) });
+    await h.tick();
+    h.state.holder = 7777;
+    h.state.clock += 20 * 60 * 1000;
+    assert.equal((await h.tick()).idle, true);
+
+    // The interactive session ends: the pidfile is free again.
+    h.state.holder = null;
+    h.state.clock += 20 * 60 * 1000;
+    const reacquired = await h.tick();
+    assert.equal(reacquired.idle, false, 'reacquires the pidfile exclusively');
+    assert.equal(reacquired.posted, false, 'reacquisition alone must not post (probe still fails)');
+    assert.equal(h.released.length, 2, 'the still-failing probe releases ownership again');
+
+    // The session is fixed: the next pass probes, passes, and may post.
+    h.state.probe = () => ({ ok: true, reason: 'ok' });
+    h.state.clock += 20 * 60 * 1000;
+    const resumed = await h.tick();
+    assert.equal(resumed.posted, true, 'posting resumes only after a passing probe');
+    assert.equal(h.released.length, 2, 'a passing probe keeps ownership');
+  });
+
+  it('solo worker with a failing session probes once per backoff, not once per tick', async () => {
+    // F-1: a failing probe releases ownership, and the next ~30s tick used to
+    // reacquire, reset lastProbeAt, and relaunch Chromium — forever.
+    const h = makeSessionHarness({ probeResult: () => ({ ok: false, reason: 'logged_out' }) });
+    for (let i = 0; i < 6; i++) {
+      if (i) h.state.clock += 30 * 1000;   // POLL_INTERVAL_MS ticks
+      const t = await h.tick();
+      assert.equal(t.posted, false);
+    }
+    assert.equal(h.probeCalls.length, 1, 'six 30s ticks must launch one Chromium probe, not six');
+    assert.equal(h.released.length, 1, 'ownership is released once, after the failing pass settle');
+    assert.equal(h.health.length, 1, 'health is recorded once per probe (one alert episode)');
+    assert.equal(h.alerts.length, 1);
+
+    // The retry cadence is the backoff, not the poll interval.
+    h.state.clock += 15 * 60 * 1000;
+    await h.tick();
+    assert.equal(h.probeCalls.length, 2, 'the next attempt happens once the backoff has elapsed');
+    assert.equal(h.probeCalls.filter((c) => c).length, 2, 'probes stay ownership-gated');
+  });
+
+  it('does not probe in API mode (GBP_POSTER=api is unchanged)', async () => {
+    const session = createGbpSessionState({
+      supported: false,
+      acquire: () => ({ ok: true, existingPid: null }),
+      probe: async () => { throw new Error('must not probe'); },
+      log: async () => {},
+    });
+    await session.tryAcquire();
+    assert.equal(session.probeDue({ cstHour: 9, todayDate: '2026-09-26' }), null);
+    assert.equal(session.canPost(), true, 'API mode posts without a browser session');
+  });
+});
+
+describe('exported session state (P2.8, no browser)', () => {
+  it('refreshes the export only after a passing probe, never from a logged-out one', async () => {
+    const pass = makeSessionHarness({ probeResult: () => ({ ok: true, reason: 'ok' }) });
+    const passTick = await pass.tick();
+    assert.equal(passTick.posted, true);
+    assert.equal(pass.refreshCalls.length, 1, 'a passing probe refreshes the durable export');
+
+    const fail = makeSessionHarness({ probeResult: () => ({ ok: false, reason: 'logged_out' }) });
+    await fail.tick();
+    assert.equal(fail.refreshCalls.length, 0, 'a logged-out profile must never be exported');
+  });
+
+  it('a failed refresh cannot turn a passing probe into a gated worker', async () => {
+    const throwing = makeSessionHarness({
+      probeResult: () => ({ ok: true, reason: 'ok' }),
+      refreshState: async () => { throw new Error('browser gone'); },
+    });
+    assert.equal((await throwing.tick()).posted, true, 'posting still follows a passing probe');
+    assert.equal(throwing.session.sessionOk, true);
+
+    const failing = makeSessionHarness({
+      probeResult: () => ({ ok: true, reason: 'ok' }),
+      refreshState: async () => ({ ok: false, reason: 'exit 1' }),
+    });
+    assert.equal((await failing.tick()).posted, true);
+    assert.equal(failing.session.sessionOk, true);
+    assert.ok(failing.logs.some((m) => /session state export skipped \(exit 1\)/.test(m)),
+      'the operator can see the export is stale while the session stays usable');
+  });
+
+  it('writes the export atomically through a temp file, owner-only, and never at a repo path', async () => {
+    const events = [];
+    const state = { cookies: [{ name: 'SID', value: 'secret-value' }], origins: [] };
+    const result = await exportSessionState({ storageState: async () => state }, {
+      statePath: 'C:/profile/storage-state.json',
+      mkdir: (p) => events.push(['mkdir', p]),
+      writeFile: (p, c) => events.push(['write', p, c]),
+      rename: (from, to) => events.push(['rename', from, to]),
+      restrictAcl: (p) => events.push(['acl', p]),
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.cookies, 1);
+    const tmpPath = events[1][1];
+    assert.ok(String(tmpPath).startsWith('C:/profile/storage-state.json.tmp-'),
+      'each export writes its own temp file: concurrent exports never share one');
+    assert.deepEqual(events.map((e) => e[0]), ['mkdir', 'write', 'rename', 'acl']);
+    assert.equal(events[1][2], JSON.stringify(state));
+    assert.deepEqual(events[2], ['rename', tmpPath, 'C:/profile/storage-state.json'],
+      'temp write then rename: a failed export cannot truncate the last good copy');
+    assert.deepEqual(events[3], ['acl', 'C:/profile/storage-state.json']);
+    assert.equal(JSON.stringify(result).includes('secret-value'), false, 'the result never carries cookie values');
+    assert.equal(STORAGE_STATE_PATH.includes('SEO-Agents-App'), false, 'the export lives outside the repo (and every log)');
+    assert.equal(STORAGE_STATE_PATH.endsWith('storage-state.json'), true);
+  });
+
+  it('restricts the export to its owner and never throws when it cannot', () => {
+    const calls = [];
+    assert.equal(restrictStorageStateAcl('C:/profile/state.json', {
+      platform: 'win32', user: 'carte', exec: (cmd, args) => calls.push([cmd, args]),
+    }), true);
+    assert.deepEqual(calls, [['icacls', ['C:/profile/state.json', '/inheritance:r', '/grant:r', 'carte:F']]]);
+
+    const boom = () => { throw new Error('icacls missing'); };
+    assert.equal(restrictStorageStateAcl('C:/x', { platform: 'linux', user: 'carte', exec: boom }), false);
+    assert.equal(restrictStorageStateAcl('C:/x', { platform: 'win32', user: '', exec: boom }), false);
+    assert.equal(restrictStorageStateAcl('C:/x', { platform: 'win32', user: 'carte', exec: boom }), false);
+  });
+
+  it('launches from the exported state, and falls back to the interactive profile', async () => {
+    const events = [];
+    const state = { cookies: [], origins: [] };
+    const browser = {
+      newContext: async (opts) => {
+        events.push(['newContext', JSON.stringify(opts.storageState) === JSON.stringify(state)]);
+        return { close: async () => events.push(['context.close']) };
+      },
+      close: async () => events.push(['browser.close']),
+    };
+    const session = await launchSessionContext({
+      browserType: {
+        launch: async (opts) => { events.push(['launch', opts.headless]); return browser; },
+        launchPersistentContext: async () => { throw new Error('persistent profile must not be used'); },
+      },
+      headless: true,
+      statePath: 'C:/profile/storage-state.json',
+      persistentDir: 'C:/profile',
+      exists: () => true,
+      readFile: () => JSON.stringify(state),
+      persistentOnly: false,
+      log: () => {},
+    });
+    assert.equal(session.mode, 'storage_state', 'a non-persistent context starts from the export');
+    await session.close();
+    assert.deepEqual(events, [['launch', true], ['newContext', true], ['context.close'], ['browser.close']]);
+
+    const fallbackDirs = [];
+    const fallback = await launchSessionContext({
+      browserType: {
+        launch: async () => { throw new Error('must not launch'); },
+        launchPersistentContext: async (dir) => {
+          fallbackDirs.push(dir);
+          return { close: async () => fallbackDirs.push('closed') };
+        },
+      },
+      statePath: 'C:/profile/storage-state.json',
+      persistentDir: 'C:/profile',
+      exists: () => true,
+      readFile: () => '{not json',
+      persistentOnly: false,
+      log: () => {},
+    });
+    assert.equal(fallback.mode, 'persistent_profile', 'an unreadable export falls back to the proven path');
+    assert.deepEqual(fallbackDirs, ['C:/profile']);
+
+    const forcedDirs = [];
+    const forced = await launchSessionContext({
+      browserType: {
+        launch: async () => { throw new Error('must not launch'); },
+        launchPersistentContext: async (dir) => { forcedDirs.push(dir); return { close: async () => {} }; },
+      },
+      statePath: 'C:/profile/storage-state.json',
+      persistentDir: 'C:/profile',
+      exists: () => true,
+      readFile: () => JSON.stringify(state),
+      persistentOnly: true,
+      log: () => {},
+    });
+    assert.equal(forced.mode, 'persistent_profile_forced', 'GBP_SESSION_MODE=persistent is the documented opt-out');
+    assert.deepEqual(forcedDirs, ['C:/profile']);
+  });
+});
+
+describe('createGbpPollGuard (stuck pass fails closed)', () => {
+  it('never clears the busy flag while a pass is stuck', async () => {
+    let clock = 1000;
+    const stuck = [];
+    const guard = createGbpPollGuard({
+      now: () => clock,
+      stuckMs: 20 * 60 * 1000,
+      onStuck: async (since) => { stuck.push(since); },
+    });
+
+    assert.equal(await guard.begin(), true, 'the first pass may run');
+    clock += 60 * 1000;
+    assert.equal(await guard.begin(), false, 'a running pass blocks a second one');
+    assert.equal(guard.busy, true);
+
+    // Past the ceiling the old code cleared `busy` "so 9am posts can resume" while
+    // the browser/child could still be alive — that is the double-post regression.
+    clock += 20 * 60 * 1000;
+    assert.equal(await guard.begin(), false);
+    assert.equal(guard.busy, true, 'a stuck pass must NOT clear busy');
+    assert.equal(stuck.length, 1, 'the operator is alerted once');
+    assert.equal(stuck[0], 1000, 'the alert names when the stuck pass began');
+
+    clock += 60 * 60 * 1000;
+    assert.equal(await guard.begin(), false);
+    assert.equal(stuck.length, 1, 'no repeat alert while it stays stuck');
+    assert.equal(guard.busy, true);
+
+    guard.end();   // the pass finally settled
+    assert.equal(guard.busy, false);
+    assert.equal(await guard.begin(), true, 'a settled pass allows the next one');
   });
 });

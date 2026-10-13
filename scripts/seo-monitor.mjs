@@ -22,6 +22,9 @@ import { execSync, execFile } from 'node:child_process';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { sendHermesAlert } from './lib/hermes-alert.mjs';
+// The rebuilt pipeline's alert rules live with the watchdog so the daily watchdog
+// and this monitor cannot disagree about what a clean shadow/new run looks like.
+import { evaluatePipelineWatchdog } from './seo-watchdog.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '..');
@@ -53,6 +56,8 @@ const GBP_ARCHIVE_FOLDER  = process.env.GBP_ARCHIVE_FOLDER || 'M:\\backups\\gbp-
 const NO_SHOW_DEADLINE_HHMM = process.env.SEO_NO_SHOW_DEADLINE || '09:00';
 const EXPECTED_RUN_DOW      = parseInt(process.env.SEO_RUN_DOW ?? '5', 10); // 0=Sun … 5=Fri
 const RUNNER_HEALTH_FILE    = path.join(PROJECT_ROOT, 'outputs', 'weekly-runner-health.json');
+// Written by the daily reconcile pass: the rebuilt pipeline's memory freshness.
+const RECONCILE_HEALTH_FILE = path.join(PROJECT_ROOT, 'outputs', 'reconcile-health.json');
 
 // Parse --run-hours arg
 let RUN_DURATION_HOURS = 14;
@@ -354,7 +359,7 @@ async function checkPM2Processes() {
         'FAILED: core PM2 processes missing and pm2 resurrect did not restore them',
         `Still missing after resurrect: ${stillMissing.join(', ') || '(resurrect reported an error)'}\n\n` +
         `This usually means PM2 has no saved dump (run "pm2 save" once after starting everything) or the PM2 daemon is not running.\n\n` +
-        `Recover manually on CartersPC:\n  pm2 resurrect\n  # or, if there is no saved dump:\n  pm2 start C:\\Workspace\\Active\\MCC\\ecosystem.config.cjs\n  pm2 save\n\nMonitor log: ${logFile}`);
+        `Recover manually on CMB-Workbench:\n  pm2 resurrect\n  # or, if there is no saved dump:\n  pm2 start C:\\Workspace\\Active\\MCC\\ecosystem.config.cjs\n  pm2 save\n\nMonitor log: ${logFile}`);
     }
   }
 
@@ -489,7 +494,7 @@ async function checkPostStatuses(runId) {
 
 // ── No-show detection ───────────────────────────────────────────────────────
 function localHHMM(d) {
-  // Monitor runs on CartersPC, so getHours() is already local (CST/CDT).
+  // Monitor runs on CMB-Workbench, so getHours() is already local (CST/CDT).
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
@@ -527,6 +532,28 @@ async function checkRunStarted() {
   }
 }
 
+// ── Shadow/new pipeline (T3) ────────────────────────────────────────────────
+function readJsonFile(file) {
+  try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; }
+}
+
+// The rebuilt pipeline reports through the same health file as the legacy run, in
+// its own attempt-derived `shadow` block, so the monitor covers it with the same
+// poll loop: no-show, failed, hung, notify-miss, and a stale reconcile pass.
+async function checkPipelineWatch() {
+  const problems = evaluatePipelineWatchdog({
+    now: new Date(),
+    pipelineMode: process.env.SEO_PIPELINE,
+    health: readJsonFile(RUNNER_HEALTH_FILE),
+    reconcile: readJsonFile(RECONCILE_HEALTH_FILE),
+  });
+  for (const problem of problems) {
+    const kind = problem.split(':')[0];
+    await alertOnce(`pipeline-${kind}-${today}`, `${kind} (rebuilt pipeline)`,
+      `${problem}\n\nMonitor log: ${logFile}`);
+  }
+}
+
 // ── Main poll loop ─────────────────────────────────────────────────────────────
 async function poll() {
   try {
@@ -537,6 +564,7 @@ async function poll() {
     ]);
     await checkMDrive();
     await checkRunStarted();
+    await checkPipelineWatch();
     await checkRunStatus();
   } catch (e) {
     log('error', 'Unhandled poll exception', { error: e.message, stack: e.stack?.slice(0, 500) });

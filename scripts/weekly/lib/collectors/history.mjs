@@ -6,7 +6,10 @@
  * apply recency penalties and generation can avoid recent hooks:
  *   - `weekly_posts`   (last `weeks` weeks by post_date, default 8)
  *   - `website_tasks`  (last 12 weeks by updated_at)
- * Both are plain selects through the injected supabase-js client; nothing in
+ *   - `performance_observations` (Facebook rows measured in the same lookback):
+ *     the durable performance memory the reconcile stage writes, collapsed to
+ *     one matured window per post as `history.performance` for selection (T9).
+ * Each is a plain select through the injected supabase-js client; nothing in
  * this module ever writes, and it never creates a client or reads .env (the
  * caller passes a client, tests pass a fake whose chain resolves fixtures).
  *
@@ -29,14 +32,20 @@ import { POLICY_PATH } from '../paths.mjs';
 export const SOURCE = 'history';
 export const POSTS_TABLE = 'weekly_posts';
 export const TASKS_TABLE = 'website_tasks';
+export const PERF_TABLE = 'performance_observations';
 export const POST_COLUMNS = 'platform,day,post_date,type,service,hook,body,hashtags,status,platform_post_id,photo_file';
 export const TASK_COLUMNS = 'title,type,status,updated_at';
+export const PERF_COLUMNS = 'platform_post_id,source,metric,window_days,value,availability,measured_at';
 export const METRIC_POST = 'history_post';
 export const METRIC_TASK = 'history_task';
 export const METRIC_SUMMARY = 'history_summary';
 export const DEFAULT_WEEKS = 8;
 export const TASK_WEEKS = 12;
 export const ROW_LIMIT = 500;
+/** Window preference for the one window a post contributes to selection. */
+export const PERF_WINDOWS = Object.freeze([28, 7]);
+/** Stored Facebook metrics that can stand for engagement, in preference order. */
+export const PERF_ENGAGEMENT_METRICS = Object.freeze(['fb_interactions', 'fb_media_views']);
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}/;
@@ -257,6 +266,47 @@ export function unavailableObservation({ attemptId, retrievedAt, table, note }) 
   };
 }
 
+// ── Performance memory (T9) ──────────────────────────────────────────────
+
+/**
+ * Collapse stored performance-memory rows to one window per post: the matured
+ * 28-day window when it carries a measurement, else the 7-day window; inside a
+ * window the earliest `PERF_ENGAGEMENT_METRICS` entry, newest `measured_at`
+ * first. `availability: 'unavailable'` and null values are dropped — unknown is
+ * absent, never a zero engagement (selection scores those 0.5). Rows only ever
+ * exist for windows that have matured: reconcile gates each write on
+ * `windowMatured`.
+ * → [{ platform_post_id, window_days, metric, value, measured_at }]
+ */
+export function resolvePerformanceMemory(rows) {
+  const best = new Map();
+  for (const row of Array.isArray(rows) ? rows : []) {
+    if (!row || typeof row !== 'object') continue;
+    if (row.source && row.source !== 'facebook') continue;
+    const postId = textOrNull(row.platform_post_id);
+    const metric = textOrNull(row.metric);
+    const windowDays = intOrNull(row.window_days);
+    const value = Number(row.value);
+    if (!postId || !metric || windowDays == null || !Number.isFinite(value)) continue;
+    if (row.availability !== 'ok') continue;
+    const windowRank = PERF_WINDOWS.indexOf(windowDays);
+    const metricRank = PERF_ENGAGEMENT_METRICS.indexOf(metric);
+    if (windowRank < 0 || metricRank < 0) continue;
+    const measuredAt = row.measured_at ? String(row.measured_at) : '';
+    const prior = best.get(postId);
+    const better = !prior
+      || windowRank < prior.windowRank
+      || (windowRank === prior.windowRank && metricRank < prior.metricRank)
+      || (windowRank === prior.windowRank && metricRank === prior.metricRank && measuredAt > prior.measuredAt);
+    if (!better) continue;
+    best.set(postId, {
+      windowRank, metricRank, measuredAt,
+      entry: { platform_post_id: postId, window_days: windowDays, metric, value, measured_at: measuredAt || null },
+    });
+  }
+  return [...best.values()].map((b) => b.entry).sort((a, b) => a.platform_post_id.localeCompare(b.platform_post_id));
+}
+
 // ── Supabase read ──────────────────────────────────────────────────────────
 
 /**
@@ -264,11 +314,11 @@ export function unavailableObservation({ attemptId, retrievedAt, table, note }) 
  *   from(table).select(columns).gte(column, since).order(column, { ascending: false }).limit(limit)
  * Throws on a supabase error result or a client without the chain.
  */
-export async function selectRows(supabase, { table, columns, column, since, limit = ROW_LIMIT }) {
+export async function selectRows(supabase, { table, columns, column, since, filters = null, limit = ROW_LIMIT }) {
   if (!supabase || typeof supabase.from !== 'function') throw new Error('no supabase client');
-  const result = await supabase
-    .from(table)
-    .select(columns)
+  let query = supabase.from(table).select(columns);
+  for (const [key, value] of Object.entries(filters || {})) query = query.eq(key, value);
+  const result = await query
     .gte(column, since)
     .order(column, { ascending: false })
     .limit(limit);
@@ -301,7 +351,7 @@ export async function collectHistory({
   const retrievedAt = nowDate.toISOString();
   const today = chicagoDate(nowDate);
   const observations = [];
-  const history = { posts: [], website_tasks: [] };
+  const history = { posts: [], website_tasks: [], performance: [] };
 
   let cities = [];
   try {
@@ -342,6 +392,21 @@ export async function collectHistory({
   } catch (err) {
     observations.push(unavailableObservation({
       attemptId, retrievedAt, table: TASKS_TABLE, note: `${TASKS_TABLE} unavailable: ${err && err.message ? err.message : String(err)}`,
+    }));
+  }
+
+  try {
+    const rows = await selectRows(supabase, {
+      table: PERF_TABLE, columns: PERF_COLUMNS, column: 'measured_at', since: postsSince,
+      filters: { source: 'facebook' }, limit: rowLimit,
+    });
+    history.performance = resolvePerformanceMemory(rows);
+    observations.push(summaryObservation({
+      attemptId, retrievedAt, table: PERF_TABLE, rows: rows.length, weeks: postWeeks, since: postsSince, today,
+    }));
+  } catch (err) {
+    observations.push(unavailableObservation({
+      attemptId, retrievedAt, table: PERF_TABLE, note: `${PERF_TABLE} unavailable: ${err && err.message ? err.message : String(err)}`,
     }));
   }
 

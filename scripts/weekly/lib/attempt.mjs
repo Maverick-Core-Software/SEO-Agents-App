@@ -13,6 +13,43 @@ import { AttemptSchema, SCHEMA_VERSION, parseOrIssues } from './schemas.mjs';
 const DEFAULT_TTL_MS = 30 * 60 * 1000;
 const MAX_ERROR_CHARS = 2000;
 
+/**
+ * Identity of the attempt a run is currently on, published next to the exports
+ * as `<outDir>/current-attempt.json`. The wrapper reads it to decide whether the
+ * attempt record on disk belongs to the run it launched: a killed or timed-out
+ * run leaves the file at `running` with the attempt's own id, while a run that
+ * never created an attempt leaves the previous (stale) identity in place.
+ */
+export const CURRENT_ATTEMPT_FILE = 'current-attempt.json';
+
+/** The identity document for `attempt` (pure). */
+export function attemptIdentity(attempt, now = new Date()) {
+  return {
+    attempt_id: attempt.id,
+    week_of: attempt.week_of,
+    mode: attempt.mode,
+    status: attempt.status,
+    started_at: attempt.started_at,
+    finished_at: attempt.finished_at ?? null,
+    lease_until: attempt.lease_until ?? null,
+    updated_at: iso(now),
+  };
+}
+
+/** Write (or refresh) the identity document. Atomic: temp file then rename. */
+export function publishAttemptIdentity(file, attempt, now = new Date()) {
+  const tmp = `${file}.tmp`;
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(tmp, `${JSON.stringify(attemptIdentity(attempt, now), null, 2)}\n`, 'utf8');
+  fs.renameSync(tmp, file);
+  return file;
+}
+
+/** Read the identity document; null when it is absent or unreadable. */
+export function readAttemptIdentity(file) {
+  try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; }
+}
+
 const iso = (d) => new Date(d).toISOString();
 
 /** Error → short string for the record; null when there is no error. */
@@ -171,6 +208,33 @@ export async function finishAttempt(store, attempt, { status, error, spentUsd } 
   const updated = await persist(store, attempt, patch);
   await store.releaseLease({ week_of: attempt.week_of, attempt_id: attempt.id });
   return updated;
+}
+
+/**
+ * Finalize an attempt that a killed or timed-out run left `running` (T6).
+ * Identity-guarded: only the attempt named by `identityFile` is touched, and only
+ * while its record still says `running` and its lease is no longer live — a live
+ * run still owns its lease, so this never patches an in-flight or foreign attempt.
+ * Returns the finalized record, or null when there was nothing to do.
+ */
+export async function finalizeAbandonedAttempt({ store, identityFile, now = new Date() }) {
+  if (!store || typeof store.getAttempt !== 'function') return null;
+  const identity = readAttemptIdentity(identityFile);
+  const attemptId = identity && identity.attempt_id;
+  if (!attemptId) return null;
+  const stored = await store.getAttempt(attemptId);
+  if (!stored || stored.status !== 'running' || stored.week_of !== identity.week_of) return null;
+  const leaseUntil = Date.parse(stored.lease_until);
+  if (Number.isFinite(leaseUntil) && leaseUntil > new Date(now).getTime()) return null;
+  const finished = await finishAttempt(store, { ...stored, stages: stored.stages || {} }, {
+    status: 'failed',
+    error: `abandoned: the ${stored.mode} run did not finish (killed or timed out)`,
+  }, now);
+  // The identity file is the guard: refresh it so the next run sees the finalized
+  // status, and leave a newer identity (a different attempt) untouched.
+  const current = readAttemptIdentity(identityFile);
+  if (current && current.attempt_id === attemptId) publishAttemptIdentity(identityFile, finished, now);
+  return finished;
 }
 
 export { DEFAULT_TTL_MS };

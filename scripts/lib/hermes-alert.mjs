@@ -10,6 +10,7 @@
 // Replaces the grizzly-hcp iMessage path, dead since spectrum-ts went away.
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import path from 'node:path';
 
 const execFileAsync = promisify(execFile);
 
@@ -21,7 +22,12 @@ export async function sendHermesAlert(message) {
   // Slack is the no-cost default. An explicit HERMES_ALERT_TO may still select
   // an alternate route for a deliberate fallback.
   const target = process.env.HERMES_ALERT_TO || 'slack';
+  // The venv's editable-install finder has failed under pm2/session-0 with
+  // "No module named 'hermes_cli'" while working interactively; put the source
+  // root on PYTHONPATH so the import does not depend on that finder.
+  const root = path.resolve(path.dirname(cli), '..', '..');
+  const env = { ...process.env, PYTHONPATH: [root, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter) };
   await execFileAsync(cli, ['send', '--to', target, '--quiet', message], {
-    timeout: 20_000, windowsHide: true,
+    timeout: 20_000, windowsHide: true, env,
   });
 }
