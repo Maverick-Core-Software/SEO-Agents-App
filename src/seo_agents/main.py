@@ -8,6 +8,7 @@ import smtplib
 import subprocess
 import sys
 import time
+import urllib.request
 from datetime import date, datetime, timezone
 from email.mime.text import MIMEText
 from pathlib import Path
@@ -101,11 +102,22 @@ _DEFAULT_HERMES_CLI = (
 )
 
 
+def _hermes_cli_found(cli: str) -> bool:
+    """Fast check that the Hermes CLI can be spawned: a path must exist on disk, a bare
+    name must be on PATH. The AIWA LXC has no Hermes CLI, so this avoids a failed spawn."""
+    if os.path.isabs(cli) or "/" in cli or "\\" in cli:
+        return Path(cli).exists()
+    return shutil.which(cli) is not None
+
+
 def _send_hermes_alert(message: str) -> bool:
     """Push an alert through the local `hermes send` CLI (MavH Twilio SMS per
     HERMES_ALERT_TO). Direct platform delivery — no LLM, no agent loop."""
     cli = os.getenv("HERMES_CLI", "").strip() or _DEFAULT_HERMES_CLI
     target = os.getenv("HERMES_ALERT_TO", "").strip() or "slack"
+    if not _hermes_cli_found(cli):
+        print(f"\n⚠ Hermes alert skipped: CLI not found ({cli})")
+        return False
     try:
         subprocess.run(
             [cli, "send", "--to", target, "--quiet", message],
@@ -120,10 +132,41 @@ def _send_hermes_alert(message: str) -> bool:
         return False
 
 
+def _send_slack_alert(message: str) -> bool:
+    """Post an alert straight to Slack (chat.postMessage) with the bot token and alert
+    channel from env. Second hop after the Hermes CLI; the AIWA default, since the LXC
+    has no Hermes CLI. Standard library only. The token is never printed."""
+    token = os.getenv("SLACK_BOT_TOKEN", "").strip()
+    channel = os.getenv("SLACK_ALERT_CHANNEL", "").strip()
+    if not token or not channel:
+        print("\n⚠ Slack alert skipped: SLACK_BOT_TOKEN / SLACK_ALERT_CHANNEL not set")
+        return False
+    req = urllib.request.Request(
+        "https://slack.com/api/chat.postMessage",
+        data=json.dumps({"channel": channel, "text": message}).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json; charset=utf-8",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except Exception as exc:
+        print(f"\n⚠ Slack alert failed: {exc}")
+        return False
+    if not payload.get("ok"):
+        print(f"\n⚠ Slack alert failed: {payload.get('error', 'unknown error')}")
+        return False
+    print(f"\n💬 Failure alert sent via Slack to {channel}")
+    return True
+
+
 def _send_failure_alert(phase: str, error: str, topic: str, at: str) -> None:
-    """Alert Carter that a phase failed. Primary: hermes → MavH Twilio SMS.
-    Secondary: Gmail SMTP, best-effort — a dead app password must never be the
-    only channel again (2026-07-31: two weeks of silent 535 BadCredentials)."""
+    """Alert Carter that a phase failed. Order: Hermes CLI → Slack direct, the first
+    that delivers wins. Then Gmail SMTP, best-effort — a dead app password must never be
+    the only channel again (2026-07-31: two weeks of silent 535 BadCredentials)."""
     phase_label = _PHASE_LABELS.get(phase, phase)
     topic_line = f"\nTopic: {topic}" if topic else ""
     subject = f"⚠ SEO Agent FAILED: {phase_label}"
@@ -137,7 +180,10 @@ def _send_failure_alert(phase: str, error: str, topic: str, at: str) -> None:
         f"Fix the issue before the next scheduled Friday run.\n\n"
         f"— Maverick Console"
     )
-    delivered = _send_hermes_alert(f"{subject}\n{body}")
+    alert_text = f"{subject}\n{body}"
+    delivered = _send_hermes_alert(alert_text)
+    if not delivered:
+        delivered = _send_slack_alert(alert_text)
 
     app_password = os.getenv("SMTP_APP_PASSWORD", "").strip()
     from_addr = (

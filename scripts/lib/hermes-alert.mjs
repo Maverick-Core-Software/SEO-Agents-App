@@ -1,16 +1,21 @@
-// Push alerts via the local `hermes send` CLI (Maverick-Homelab gateway). Direct
-// delivery using the gateway's platform credentials in ~/.hermes — no LLM, no agent
-// loop, and no running gateway needed for bot-token platforms like Slack/SMS.
-// Primary SEO compatibility path: HERMES_ALERT_TO=slack (see .env.example).
-//
-// ONE-WAY COMPATIBILITY PATH: HERMES_ALERT_TO=slack still routes through this CLI
-// to Slack's home channel and is unchanged. Block Kit approvals use the existing
-// Hermes Slack credentials for delivery and Hermes Socket Mode for clicks; see
-// docs/runbooks/slack-alerts.md.
+// Push alerts. Transport order for the shared alert path (sendHermesAlert):
+//   1. Hermes CLI `hermes send` — when HERMES_CLI resolves to an existing executable
+//      (or `hermes` is on PATH). Direct delivery using the gateway's platform credentials
+//      in ~/.hermes — no LLM, no agent loop. Primary SEO path: HERMES_ALERT_TO=slack.
+//   2. Slack direct chat.postMessage via slack-alert.mjs — when SLACK_BOT_TOKEN and
+//      SLACK_ALERT_CHANNEL resolve. The AIWA LXC has no Hermes CLI, so this is its default.
+//   3. Gmail SMTP via nodemailer — when SMTP_APP_PASSWORD is set.
+// The first hop that delivers wins; each hop is best-effort and never throws. The shared
+// path throws only when every configured hop failed, with the reasons joined by '; '.
+// The weekly notify receipt (scripts/weekly/lib/notify.mjs) uses deliverPrimary() for hops
+// 1-2 and sends SMTP as its own best-effort hop, so its receipt can read `via hermes+smtp`.
+// See docs/runbooks/slack-alerts.md for the Block Kit approval path (unchanged).
 // Replaces the grizzly-hcp iMessage path, dead since spectrum-ts went away.
 import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
+import fs from 'node:fs';
 import path from 'node:path';
+import { promisify } from 'node:util';
+import { getSlackConfig, sendSlackTextAlert } from './slack-alert.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -42,15 +47,80 @@ export function buildHermesInvocation(message, env = process.env, platform = pro
   return { cli, args: ['send', '--to', target, '--quiet', message], options };
 }
 
-// Injectable seam: `exec` defaults to execFile. Resolves undefined on success and
-// rejects with the execFile error on failure (the notify.mjs receipt depends on that).
-export async function sendHermesAlertWith(message, { env = process.env, platform = process.platform, exec = execFileAsync } = {}) {
-  const { cli, args, options } = buildHermesInvocation(message, env, platform);
-  await exec(cli, args, options);
+// Fast, never-throwing check that the CLI can be spawned at all. A path (absolute or
+// relative) must exist on disk; a bare name must be on PATH. A host without the Hermes
+// CLI (the AIWA LXC) is detected here instead of waiting on an execFile failure.
+export function hermesCliExists(cli, env = process.env, platform = process.platform, exists = fs.existsSync) {
+  try {
+    if (cli.includes('/') || cli.includes('\\') || path.isAbsolute(cli)) return Boolean(exists(cli));
+    const win = platform === 'win32';
+    const dirs = String(env.PATH || env.Path || '').split(win ? ';' : ':').filter(Boolean);
+    const exts = win ? ['', '.exe', '.cmd', '.bat'] : [''];
+    const join = win ? path.win32.join : path.posix.join;
+    return dirs.some(dir => exts.some(ext => exists(join(dir, cli + ext))));
+  } catch {
+    return false;
+  }
 }
 
+// Hops 1-2: Hermes CLI, then Slack direct. Resolves { ok: true, channel: 'hermes' | 'slack' }
+// on the first delivery, or { ok: false, reason } with every attempted hop's reason joined
+// by '; '. Never throws. `exec`, `exists`, `fetchImpl` and `slackConfig` are injectable seams.
+export async function deliverPrimary(message, {
+  env = process.env, platform = process.platform, exec = execFileAsync,
+  exists = fs.existsSync, fetchImpl, slackConfig,
+} = {}) {
+  const reasons = [];
+  const { cli, args, options } = buildHermesInvocation(message, env, platform);
+  if (!hermesCliExists(cli, env, platform, exists)) {
+    reasons.push(`hermes: CLI not found (${cli})`);
+  } else {
+    try {
+      await exec(cli, args, options);
+      return { ok: true, channel: 'hermes' };
+    } catch (e) {
+      reasons.push(`hermes: ${e.message || e}`);
+    }
+  }
+  const cfg = slackConfig ?? getSlackConfig(env);
+  if (!cfg.enabled) {
+    reasons.push('slack: not configured');
+  } else if (await sendSlackTextAlert(message, cfg, fetchImpl)) {
+    return { ok: true, channel: 'slack' };
+  } else {
+    reasons.push('slack: chat.postMessage failed');
+  }
+  return { ok: false, reason: reasons.join('; ') };
+}
+
+// Hop 3: Gmail SMTP. Resolves { ok: true } or { ok: false, reason }; never throws.
 // Env is read per-call, not at module scope: mav-bridge / supabase-sync populate
 // process.env from .env AFTER imports may have been evaluated.
+export async function sendSmtpAlert(message, { env = process.env } = {}) {
+  const pass = env.SMTP_APP_PASSWORD || '';
+  if (!pass) return { ok: false, reason: 'smtp not configured' };
+  const from = env.SMTP_FROM || env.SMTP_FROM_EMAIL || 'barnscarter@gmail.com';
+  const to = env.SMTP_TO || env.SMTP_TO_EMAIL || 'barnscarter@gmail.com';
+  try {
+    const { createTransport } = await import('nodemailer');
+    const transport = createTransport({ service: 'gmail', auth: { user: from, pass } });
+    await transport.sendMail({ from, to, subject: message.split('\n')[0].slice(0, 80), text: message });
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, reason: `smtp: ${e.message || e}` };
+  }
+}
+
+// The shared alert path: primary hops, then SMTP as a fallback. Resolves { channel } on
+// delivery ('hermes' | 'slack' | 'smtp'); throws only when every configured hop failed.
+export async function sendHermesAlertWith(message, { env = process.env, ...seams } = {}) {
+  const primary = await deliverPrimary(message, { env, ...seams });
+  if (primary.ok) return { channel: primary.channel };
+  const mail = await sendSmtpAlert(message, { env });
+  if (mail.ok) return { channel: 'smtp' };
+  throw new Error([primary.reason, mail.reason].join('; '));
+}
+
 export async function sendHermesAlert(message) {
   return sendHermesAlertWith(message);
 }

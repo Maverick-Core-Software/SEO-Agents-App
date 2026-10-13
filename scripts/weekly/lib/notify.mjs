@@ -1,14 +1,15 @@
 /**
  * notify.mjs — attempt-bound alerts with delivery receipts.
  *
- * Same two transports the legacy pipeline uses (Hermes CLI first, Gmail SMTP
- * second, both best-effort), but every send is keyed by attempt and event and
+ * Transports: the primary hop (Hermes CLI, then Slack direct) and Gmail SMTP as a
+ * second best-effort hop; both are attempted, and the receipt names what delivered.
+ * Every send is keyed by attempt and event and
  * the receipt is written to the attempt's stages as `notify:<event>` so a
  * re-run never re-sends and the watchdog can see what was delivered. The
  * message carries the topic, the item counts, the validation result, the
  * runtime, the spend and the summary path (T1).
  */
-import { sendHermesAlert } from '../../lib/hermes-alert.mjs';
+import { deliverPrimary, sendSmtpAlert } from '../../lib/hermes-alert.mjs';
 
 function short(id) {
   return String(id || '').slice(0, 8);
@@ -63,21 +64,10 @@ export function formatAttemptMessage({ attempt, event, plan = null, validation =
   return lines.join('\n');
 }
 
-async function defaultSmtp(message) {
-  const pass = process.env.SMTP_APP_PASSWORD || '';
-  if (!pass) return { ok: false, reason: 'smtp not configured' };
-  const from = process.env.SMTP_FROM || process.env.SMTP_FROM_EMAIL || 'barnscarter@gmail.com';
-  const to = process.env.SMTP_TO || process.env.SMTP_TO_EMAIL || 'barnscarter@gmail.com';
-  const { createTransport } = await import('nodemailer');
-  const transport = createTransport({ service: 'gmail', auth: { user: from, pass } });
-  await transport.sendMail({ from, to, subject: message.split('\n')[0].slice(0, 80), text: message });
-  return { ok: true };
-}
-
-async function defaultHermes(message) {
-  await sendHermesAlert(message);
-  return { ok: true };
-}
+// Primary hop = Hermes CLI, then Slack direct (resolves { ok, channel } or { ok: false, reason }).
+// SMTP is its own best-effort hop after it, so a delivered alert reads `via hermes+smtp`.
+const defaultHermes = (message) => deliverPrimary(message);
+const defaultSmtp = (message) => sendSmtpAlert(message);
 
 /**
  * Send one alert for (attempt, event). Idempotent per attempt+event: an
@@ -97,22 +87,26 @@ export async function notifyAttempt({
   const startedAt = now.toISOString();
   const text = message || formatAttemptMessage({ attempt, event });
 
+  // The primary hop reports the channel that delivered ('hermes' or 'slack'); a bare
+  // `{ ok: true }` from an injected seam is taken as 'hermes'. Every failed hop's reason
+  // is kept, so a total failure names all of them.
   let channel = '';
-  let reason = '';
+  const reasons = [];
   try {
     const r = await hermes(text);
-    if (r && r.ok !== false) channel = 'hermes';
-    else reason = (r && r.reason) || 'hermes refused';
+    if (r && r.ok !== false) channel = r.channel || 'hermes';
+    else reasons.push((r && r.reason) || 'hermes refused');
   } catch (e) {
-    reason = `hermes: ${e.message || e}`;
+    reasons.push(`hermes: ${e.message || e}`);
   }
   try {
     const r = await smtp(text);
     if (r && r.ok !== false) channel = channel ? `${channel}+smtp` : 'smtp';
-    else if (!reason) reason = (r && r.reason) || 'smtp refused';
+    else reasons.push((r && r.reason) || 'smtp refused');
   } catch (e) {
-    if (!reason) reason = `smtp: ${e.message || e}`;
+    reasons.push(`smtp: ${e.message || e}`);
   }
+  const reason = reasons.join('; ');
 
   const sent = Boolean(channel);
   const receipt = {
