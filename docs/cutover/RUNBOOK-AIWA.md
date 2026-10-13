@@ -72,6 +72,32 @@ the LXC fetches secrets, and no agent prints values.
   a bug on the PC).
 - Routes are unchanged. On the PC nothing changes: `MAV_BRIDGE_BIND` unset keeps loopback.
 
+## 3b. Provisioning for user `seo`: rclone remote and hermes config (F11) [Carter approval: credentials]
+
+User `seo` has `HOME=/opt/seo` and no login shell, so its per-user configs live under `/opt/seo` and are written
+through `runuser`. Both are credentials: Carter supplies them, no agent prints them.
+
+1. **rclone remote** (`seo-photo-sync` `ExecStartPre` runs `rclone sync "$SEO_RCLONE_REMOTE:GBP Photos"` and fails
+   loudly without it):
+   - Authorise on the PC (`rclone authorize "drive"` in a browser session) and paste the token into
+     `runuser -u seo -- rclone config create <remote> drive scope drive.readonly token '<json>'`, or copy a
+     PC-built `rclone.conf` to `/opt/seo/.config/rclone/rclone.conf` (owner `seo`, mode 600).
+   - `.env`: `SEO_RCLONE_REMOTE=<remote>`. Check (read-only, names only):
+     `runuser -u seo -- rclone lsd "<remote>:GBP Photos" | head -3`.
+2. **hermes config** (`HERMES_CLI` alerts from mav-bridge, gbp-worker, the weekly run, monitor and watchdog use
+   the gateway's platform credentials in `~/.hermes`, so for `seo` that is `/opt/seo/.hermes`):
+   - Install the hermes CLI on the LXC and set `HERMES_CLI` in `.env` to its absolute path (`render-env.sh
+     --check-paths` requires it to exist or be on PATH).
+   - Copy the hermes config/credentials to `/opt/seo/.hermes/` (owner `seo`, mode 700 dir / 600 files).
+   - Probe: `runuser -u seo -- <HERMES_CLI> --help` exits 0; a test alert goes through the Slack channel.
+   Without it every alert falls to the SMTP secondary only.
+3. **Facebook ad account**: `.env` `FB_AD_ACCOUNT_ID=act_<id>` (Meta Ads Manager). `fb-boost-marketing` reports
+   the boost client as not `ready` without it, and `FB_BOOST_API=1` in F3 would silently skip every boost tick.
+4. **GBP account and location**: `.env` `GBP_ACCOUNT_ID=accounts/102812174257783632337` and
+   `GBP_LOCATION_ID=locations/14305368671018787381` (probe 2026-10-13, "Grizzly Electrical Solutions"). Pinned so
+   the poster never depends on the v1 first-account / title lookup. Probe: `node scripts/gbp-access-probe.mjs`
+   must report the v4 localPosts list 200.
+
 ## 4. Data copy (E4) [Carter approval: data movement]
 
 Transport: an Orca-approved path only (rsync over the LAN from a Carter-run command, or a Syncthing share). No SCP from an agent.
