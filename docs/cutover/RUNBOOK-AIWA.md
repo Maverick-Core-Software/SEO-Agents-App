@@ -55,10 +55,18 @@ the LXC fetches secrets, and no agent prints values.
 - `MAV_BRIDGE_BIND` sets the listen address for mav-bridge (default `127.0.0.1`, loopback only).
   On the LXC set it to the LXC address in `/opt/seo/.env` so CT 103 (MCC) can reach the bridge; the port stays
   `MAV_BRIDGE_PORT` (default 8790). Resolution lives in `scripts/lib/bridge-bind.mjs`.
-- Restrict `:8790` at the LXC/host firewall to CT 103's address only.
+- **Hard gate (E3): restrict `:8790` at the LXC/host firewall to CT 103's address only, before `.env` carries a
+  non-loopback `MAV_BRIDGE_BIND` and before `pm2 start`.** The bridge's approve / retry / clear-lock / run /
+  new-schedule routes have no auth of their own (rc1 review F13; a shared-secret header is backlog C1). Evidence
+  for the gate: the firewall rule listing plus, from any host other than CT 103, `curl -m 3 http://<seo-prod-ip>:8790/health`
+  timing out. No AIWA start step proceeds without it.
+- The bridge refuses an unspecified address: `MAV_BRIDGE_BIND=0.0.0.0` (or `::`) exits at startup with the reason
+  unless `MAV_BRIDGE_ALLOW_ANY=1` is set deliberately. Always bind the one LXC address.
 - MCC env change (one line, Carter-approved): set `SEO_APP_URL` to `http://<seo-prod-ip>:8790`.
-- Startup log line to look for: `mav-bridge listening on <host>:<port>`.
-- Routes and auth are unchanged. On the PC nothing changes: `MAV_BRIDGE_BIND` unset keeps loopback.
+- Startup log lines to look for: `mav-bridge listening on <host>:<port>`, followed by
+  `WARNING: mav-bridge is binding a non-loopback address (...)` for any bind other than loopback (expected on AIWA,
+  a bug on the PC).
+- Routes are unchanged. On the PC nothing changes: `MAV_BRIDGE_BIND` unset keeps loopback.
 
 ## 4. Data copy (E4) [Carter approval: data movement]
 

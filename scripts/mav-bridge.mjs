@@ -36,7 +36,7 @@ import { parseAfterTime, shouldRunFbBoostTick, decideBoostLaunch, summarizeBoost
 import { fetchApprovedWebsiteTasks, executeNextWebsiteTask, sweepOrphanWebsiteTasks } from './lib/website-task-runner.mjs';
 import { liveRunStatus as deriveLiveRunStatus, countRunStatuses } from './lib/seo-run-status.mjs';
 import { MAX_JSON_BODY_BYTES, parseJsonBody } from './lib/http-json.mjs';
-import { resolveBind } from './lib/bridge-bind.mjs';
+import { resolveBind, bindWarning } from './lib/bridge-bind.mjs';
 import { pythonChildEnv } from './lib/child-env.mjs';
 
 const execFileAsync = promisify(execFile);
@@ -55,7 +55,10 @@ if (fs.existsSync(envPath)) {
 const SUPABASE_URL = process.env.SUPABASE_URL || '';
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY || '';
 const POLL_INTERVAL_MS = parseInt(process.env.MAV_BRIDGE_POLL_MS || '30000');
-const { host: BRIDGE_HOST, port: BRIDGE_PORT } = resolveBind(process.env);
+// F13: an unspecified bind (0.0.0.0 / ::) throws here unless MAV_BRIDGE_ALLOW_ANY=1,
+// so a misconfigured .env stops the bridge before any route is reachable.
+const BRIDGE_BIND = resolveBind(process.env);
+const { host: BRIDGE_HOST, port: BRIDGE_PORT } = BRIDGE_BIND;
 const SEO_AGENTS_EXE = resolveSeoAgentsExe({ projectRoot: PROJECT_ROOT });
 const PENDING_PROMPT_FILE = path.join(PROJECT_ROOT, 'outputs', 'pending_prompt.json');
 const GBP_MODE = resolveGbpMode();
@@ -1472,6 +1475,11 @@ const httpServer = http.createServer((req, res) => {
 });
 httpServer.listen(BRIDGE_PORT, BRIDGE_HOST, () => {
   console.log(`mav-bridge listening on ${BRIDGE_HOST}:${BRIDGE_PORT}`);
+  const warning = bindWarning(BRIDGE_BIND);
+  if (warning) {
+    console.error(`[mav-bridge] ${warning}`);
+    log(null, 'bridge', 'warn', warning).catch(() => {});
+  }
 });
 
 poll(); // run immediately on start
