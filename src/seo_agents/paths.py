@@ -2,8 +2,10 @@
 
 Resolution order for every default:
   1. the environment variable (always wins, even when the path does not exist);
-  2. a repo-relative path, when it exists or when no legacy path applies;
-  3. on win32 only, the legacy PC path, and only if it exists (last resort).
+  2. on win32, the legacy PC path when one applies: the PC keeps exactly the
+     default it had before the cutover (rc1 review F2 — the repo copy of the
+     GBP poster driver/config must not silently become live on the PC);
+  3. otherwise the repo-relative path (the Linux LXC layout).
 """
 
 from __future__ import annotations
@@ -22,15 +24,24 @@ LEGACY_WIN_WEBSITE_REPO = r"C:\Workspace\Active\Grizzly Launch\grizzly-website"
 POSIX_GBP_PHOTO_DIR = "/srv/seo/photos"
 
 
-def resolve_default(env_name: str, repo_relative: Path, legacy_win: str | None = None) -> Path:
-    """Env override, else the repo-relative path, else a win32 legacy path that exists."""
+def resolve_default(
+    env_name: str,
+    repo_relative: Path,
+    legacy_win: str | None = None,
+    platform: str = sys.platform,
+) -> Path:
+    """Env override; else on win32 the legacy PC path (unchanged pre-cutover default,
+    whether or not it exists); else the repo-relative path.
+
+    The repo-relative preference is posix-only on purpose: on the PC it would have
+    pointed `run-action publish_gbp_post` at the repo Playwright driver with the real
+    config, next to gbp-worker's own posting (F2). `platform` is injectable for tests.
+    """
     env = (os.getenv(env_name) or "").strip()
     if env:
         return Path(env)
-    if legacy_win and sys.platform == "win32" and not repo_relative.exists():
-        legacy = Path(legacy_win)
-        if legacy.exists():
-            return legacy
+    if legacy_win and platform == "win32":
+        return Path(legacy_win)
     return repo_relative
 
 
