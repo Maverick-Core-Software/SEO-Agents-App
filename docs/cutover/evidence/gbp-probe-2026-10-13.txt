@@ -1,0 +1,20 @@
+accountmanagement v1     200                        
+                         ^^ 200 OK: {
+  "accounts": [
+    {
+      "name": "accounts/109390422554535998331",
+      "accountName": "Carter Barns",
+      "type
+legacy v4 (gated)        404                        
+                         msg: HTML error page (route not served)
+v4 $discovery            404  NOT_FOUND             
+businessinformation v1   400  INVALID_ARGUMENT      
+performance v1           400  INVALID_ARGUMENT      
+qanda v1                 404                        
+                         msg: HTML error page (route not served)
+verifications v1         404  NOT_FOUND             
+
+--- token sanity ---
+business.manage scope: yes
+
+VERDICT: still gated (v4 404s). Leave GBP_POSTER on playwright.

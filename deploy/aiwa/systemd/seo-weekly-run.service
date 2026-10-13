@@ -1,0 +1,23 @@
+[Unit]
+Description=Grizzly SEO weekly run (scripts/run-weekly-seo.py)
+Documentation=file:///opt/seo/deploy/aiwa/README.md
+Wants=network-online.target
+After=network-online.target seo-photo-sync.service
+
+[Service]
+Type=oneshot
+User=seo
+WorkingDirectory=/opt/seo
+EnvironmentFile=/opt/seo/.env
+Environment=TZ=America/Chicago
+Environment=NODE_ENV=production
+Environment=PATH=/opt/seo/.venv/bin:/usr/local/bin:/usr/bin:/bin
+NoNewPrivileges=yes
+PrivateTmp=yes
+# F10: the .env pins the runbook relies on (SEO_PIPELINE, GBP_POSTER, MAV_BRIDGE_GBP, SEO_AUTO_APPROVE,
+# FB_BOOST_API, TZ) and every path/file name are checked before the run starts; a failed check
+# stops the unit (fail closed) and the 10:00 watchdog reports the NO-SHOW.
+ExecStartPre=/usr/bin/bash /opt/seo/deploy/aiwa/render-env.sh --check-paths /opt/seo/.env
+# The wrapper enforces its own caps (crew 150 min, shadow/new 30 min). 16h is the outer ceiling.
+ExecStart=/opt/seo/.venv/bin/python scripts/run-weekly-seo.py
+TimeoutStartSec=16h

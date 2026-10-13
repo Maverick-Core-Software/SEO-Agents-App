@@ -10,8 +10,11 @@ import { createCostMeter } from '../lib/cost-meter.mjs';
 import { SERP_CACHE_DIR } from '../lib/paths.mjs';
 import {
   SERPAPI_URL,
+  DEFAULT_IN_FLIGHT,
   NOTE_CAP_REACHED,
+  NOTE_DEADLINE,
   NOTE_NO_API_KEY,
+  NOTE_QUOTA_EXHAUSTED,
   buildSerpQueries,
   buildSerpUrl,
   cacheKey,
@@ -571,6 +574,114 @@ describe('collectSerp (caps, key, budget)', () => {
   });
 });
 
+describe('collectSerp (T5: in-flight, reservations, deadline)', () => {
+  it('runs 4-6 live calls in flight and still returns observations in query order', async () => {
+    let active = 0;
+    let peak = 0;
+    let calls = 0;
+    const queries = Array.from({ length: 12 }, (_, i) => ({ query: `electrician Rockwall tx ${i}`, city: 'Rockwall' }));
+    const fetchImpl = async () => {
+      calls += 1;
+      active += 1;
+      peak = Math.max(peak, active);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      active -= 1;
+      return jsonResponse(wylie);
+    };
+    const observations = await collectSerp({
+      attemptId: ATTEMPT, queries, cacheDir: freshCacheDir(), cacheDays: 7, maxCalls: 20, apiKey: API_KEY,
+      location: LOCATION, now: NOW, fetchImpl,
+    });
+    assert.equal(calls, 12);
+    assert.equal(peak, DEFAULT_IN_FLIGHT, 'the pool saturates but never exceeds the limit');
+    assert.ok(peak >= 4 && peak <= 6, `peak in flight was ${peak}, outside the 4-6 band`);
+    assert.deepEqual(observations.map((o) => o.scope), queries.map((q) => q.query), 'results keep query order');
+    assert.ok(observations.every((o) => o.status === 'ok'));
+    observations.forEach(assertValidObservation);
+  });
+
+  it('reserves each maxCalls slot before dispatch, so in-flight calls cannot overshoot the cap', async () => {
+    let calls = 0;
+    const queries = Array.from({ length: 10 }, (_, i) => ({ query: `electrical panel upgrade Plano ${i}`, city: 'Plano' }));
+    const fetchImpl = async () => { calls += 1; return jsonResponse(wylie); };
+    const observations = await collectSerp({
+      attemptId: ATTEMPT, queries, cacheDir: freshCacheDir(), cacheDays: 7, maxCalls: 3, inFlight: 5,
+      apiKey: API_KEY, location: LOCATION, now: NOW, fetchImpl,
+    });
+    assert.equal(calls, 3, 'five in-flight slots must not spend five calls against a cap of three');
+    assert.deepEqual(observations.map((o) => o.status), ['ok', 'ok', 'ok', 'unavailable', 'unavailable', 'unavailable', 'unavailable', 'unavailable', 'unavailable', 'unavailable']);
+    assert.ok(observations.slice(3).every((o) => o.note === NOTE_CAP_REACHED));
+  });
+
+  it('reserves the worst-case price of every in-flight call, so the ceiling is never overshot', async () => {
+    const queries = Array.from({ length: 10 }, (_, i) => ({ query: `ev charger installation Wylie ${i}`, city: 'Wylie' }));
+    const fetchImpl = async () => jsonResponse(wylie);
+    const meter = meterFor(0.025); // room for exactly two $0.01 calls
+    const observations = await collectSerp({
+      attemptId: ATTEMPT, queries, cacheDir: freshCacheDir(), cacheDays: 7, maxCalls: 10, inFlight: 5,
+      apiKey: API_KEY, location: LOCATION, now: NOW, fetchImpl, meter, policy,
+    });
+    assert.equal(meter.spent(), 0.02, 'two calls fit the ceiling, the other three slots must stay unsent');
+    assert.ok(meter.spent() <= 0.025);
+    assert.deepEqual(observations.map((o) => o.status).slice(0, 3), ['ok', 'ok', 'unavailable']);
+    assert.match(observations[2].note, /^budget reached: /);
+    assert.ok(observations.slice(2).every((o) => o.status === 'unavailable'));
+  });
+
+  it('on account-quota exhaustion the in-flight batch settles and no further live call is dispatched (cache still ok)', async () => {
+    const cacheDir = freshCacheDir();
+    const key = cacheKey(ROCKWALL_Q.query, LOCATION);
+    writeCacheEntry(cacheDir, key, { query: ROCKWALL_Q.query, location: LOCATION, fetched_at: NOW.toISOString(), response: rockwall });
+    let calls = 0;
+    const queries = [1, 2, 3, 4, 5, 6].map((i) => ({ query: `generator installation Plano ${i}`, city: 'Plano' })).concat([ROCKWALL_Q]);
+    const fetchImpl = async () => {
+      calls += 1;
+      return { ok: false, status: 429, text: async () => 'Your account has run out of searches.', json: async () => ({}) };
+    };
+    const observations = await collectSerp({
+      attemptId: ATTEMPT, queries, cacheDir, cacheDays: 7, maxCalls: 20, inFlight: 3,
+      apiKey: API_KEY, location: LOCATION, now: NOW, fetchImpl,
+    });
+    assert.equal(calls, 3, 'only the calls already dispatched in the exhausted batch are sent');
+    assert.equal(observations.length, 7);
+    for (const obs of observations.slice(0, 6)) {
+      assert.equal(obs.status, 'unavailable');
+      assert.match(obs.note, new RegExp(NOTE_QUOTA_EXHAUSTED));
+    }
+    assert.deepEqual([observations[6].status, observations[6].raw_ref], ['ok', `cache:${key}`]);
+    observations.forEach(assertValidObservation);
+  });
+
+  it('the hard deadline marks the remainder unavailable and still serves cache hits', async () => {
+    const cacheDir = freshCacheDir();
+    const key = cacheKey(ROCKWALL_Q.query, LOCATION);
+    writeCacheEntry(cacheDir, key, { query: ROCKWALL_Q.query, location: LOCATION, fetched_at: NOW.toISOString(), response: rockwall });
+    let calls = 0;
+    const fetchImpl = async () => { calls += 1; return jsonResponse(wylie); };
+    const observations = await collectSerp({
+      attemptId: ATTEMPT, queries: [ROCKWALL_Q, WYLIE_Q, PLANO_Q], cacheDir, cacheDays: 7, maxCalls: 10, inFlight: 1, deadlineMs: 0,
+      apiKey: API_KEY, location: LOCATION, now: NOW, fetchImpl,
+    });
+    assert.equal(calls, 0, 'the deadline has already passed, so no live call is dispatched');
+    assert.deepEqual(observations.map((o) => [o.status, o.note]), [
+      ['ok', null],
+      ['unavailable', NOTE_DEADLINE],
+      ['unavailable', NOTE_DEADLINE],
+    ]);
+    observations.forEach(assertValidObservation);
+  });
+
+  it('a request already in flight when the deadline passes still settles', async () => {
+    const queries = [{ query: 'electrician Rockwall tx', city: 'Rockwall' }, { query: 'ev charger installation Wylie', city: 'Wylie' }];
+    const fetchImpl = async () => { await new Promise((resolve) => setTimeout(resolve, 120)); return jsonResponse(wylie); };
+    const observations = await collectSerp({
+      attemptId: ATTEMPT, queries, cacheDir: freshCacheDir(), cacheDays: 7, maxCalls: 10, inFlight: 1, deadlineMs: 50,
+      apiKey: API_KEY, location: LOCATION, now: NOW, fetchImpl,
+    });
+    assert.deepEqual(observations.map((o) => [o.status, o.note]), [['ok', null], ['unavailable', NOTE_DEADLINE]]);
+  });
+});
+
 describe('collectSerp (errors)', () => {
   it('HTTP error → error observation with the status in the note, key redacted, nothing cached or metered', async () => {
     const cacheDir = freshCacheDir();
@@ -584,9 +695,36 @@ describe('collectSerp (errors)', () => {
     assert.equal(obs.geography, 'Wylie');
     assert.match(obs.note, /SerpApi HTTP 429/);
     assert.match(obs.note, /Rate limited for key \[redacted\]/);
+    assert.doesNotMatch(obs.note, /quota_exhausted/, 'a generic 429 is not account exhaustion');
     assert.ok(!obs.note.includes(API_KEY));
     assert.equal(fs.readdirSync(cacheDir).length, 0);
     assert.deepEqual(meter.entries(), []);
+  });
+
+  it('account-exhaustion 429 → the exhausted and every later uncached query go unavailable with the quota_exhausted marker, live calls stop, cache hits survive', async () => {
+    const cacheDir = freshCacheDir();
+    const key = cacheKey(ROCKWALL_Q.query, LOCATION);
+    writeCacheEntry(cacheDir, key, { query: ROCKWALL_Q.query, location: LOCATION, fetched_at: NOW.toISOString(), response: rockwall });
+    const fetchImpl = fakeFetch({ status: 429, body: `Your account has run out of searches. (key ${API_KEY})` });
+    const meter = meterFor();
+    const observations = await collectSerp({
+      attemptId: ATTEMPT, queries: [WYLIE_Q, PLANO_Q, ROCKWALL_Q], cacheDir, cacheDays: 7, maxCalls: 10, inFlight: 1,
+      apiKey: API_KEY, location: LOCATION, now: NOW, fetchImpl, meter,
+    });
+    assert.equal(fetchImpl.calls.length, 1, 'no live call after the exhausted one');
+    assert.deepEqual(observations.map((o) => [o.scope, o.status]), [
+      [WYLIE_Q.query, 'unavailable'], [PLANO_Q.query, 'unavailable'], [ROCKWALL_Q.query, 'ok'],
+    ]);
+    observations.forEach(assertValidObservation);
+    for (const obs of observations.slice(0, 2)) {
+      assert.match(obs.note, new RegExp(NOTE_QUOTA_EXHAUSTED));
+      assert.ok(!obs.note.includes(API_KEY), 'the key never lands in a note');
+    }
+    assert.equal(observations[1].value, null);
+    assert.equal(observations[2].note, null, 'a surviving cache hit is not marked');
+    assert.equal(observations[2].value.from_cache, true);
+    assert.equal(fs.readdirSync(cacheDir).length, 1, 'nothing new cached, the valid entry kept');
+    assert.deepEqual(meter.entries(), [], 'a 429 is not billed');
   });
 
   it('a rejected fetch (network) → error observation, later queries still attempted', async () => {

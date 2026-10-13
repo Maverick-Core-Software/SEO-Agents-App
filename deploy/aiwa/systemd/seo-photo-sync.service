@@ -1,0 +1,30 @@
+[Unit]
+Description=Grizzly SEO photo sync (rclone Drive intake, then local cache)
+Documentation=file:///opt/seo/deploy/aiwa/README.md
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=seo
+WorkingDirectory=/opt/seo
+EnvironmentFile=/opt/seo/.env
+Environment=TZ=America/Chicago
+Environment=NODE_ENV=production
+Environment=PATH=/opt/seo/.venv/bin:/usr/local/bin:/usr/bin:/bin
+# Defaults only: the .env wins over Environment= (systemd reads EnvironmentFile last),
+# so render-env.sh requires these names in .env as well.
+Environment=GBP_PHOTOS_FOLDER=/srv/seo/photos-inbox
+Environment=GBP_PHOTOS_LOCAL_CACHE=/srv/seo/photos
+NoNewPrivileges=yes
+PrivateTmp=yes
+# Step 1 (D3): rclone mirror of the Drive "GBP Photos" folder into the inbox (/srv/seo/photos-inbox,
+# outside the cache so the picker never sees a synced photo twice, F8).
+# Gated by SEO_RCLONE_REMOTE (the rclone remote name, for example gdrive). Unset = skip.
+# $$ is systemd's escape for a literal $ inside sh -c.
+# Note: "sync" also deletes inbox files that are gone from Drive. The inbox is a mirror; the
+# library is /srv/seo/photos. Switch to "copy" if the inbox must be additive only.
+ExecStartPre=/bin/sh -c 'if [ -n "$$SEO_RCLONE_REMOTE" ]; then /usr/bin/rclone sync "$$SEO_RCLONE_REMOTE:GBP Photos" /srv/seo/photos-inbox --log-level NOTICE; else echo "SEO_RCLONE_REMOTE unset: skipping rclone intake"; fi'
+# Step 2: additive copy from the inbox into the local photo cache.
+ExecStart=/usr/bin/node scripts/sync-photos-from-drive.mjs
+TimeoutStartSec=30min

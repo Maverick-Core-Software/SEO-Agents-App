@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   validatePlan, findPhoneNumbers, findDollarAmounts, dollarValue, findDomains, findTenureClaims,
-  textFactsErrors, normalizeHook, HEADLINE_WARN_CHARS,
+  textFactsErrors, normalizeHook, normalizeBoostPlan, downgradeCarousels, HEADLINE_WARN_CHARS,
 } from '../lib/validate.mjs';
 import { parseFacts, loadFacts } from '../lib/facts.mjs';
 import { weekSpecForWeekOf } from '../lib/week-spec.mjs';
@@ -40,7 +40,7 @@ const only = (list, re) => list.filter((m) => re.test(m));
 
 describe('fixture facts parse the way the validator expects', () => {
   it('phones, domain, founding year, tenure phrases, approved prices', () => {
-    assert.deepEqual(FACTS.phones, { customer_text: '(469) 896-3862', published_main: '(469) 863-9804' });
+    assert.deepEqual(FACTS.phones, { customer_text: '(469) 896-3862', published_main: '(469) 716-9870' });
     assert.equal(FACTS.domain, 'grizzlyelectricaltx.com');
     assert.equal(FACTS.founded_year, 2021);
     assert.deepEqual(FACTS.tenure_phrases, ['since 2021', 'five years']);
@@ -57,7 +57,7 @@ describe('findPhoneNumbers', () => {
     for (const f of forms) assert.deepEqual(findPhoneNumbers(`call ${f} now`), ['(469) 896-3862'], f);
   });
   it('returns every occurrence in order', () => {
-    assert.deepEqual(findPhoneNumbers('Text (469) 896-3862 or call 469-863-9804.'), ['(469) 896-3862', '(469) 863-9804']);
+    assert.deepEqual(findPhoneNumbers('Text (469) 896-3862 or call 469-716-9870.'), ['(469) 896-3862', '(469) 716-9870']);
   });
   it('ignores dates, zips, amounts, years, amp ratings and mixed-separator ranges', () => {
     const text = 'Rowlett, TX 75089 on 2026-09-04. Built in 1990, 200 amp, $1,200, 100-200 3000 watts, 8902 Merritt Rd.';
@@ -125,13 +125,13 @@ describe('findTenureClaims', () => {
 describe('textFactsErrors (strict text rules, used by compare)', () => {
   const opts = { facts: FACTS, weekSpec: WEEK };
   it('accepts copy that follows the facts', () => {
-    assert.deepEqual(textFactsErrors('Call (469) 863-9804 or text (469) 896-3862. Five years serving Rowlett since 2021. grizzlyelectricaltx.com. Service call $99.', opts), []);
+    assert.deepEqual(textFactsErrors('Call (469) 716-9870 or text (469) 896-3862. Five years serving Rowlett since 2021. grizzlyelectricaltx.com. Service call $99.', opts), []);
   });
   it('flags a phone that is not a business number', () => {
     const errors = textFactsErrors('Call 214-555-0100 today', { ...opts, label: 'legacy gbp' });
     assert.equal(errors.length, 1);
     assert.match(errors[0], /^legacy gbp: phone \(214\) 555-0100 is not a business number/);
-    assert.match(errors[0], /\(469\) 896-3862, \(469\) 863-9804/);
+    assert.match(errors[0], /\(469\) 896-3862, \(469\) 716-9870/);
   });
   it('flags a domain other than the website domain, including the nonexistent one', () => {
     const errors = textFactsErrors('Visit grizzlyelectricalsolutions.com and www.grizzlyelectricaltx.com', opts);
@@ -230,7 +230,7 @@ describe('validatePlan: phones, domains, tenure, prices', () => {
     assert.ok(has(result.errors, /^facebook day 1 on_screen_text: phone \(469\) 555-0123 is not a business number/));
   });
   it('accepts both business numbers in any shape', () => {
-    assert.equal(run((p) => { p.gbp[6].body += ' Call +1 469 863 9804 or text 4698963862.'; }).ok, true);
+    assert.equal(run((p) => { p.gbp[6].body += ' Call +1 469 716 9870 or text 4698963862.'; }).ok, true);
   });
   it('rejects a domain other than the website domain in GBP and Facebook copy', () => {
     const result = run((p) => { p.gbp[0].caption = 'More at grizzlyelectricalsolutions.com'; p.facebook[1].body += ' Details at www.grizzlyelectrical.net.'; });
@@ -338,6 +338,177 @@ describe('validatePlan: boost allocation', () => {
   it('fails closed when the policy has no boost budget', () => {
     const result = run(() => {}, { policy: { cities: POLICY.cities } });
     assert.ok(has(result.errors, /^policy\.boost_weekly_usd missing/));
+  });
+});
+
+describe('normalizeBoostPlan (T12: deterministic arithmetic, model YES choices preserved)', () => {
+  const ctx = (policy = POLICY) => ({ facts: FACTS, weekSpec: WEEK, photos: PHOTOS, history: HISTORY, policy });
+  const overbudget = (raw) => {
+    raw.facebook[0].boost = { decision: 'YES', daily_usd: 30, days: 3 };
+    raw.facebook[2].boost = { decision: 'YES', daily_usd: 60, days: 1 };
+    return raw;
+  };
+  const boostErrors = (plan, policy = POLICY) => only(validatePlan(plan, ctx(policy)).errors, /boost/);
+
+  it('rewrites a raw $90 plan to the $50 budget, same YES rows, with a warning', () => {
+    const raw = overbudget(clone(PLAN));
+    assert.ok(has(boostErrors(raw), /must equal \$50/));
+    const { plan, warnings } = normalizeBoostPlan(raw, POLICY);
+    assert.deepEqual(plan.facebook.map((f) => f.boost.decision), ['YES', 'MAYBE', 'YES', 'NO'], 'no row invented, dropped or re-picked');
+    assert.deepEqual(plan.facebook[0].boost, { decision: 'YES', daily_usd: 25, days: 1 });
+    assert.deepEqual(plan.facebook[2].boost, { decision: 'YES', daily_usd: 25, days: 1 });
+    assert.deepEqual(warnings, ['facebook: boost normalized from $150 (day 1 $30×3 + day 5 $60×1) to $50 (day 1 $25 × 1, day 5 $25 × 1): days=1, integer-cent split']);
+    assert.deepEqual(boostErrors(plan), []);
+  });
+
+  it('gives the odd cent to the first YES row, and a single YES row takes the whole budget', () => {
+    const odd = { ...POLICY, boost_weekly_usd: 50.01 };
+    const two = normalizeBoostPlan(overbudget(clone(PLAN)), odd).plan;
+    assert.equal(two.facebook[0].boost.daily_usd, 25.01);
+    assert.equal(two.facebook[2].boost.daily_usd, 25);
+    assert.deepEqual(two.facebook.map((f) => f.boost.days), [1, null, 1, null]);
+    assert.deepEqual(boostErrors(two, odd), []);
+    const single = overbudget(clone(PLAN));
+    single.facebook[2].boost = { decision: 'MAYBE', daily_usd: null, days: null };
+    const one = normalizeBoostPlan(single, { ...POLICY, boost_weekly_usd: 25.01 }).plan;
+    assert.deepEqual(one.facebook[0].boost, { decision: 'YES', daily_usd: 25.01, days: 1 });
+    assert.deepEqual(one.facebook[2].boost, { decision: 'MAYBE', daily_usd: null, days: null });
+  });
+
+  it('leaves zero or more than two YES rows unchanged so validation still fails them', () => {
+    const none = clone(PLAN);
+    for (const f of none.facebook) f.boost = { decision: 'NO', daily_usd: null, days: null };
+    const zero = normalizeBoostPlan(none, POLICY);
+    assert.deepEqual(zero.plan, none);
+    assert.deepEqual(zero.warnings, []);
+    assert.ok(has(boostErrors(none), /^facebook: no boost YES row; \$50 weekly budget is unallocated$/));
+
+    const three = clone(PLAN);
+    three.facebook[1].boost = { decision: 'YES', daily_usd: 10, days: 1 };
+    three.facebook[2].boost = { decision: 'YES', daily_usd: 10, days: 1 };
+    const many = normalizeBoostPlan(three, POLICY);
+    assert.deepEqual(many.plan, three);
+    assert.deepEqual(many.warnings, []);
+    assert.ok(has(boostErrors(three), /^facebook: 3 boost YES rows \(max 2\)$/));
+  });
+
+  it('fails a residual budget it cannot express in whole cents instead of rounding it', () => {
+    const residual = { ...POLICY, boost_weekly_usd: 50.005 };
+    const raw = overbudget(clone(PLAN));
+    const { plan, warnings } = normalizeBoostPlan(raw, residual);
+    assert.deepEqual(plan, raw);
+    assert.ok(has(warnings, /not a positive cent amount; YES rows left unchanged for validation$/));
+    assert.ok(has(boostErrors(raw, residual), /must equal \$50\.005$/));
+  });
+
+  it('clears MAYBE/NO allocations and warns instead of failing the week', () => {
+    const raw = clone(PLAN);
+    raw.facebook[1].boost = { decision: 'MAYBE', daily_usd: 5, days: 2 };
+    const { plan, warnings } = normalizeBoostPlan(raw, POLICY);
+    assert.deepEqual(plan.facebook[1].boost, { decision: 'MAYBE', daily_usd: null, days: null });
+    assert.ok(has(warnings, /^facebook day 3: cleared MAYBE boost allocation \(daily_usd=5, days=2\)$/));
+    assert.deepEqual(boostErrors(plan), []);
+  });
+});
+
+describe('T13/T14: the anecdote rules and the carousel downgrade', () => {
+  /**
+   * Production order: normalize (T14), then validate. The baseline plan is
+   * normalized first so each case's carousel warnings come only from its own
+   * mutation — the fixture itself carries a legitimate day-5 carousel.
+   */
+  const runCase = (mutate) => {
+    const { plan: base } = downgradeCarousels(clone(PLAN));
+    mutate(base);
+    const { plan, warnings } = downgradeCarousels(base);
+    const result = validatePlan(plan, { facts: FACTS, weekSpec: WEEK, photos: PHOTOS, history: HISTORY, policy: POLICY });
+    return { plan, ok: result.ok, errors: result.errors, warnings: [...warnings, ...result.warnings] };
+  };
+  const carouselWarnings = (warnings) => warnings.filter((w) => /carousel downgraded/.test(w));
+
+  const cases = [
+    {
+      name: 'T14: every carousel becomes a photo with a warning, and the plan still validates',
+      mutate: (p) => { p.facebook[1].type = 'carousel'; p.facebook[2].type = 'carousel'; },
+      ok: true,
+      errors: [],
+      carouselWarnings: 2,
+    },
+    {
+      name: 'T13: a first-person past-tense job claim in the copy is an error',
+      mutate: (p) => { p.facebook[1].body += ' We just finished a panel swap in Rockwall.'; },
+      ok: false,
+      errors: [/^facebook day 3 body: first-person past-tense job claim "We just finished" — say what Grizzly does/],
+      carouselWarnings: 0,
+    },
+    {
+      name: 'T13: "Before:" copy on a one-photo post is an error',
+      mutate: (p) => { p.gbp[2].caption = 'Before: a crowded panel with doubled-up breakers.'; },
+      ok: false,
+      errors: [/^gbp day 3 caption: "Before:" copy needs two photos of the same job \(this post carries 1\)$/],
+      carouselWarnings: 0,
+    },
+    {
+      name: 'T13 + T14 combined: a downgraded carousel that also invents a job story and a "Before:" label fails all three ways',
+      mutate: (p) => {
+        p.facebook[1].type = 'carousel';
+        p.facebook[1].body += ' Our crew installed a Level 2 charger last Friday.';
+        p.gbp[2].caption = 'Before: a crowded panel with doubled-up breakers.';
+      },
+      ok: false,
+      errors: [
+        /^gbp day 3 caption: "Before:" copy needs two photos of the same job \(this post carries 1\)$/,
+        /^facebook day 3 body: first-person past-tense job claim "Our crew installed"/,
+      ],
+      carouselWarnings: 1,
+    },
+    {
+      name: 'T13: present-tense practice, hypotheticals and a composite photo stay clean',
+      mutate: (p) => {
+        p.facebook[1].body += ' When we open a panel this old, the first thing we check is the bus bar.';
+        p.gbp[2].body += ' If your lights dim when the AC starts, the panel is where we look first.';
+        p.gbp[4].caption = 'Left: crowded panel. Right: a clean 200-amp upgrade.';
+        p.facebook[3].body += ' We have replaced a lot of these across Rockwall since 2021.';
+      },
+      ok: true,
+      errors: [],
+      carouselWarnings: 0,
+    },
+    {
+      name: 'T13: "Before:" is allowed once the item lists two photos',
+      mutate: (p) => {
+        p.gbp[2].caption = 'Before: a crowded panel. After: room to grow.';
+        p.gbp[2].photo_files = ['panel-before.jpg', 'panel-after.jpg'];
+      },
+      ok: true,
+      errors: [],
+      carouselWarnings: 0,
+    },
+    {
+      name: 'T13: "Before and after:" is not a "Before:" label',
+      mutate: (p) => { p.gbp[2].caption = 'Before and after of a Rockwall panel replacement.'; },
+      ok: true,
+      errors: [],
+      carouselWarnings: 0,
+    },
+  ];
+
+  for (const c of cases) {
+    it(c.name, () => {
+      const result = runCase(c.mutate);
+      assert.equal(result.errors.length, c.errors.length, JSON.stringify(result.errors));
+      c.errors.forEach((re, i) => assert.match(result.errors[i], re));
+      assert.equal(carouselWarnings(result.warnings).length, c.carouselWarnings, JSON.stringify(result.warnings));
+      assert.equal(result.ok, c.ok, JSON.stringify(result.errors));
+    });
+  }
+
+  it('downgrades only the carousel and leaves every other choice exactly as the model made it', () => {
+    const { plan } = downgradeCarousels(JSON.parse(JSON.stringify(PLAN)));
+    assert.deepEqual(plan.facebook.map((f) => f.type), ['slideshow', 'photo', 'photo', 'text']);
+    const changed = Object.keys(plan.facebook[2]).filter((k) => k !== 'type' && JSON.stringify(plan.facebook[2][k]) !== JSON.stringify(PLAN.facebook[2][k]));
+    assert.deepEqual(changed, [], 'nothing but the type changed');
+    assert.deepEqual(downgradeCarousels(null), { plan: null, warnings: [] });
   });
 });
 

@@ -15,7 +15,7 @@ section so compare.mjs has prices to approve. Parsed by lib/facts.mjs.
 ## Contact
 
 - Customer text and call line: (469) 896-3862. Use it for every "text us a photo" CTA.
-- Published main number: (469) 863-9804. Use it when a post needs a plain "call us" number.
+- Published main number: (469) 716-9870. Use it when a post needs a plain "call us" number.
 - Never publish any phone number other than the two above.
 - Email: contactus@grizzlyelectrical.net
 - Website: https://www.grizzlyelectricaltx.com/ is the only website domain.

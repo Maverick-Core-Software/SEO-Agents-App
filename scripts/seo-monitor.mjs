@@ -16,12 +16,17 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import https from 'node:https';
 import http from 'node:http';
 import { execSync, execFile } from 'node:child_process';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { sendHermesAlert } from './lib/hermes-alert.mjs';
+import { createPm2SelfHeal, netUseEnabled, gbpArchiveFolder, resolveMonitorProbes } from './lib/monitor-host.mjs';
+// The rebuilt pipeline's alert rules live with the watchdog so the daily watchdog
+// and this monitor cannot disagree about what a clean shadow/new run looks like.
+import { evaluatePipelineWatchdog, evaluateGbpOverdue, chicagoDateHour } from './seo-watchdog.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '..');
@@ -41,10 +46,10 @@ const SUPABASE_SERVICE_KEY= process.env.SUPABASE_SERVICE_KEY|| '';
 const SMTP_APP_PASSWORD   = process.env.SMTP_APP_PASSWORD   || '';
 const SMTP_FROM           = process.env.SMTP_FROM           || 'barnscarter@gmail.com';
 const SMTP_TO             = process.env.SMTP_TO             || 'barnscarter@gmail.com';
-const MAV_BRIDGE_PORT     = parseInt(process.env.MAV_BRIDGE_PORT || '8790', 10);
-const MCC_PORT            = parseInt(process.env.MCC_PORT || '3000', 10);
+// Health URLs follow the bridge bind / MCC_HEALTH_URL (F6), not a fixed loopback.
+const { bridgeHealthUrl: MAV_BRIDGE_HEALTH_URL, mccHealthUrl: MCC_HEALTH_URL } = resolveMonitorProbes(process.env);
 const POLL_MS             = 30_000;
-const GBP_ARCHIVE_FOLDER  = process.env.GBP_ARCHIVE_FOLDER || 'M:\\backups\\gbp-archive';
+const GBP_ARCHIVE_FOLDER  = gbpArchiveFolder(process.env);
 
 // Expected weekly run: Task Scheduler launches run-weekly-seo.py at 8:30 local.
 // If the wrapper hasn't written its "started" marker by NO_SHOW_DEADLINE (local
@@ -53,6 +58,8 @@ const GBP_ARCHIVE_FOLDER  = process.env.GBP_ARCHIVE_FOLDER || 'M:\\backups\\gbp-
 const NO_SHOW_DEADLINE_HHMM = process.env.SEO_NO_SHOW_DEADLINE || '09:00';
 const EXPECTED_RUN_DOW      = parseInt(process.env.SEO_RUN_DOW ?? '5', 10); // 0=Sun … 5=Fri
 const RUNNER_HEALTH_FILE    = path.join(PROJECT_ROOT, 'outputs', 'weekly-runner-health.json');
+// Written by the daily reconcile pass: the rebuilt pipeline's memory freshness.
+const RECONCILE_HEALTH_FILE = path.join(PROJECT_ROOT, 'outputs', 'reconcile-health.json');
 
 // Parse --run-hours arg
 let RUN_DURATION_HOURS = 14;
@@ -130,10 +137,12 @@ async function getPostsForRun(runId) {
 }
 
 // ── HTTP health checks ────────────────────────────────────────────────────────
-function httpGet(port, path, timeout = 5000) {
+function httpGet(url, timeout = 5000) {
   return new Promise((resolve) => {
     const timer = setTimeout(() => { req.destroy(); resolve(null); }, timeout);
-    const req = http.get({ host: '127.0.0.1', port, path }, res => {
+    const target = new URL(url);
+    const client = target.protocol === 'https:' ? https : http;
+    const req = client.get(target, res => {
       clearTimeout(timer);
       const chunks = [];
       res.on('data', c => chunks.push(c));
@@ -147,23 +156,17 @@ function httpGet(port, path, timeout = 5000) {
 }
 
 // ── PM2 helpers ───────────────────────────────────────────────────────────────
+// SEO_MONITOR_PM2=0 turns every pm2 command off; the monitor then relies on the
+// HTTP health checks alone (see lib/monitor-host.mjs).
+const pm2 = createPm2SelfHeal({ log });
+const PM2_SELF_HEAL = pm2.enabled;
+
 function pm2List() {
-  try {
-    const out = execSync('pm2 jlist', { encoding: 'utf8', timeout: 10000, windowsHide: true });
-    return JSON.parse(out);
-  } catch {
-    return [];
-  }
+  return pm2.list();
 }
 
 function pm2Restart(name) {
-  try {
-    execSync(`pm2 restart "${name}"`, { encoding: 'utf8', timeout: 15000, windowsHide: true });
-    return true;
-  } catch (e) {
-    log('error', `pm2 restart failed for ${name}`, { error: e.message });
-    return false;
-  }
+  return pm2.restart(name);
 }
 
 // Cold-boot recovery: `pm2 restart` only works on processes the daemon already
@@ -171,13 +174,7 @@ function pm2Restart(name) {
 // case), the process list is empty and restart is useless — we must reload the
 // saved dump with `pm2 resurrect`. Tried at most once per monitor run.
 function pm2Resurrect() {
-  try {
-    execSync('pm2 resurrect', { encoding: 'utf8', timeout: 30000, windowsHide: true });
-    return true;
-  } catch (e) {
-    log('error', 'pm2 resurrect failed', { error: e.message });
-    return false;
-  }
+  return pm2.resurrect();
 }
 
 // ── Drive helpers ─────────────────────────────────────────────────────────────
@@ -282,7 +279,7 @@ async function fixMDrive() {
 // ── Monitor checks ─────────────────────────────────────────────────────────────
 
 async function checkMavBridge() {
-  const result = await httpGet(MAV_BRIDGE_PORT, '/health');
+  const result = await httpGet(MAV_BRIDGE_HEALTH_URL);
   if (!result || result.status !== 200) {
     bridgeDownCount++;
     // 3 failures = ~90s window before alerting — avoids false positives on brief PM2 restarts
@@ -293,7 +290,7 @@ async function checkMavBridge() {
       if (bridge && bridge.pm2_env.status !== 'online') {
         await fixDeadProcess('mav-bridge');
       } else {
-        await alertOnce('mav-bridge-down', 'mav-bridge is not responding', `The mav-bridge HTTP health check has failed ${bridgeDownCount} times (~${bridgeDownCount * 30}s).\n\nBridge status in PM2: ${bridge?.pm2_env?.status || 'unknown'}\nCheck logs: pm2 logs mav-bridge\nLog file: ${logFile}`);
+        await alertOnce('mav-bridge-down', 'mav-bridge is not responding', `The mav-bridge HTTP health check (${MAV_BRIDGE_HEALTH_URL}) has failed ${bridgeDownCount} times (~${bridgeDownCount * 30}s).\n\nBridge status in PM2: ${bridge?.pm2_env?.status || 'unknown'}\nCheck logs: pm2 logs mav-bridge\nLog file: ${logFile}`);
       }
     }
   } else {
@@ -308,7 +305,7 @@ async function checkMavBridge() {
 }
 
 async function checkMCCDashboard() {
-  const result = await httpGet(MCC_PORT, '/health');
+  const result = await httpGet(MCC_HEALTH_URL);
   if (!result || result.status !== 200) {
     dashboardDownCount++;
     if (dashboardDownCount >= 2) {
@@ -318,7 +315,7 @@ async function checkMCCDashboard() {
       if (console_ && console_.pm2_env.status !== 'online') {
         await fixDeadProcess('mav-console');
       } else {
-        await alertOnce('dashboard-down', 'MCC Dashboard is not responding', `The MCC dashboard health check (port ${MCC_PORT}) has failed ${dashboardDownCount} times.\n\nProcess status: ${console_?.pm2_env?.status || 'unknown'}\nCheck: pm2 logs mav-console\nLog file: ${logFile}`);
+        await alertOnce('dashboard-down', 'MCC Dashboard is not responding', `The MCC dashboard health check (${MCC_HEALTH_URL}) has failed ${dashboardDownCount} times.\n\nProcess status: ${console_?.pm2_env?.status || 'unknown'}\nCheck: pm2 logs mav-console\nLog file: ${logFile}`);
       }
     }
   } else {
@@ -354,7 +351,7 @@ async function checkPM2Processes() {
         'FAILED: core PM2 processes missing and pm2 resurrect did not restore them',
         `Still missing after resurrect: ${stillMissing.join(', ') || '(resurrect reported an error)'}\n\n` +
         `This usually means PM2 has no saved dump (run "pm2 save" once after starting everything) or the PM2 daemon is not running.\n\n` +
-        `Recover manually on CartersPC:\n  pm2 resurrect\n  # or, if there is no saved dump:\n  pm2 start C:\\Workspace\\Active\\MCC\\ecosystem.config.cjs\n  pm2 save\n\nMonitor log: ${logFile}`);
+        `Recover manually on ${os.hostname()}:\n  pm2 resurrect\n  # or, if there is no saved dump:\n  pm2 start C:\\Workspace\\Active\\MCC\\ecosystem.config.cjs\n  pm2 save\n\nMonitor log: ${logFile}`);
     }
   }
 
@@ -373,8 +370,17 @@ async function checkPM2Processes() {
   }
 }
 
+// Without the net use remount (never off-Workbench; on win32 only when
+// SEO_MONITOR_NET_USE=0), the check is whether the archive folder itself exists.
+const NET_USE_REMOUNT = netUseEnabled(process.env);
+
 async function checkMDrive() {
-  const archiveNeeded = fs.existsSync(GBP_ARCHIVE_FOLDER.split('\\')[0] + '\\');
+  if (!NET_USE_REMOUNT) {
+    if (!fs.existsSync(GBP_ARCHIVE_FOLDER)) {
+      log('warn', `GBP archive folder not reachable: ${GBP_ARCHIVE_FOLDER} — GBP photo archiving will fail`);
+    }
+    return;
+  }
   if (!isMDriveMounted()) {
     log('warn', 'M: drive not mounted — GBP photo archiving will fail');
     await fixMDrive();
@@ -489,7 +495,7 @@ async function checkPostStatuses(runId) {
 
 // ── No-show detection ───────────────────────────────────────────────────────
 function localHHMM(d) {
-  // Monitor runs on CartersPC, so getHours() is already local (CST/CDT).
+  // Monitor runs on CMB-Workbench, so getHours() is already local (CST/CDT).
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
@@ -527,16 +533,59 @@ async function checkRunStarted() {
   }
 }
 
+// ── Shadow/new pipeline (T3) ────────────────────────────────────────────────
+function readJsonFile(file) {
+  try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; }
+}
+
+// The rebuilt pipeline reports through the same health file as the legacy run, in
+// its own attempt-derived `shadow` block, so the monitor covers it with the same
+// poll loop: no-show, failed, hung, notify-miss, and a stale reconcile pass.
+async function checkPipelineWatch() {
+  const problems = evaluatePipelineWatchdog({
+    now: new Date(),
+    pipelineMode: process.env.SEO_PIPELINE,
+    health: readJsonFile(RUNNER_HEALTH_FILE),
+    reconcile: readJsonFile(RECONCILE_HEALTH_FILE),
+  });
+  for (const problem of problems) {
+    const kind = problem.split(':')[0];
+    await alertOnce(`pipeline-${kind}-${today}`, `${kind} (rebuilt pipeline)`,
+      `${problem}\n\nMonitor log: ${logFile}`);
+  }
+}
+
+// F4: `scheduled` GBP rows past their Chicago post date and not posted by 12:00 CT
+// (API gated, token dead, worker down). One alert per Chicago day; the daily
+// watchdog repeats it on its own trigger.
+async function checkGbpOverdue() {
+  const now = new Date();
+  const { todayDate } = chicagoDateHour(now);
+  let rows;
+  try {
+    const res = await sbFetch(`weekly_posts?platform=eq.gbp&status=in.(scheduled,scheduled_native)&post_date=lte.${todayDate}&select=id,post_date,status,error&order=post_date.asc`);
+    rows = Array.isArray(res.data) ? res.data : [];
+  } catch (e) {
+    log('warn', 'GBP overdue check could not query Supabase', { error: e.message });
+    return;
+  }
+  for (const problem of evaluateGbpOverdue({ now, rows })) {
+    await alertOnce(`gbp-overdue-${todayDate}`, 'GBP OVERDUE: scheduled posts not published', `${problem}\n\nMonitor log: ${logFile}`);
+  }
+}
+
 // ── Main poll loop ─────────────────────────────────────────────────────────────
 async function poll() {
   try {
     await Promise.all([
       checkMavBridge(),
       checkMCCDashboard(),
-      checkPM2Processes(),
+      ...(PM2_SELF_HEAL ? [checkPM2Processes()] : []),
     ]);
     await checkMDrive();
     await checkRunStarted();
+    await checkPipelineWatch();
+    await checkGbpOverdue();
     await checkRunStatus();
   } catch (e) {
     log('error', 'Unhandled poll exception', { error: e.message, stack: e.stack?.slice(0, 500) });
@@ -548,13 +597,13 @@ async function main() {
   log('info', `SEO Monitor starting — will run for ${RUN_DURATION_HOURS} hours`, {
     log_file: logFile,
     poll_interval_sec: POLL_MS / 1000,
-    mav_bridge_port: MAV_BRIDGE_PORT,
-    mcc_port: MCC_PORT,
+    mav_bridge_health_url: MAV_BRIDGE_HEALTH_URL,
+    mcc_health_url: MCC_HEALTH_URL,
   });
 
   sendAlert(
     `SEO Monitor Started (${today})`,
-    `The SEO Monitor is active for today's run.\n\nMonitor log: ${logFile}\nRun duration: ${RUN_DURATION_HOURS} hours\n\nYou will receive alerts if:\n- The SEO pipeline fails at any phase\n- Any post fails to publish\n- GBP posts need manual verification\n- mav-bridge or MCC dashboard goes offline\n\nAuto-fixes enabled: PM2 process restart, M: drive reconnect.`
+    `The SEO Monitor is active for today's run.\n\nMonitor log: ${logFile}\nRun duration: ${RUN_DURATION_HOURS} hours\n\nYou will receive alerts if:\n- The SEO pipeline fails at any phase\n- Any post fails to publish\n- GBP posts need manual verification\n- mav-bridge or MCC dashboard goes offline\n\nAuto-fixes enabled: ${[PM2_SELF_HEAL && 'PM2 process restart', NET_USE_REMOUNT && 'M: drive reconnect'].filter(Boolean).join(', ') || 'none (HTTP health checks only)'}.`
   );
 
   // Initial check immediately

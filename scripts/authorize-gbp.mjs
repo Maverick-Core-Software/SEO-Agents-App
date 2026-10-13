@@ -13,11 +13,10 @@ import path from 'node:path';
 import http from 'node:http';
 import crypto from 'node:crypto';
 import { exec } from 'node:child_process';
+import { resolveGbpClientSecret, resolveGbpTokenFile } from './lib/platform-defaults.mjs';
 
-const CLIENT_SECRET_PATH = process.env.GBP_CLIENT_SECRET
-  || 'C:/Users/carte/gmail-multi/client_secret_hermes_gbp.json';
-const TOKEN_PATH = process.env.GBP_TOKEN_FILE
-  || 'C:/Users/carte/gmail-multi/tokens/grizzly-gbp.json';
+const CLIENT_SECRET_PATH = resolveGbpClientSecret();
+const TOKEN_PATH = resolveGbpTokenFile();
 const SCOPES = ['https://www.googleapis.com/auth/business.manage'];
 
 if (!fs.existsSync(CLIENT_SECRET_PATH)) {
@@ -38,11 +37,9 @@ const server = http.createServer(async (req, res) => {
   const code = u.searchParams.get('code');
   const err = u.searchParams.get('error');
   if (err) {
-    res.writeHead(400, { 'Content-Type': 'text/html' });
-    res.end(`<h1>Authorization failed</h1><pre>${err}</pre>`);
-    server.close();
     console.error('OAuth error:', err);
-    process.exit(1);
+    finish(res, 400, `<h1>Authorization failed</h1><pre>${err}</pre>`, 1);
+    return;
   }
   if (!code) { res.writeHead(404); res.end(); return; }
 
@@ -76,19 +73,29 @@ const server = http.createServer(async (req, res) => {
     };
     fs.mkdirSync(path.dirname(TOKEN_PATH), { recursive: true });
     fs.writeFileSync(TOKEN_PATH, JSON.stringify(payload, null, 2));
-    res.writeHead(200, { 'Content-Type': 'text/html' });
-    res.end('<h1>Authorized &#10003;</h1><p>You can close this tab.</p>');
-    server.close();
     console.log(`Token saved to ${TOKEN_PATH}`);
-    process.exit(0);
+    finish(res, 200, '<h1>Authorized &#10003;</h1><p>You can close this tab.</p>', 0);
   } catch (e) {
-    res.writeHead(500, { 'Content-Type': 'text/html' });
-    res.end(`<h1>Token exchange failed</h1><pre>${e.message}</pre>`);
-    server.close();
     console.error(e);
-    process.exit(1);
+    finish(res, 500, `<h1>Token exchange failed</h1><pre>${e.message}</pre>`, 1);
   }
 });
+
+// Answer the browser, then let libuv tear the server down before exiting. A
+// synchronous process.exit() inside the request handler raced the still-closing
+// loopback server and crashed node on Windows ("Assertion failed:
+// !(handle->flags & UV_HANDLE_CLOSING) ... src\win\async.c") after the token
+// had already been written. Connection: close makes the socket drop on its own
+// so server.close() completes; the unref'd timer is the fallback.
+function finish(res, status, html, code) {
+  res.writeHead(status, { 'Content-Type': 'text/html', Connection: 'close' });
+  res.end(html);
+  res.once('finish', () => {
+    server.close(() => process.exit(code));
+    if (typeof server.closeIdleConnections === 'function') server.closeIdleConnections();
+    setTimeout(() => process.exit(code), 3000).unref();
+  });
+}
 
 server.listen(0, '127.0.0.1', () => {
   const port = server.address().port;

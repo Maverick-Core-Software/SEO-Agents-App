@@ -6,6 +6,7 @@
 // deps: { supabase, log, execFileAsync, seoAgentsExe, projectRoot }
 
 import { isWebsiteTaskExecutable, websiteTaskBlockReason } from './parse-website-tasks.mjs';
+import { pythonChildEnv } from './child-env.mjs';
 
 export const PRIORITY_MAP = { critical: 0, high: 1, medium: 2, low: 3 };
 export { isWebsiteTaskExecutable, websiteTaskBlockReason };
@@ -122,7 +123,7 @@ export async function executeNextWebsiteTask(tasks, deps) {
         `"${task.title}. ${task.description}"`,
         '--type', actionType,
         '--live',
-      ], { cwd: projectRoot, timeout: 20 * 60 * 1000, encoding: 'utf8', windowsHide: true });
+      ], { cwd: projectRoot, env: pythonChildEnv(), timeout: 20 * 60 * 1000, encoding: 'utf8', windowsHide: true });
 
       // Parse the last JSON object on stdout
       const output = (stdout || '').trim();

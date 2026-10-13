@@ -53,6 +53,7 @@ import { loadPhotoSelectionManifest, isManifestSelectionCompatible } from './lib
 import { postProcessVideo, enhanceVideo } from './video-postprocess.mjs';
 import { buildSlideshowReel, parseOnScreenText } from './slideshow-reel.mjs';
 import { defaultGbpPhotoDirs } from './lib/gbp-paths.mjs';
+import { resolveGbpPhotoPath, resolveEndcardFont } from './lib/platform-defaults.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -98,32 +99,69 @@ const GEMINI_VIDEO_GEN = process.env.GEMINI_VIDEO_GENERATOR
 const XAI_VIDEO_GEN = process.env.XAI_VIDEO_GENERATOR
   || path.join(__dirname, 'xai-video-generator.mjs');
 const VIDEO_GEN_SCRIPT = VIDEO_BACKEND === 'gemini' ? GEMINI_VIDEO_GEN : XAI_VIDEO_GEN;
-const GBP_PHOTO_PATH = process.env.GBP_PHOTO_PATH
-  || String.raw`C:\Workspace\Shared\Assets\Media\Grizzly\GBP Post Photos`;
+const GBP_PHOTO_PATH = resolveGbpPhotoPath();
 const PHOTO_SELECTION_MANIFEST = process.env.GBP_PHOTO_SELECTION_MANIFEST
   || path.join(PROJECT_ROOT, 'state', 'photo-selection-manifest.json');
 const photoSelectionManifest = loadPhotoSelectionManifest(PHOTO_SELECTION_MANIFEST);
+
+/**
+ * P2.5 poster guard. The selection manifest is the only source of truth for a
+ * photo this poster may publish: an entry must name this exact file for this
+ * post's date and service. The crew's guessed filenames — IMG_####.JPG and other
+ * raw library paths — have no entry and are rejected. An empty/missing manifest
+ * keeps the pre-manifest trust boundary (nothing publishes without the pick
+ * pipeline recording it first).
+ */
+export function auditPhotosInManifest({ date, service, photoPath, manifest = photoSelectionManifest }) {
+  if (!manifest?.length) return { ok: true, reason: 'no selection manifest' };
+  return isManifestSelectionCompatible({ date, service, photoPath, manifest });
+}
 const SCHEDULE_FILE = path.join(PROJECT_ROOT, 'outputs', 'facebook_posting_schedule.md');
 const LOGO_PATH = process.env.GRIZZLY_LOGO_PATH || path.join(PROJECT_ROOT, 'assets', 'grizzly-logo.png');
 const ENDCARD_PATH = process.env.GRIZZLY_ENDCARD_PATH || path.join(PROJECT_ROOT, 'assets', 'grizzly-endcard.jpg');
+
+// Canonical phone guard. Source of truth: knowledge/baselines/grizzly-business-facts.md.
+// The retired published main (469) 863-9804 must never be re-published — not from a
+// stale env override and not from queued schedule text.
+const RETIRED_MAIN_DIGITS = '4698639804';
+
+function digitsOnly(text) {
+  return String(text || '').replace(/\D/g, '');
+}
+
+/** True when `text` contains the retired published main number in any format. */
+export function hasRetiredMainNumber(text) {
+  return digitsOnly(text).includes(RETIRED_MAIN_DIGITS);
+}
+
+/** Resolve a phone-line env override, refusing the retired main number. */
+function resolvePhoneLine(envValue, fallback, envName) {
+  const raw = String(envValue || '').trim();
+  if (hasRetiredMainNumber(raw)) {
+    console.error(`[facebook-poster] ${envName} contains the retired main number — using ${fallback} instead.`);
+    return fallback;
+  }
+  return raw || fallback;
+}
+
 // Brand info stamped onto every video's end card so viewers always see the
 // correct name + phone, regardless of what the video model hallucinates on
 // shirts or signs inside the clip.
 const BRAND_NAME = process.env.GRIZZLY_BRAND_NAME || 'Grizzly Electrical Solutions';
-const BRAND_PHONE = process.env.GRIZZLY_BRAND_PHONE || '(469) 863-9804';
-const BRAND_TEXT_LINE = process.env.GRIZZLY_TEXT_LINE || '(469) 896-3862';
+const BRAND_PHONE = resolvePhoneLine(process.env.GRIZZLY_BRAND_PHONE, '(469) 716-9870', 'GRIZZLY_BRAND_PHONE');
+const BRAND_TEXT_LINE = resolvePhoneLine(process.env.GRIZZLY_TEXT_LINE, '(469) 896-3862', 'GRIZZLY_TEXT_LINE');
 const BRAND_LOCATION = process.env.GRIZZLY_BRAND_LOCATION || 'Rowlett, TX';
 // First comment posted under every FB post. Fixed copy here (not the schedule's
 // CONTACT text) so the LLM can never garble a public-facing phone number.
 // (469) 896-3862 is the customer-chat Twilio text line (canonical:
 // Hermes-Supervisor hermes-config/operational-facts.yaml); the schedule's
 // CONTACT field now only gates whether the comment is posted.
-const FIRST_COMMENT = process.env.FB_FIRST_COMMENT
-  || '📲 Text us at (469) 896-3862 to get a free instant quote — calls welcome too!';
-const ENDCARD_FONT = process.env.GRIZZLY_ENDCARD_FONT
-  || (process.platform === 'win32'
-    ? String.raw`C\:/Windows/Fonts/arialbd.ttf`
-    : '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf');
+const FIRST_COMMENT = resolvePhoneLine(
+  process.env.FB_FIRST_COMMENT,
+  '📲 Text us at (469) 896-3862 to get a free instant quote — calls welcome too!',
+  'FB_FIRST_COMMENT',
+);
+const ENDCARD_FONT = resolveEndcardFont();
 const XAI_API_KEY = process.env.XAI_API_KEY || process.env.GROK_API_KEY || '';
 
 // Must exceed gemini-video-generator's poll ceiling (90 polls × 8s = 720s) so a
@@ -197,7 +235,7 @@ function trackPostEngagement(postId, postGoal, postDay) {
 const FIRST_COMMENT_STATE_FILE = path.join(PROJECT_ROOT, 'state', 'fb-first-comments.json');
 const PENDING_FIRST_COMMENT_FILE = path.join(PROJECT_ROOT, 'state', 'fb-pending-first-comments.json');
 const PHONE_IN_TEXT_RE = /\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/;
-const CONTACT_STYLE_RE = /text us|instant quote|896-3862|863-9804/i;
+const CONTACT_STYLE_RE = /text us|instant quote|896-3862|716-9870|863-9804/i;
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -456,7 +494,14 @@ export function buildCaption(post) {
   // posts with sales-style phone CTAs in the caption. Contact info goes in
   // the first comment instead (see postFirstComment below).
   if (post.cta && !hasPhoneNumber(post.cta)) parts.push(`\n\n${post.cta}`);
-  return parts.join('').trim();
+  const caption = parts.join('').trim();
+  // A stale schedule (or queued single payload) may still carry the retired
+  // published main number in HOOK/BODY/HASHTAGS. Fail loudly instead of
+  // republishing it: "call us" copy belongs to the new main number.
+  if (hasRetiredMainNumber(caption)) {
+    throw new Error('Retired published main number (469) 863-9804 found in post text — refusing to publish. Use (469) 716-9870 for "call us" copy.');
+  }
+  return caption;
 }
 
 function stripMd(str) {
@@ -562,24 +607,21 @@ function curatedPhotoForDate(date, service) {
   } catch { return null; }
 }
 
-function resolvePhotoPath(post) {
-  // Explicit PHOTO_FILE from the schedule is trusted when the file exists on disk
-  // in curated/GBP libraries (crew/human-picked). Manifest audit is a soft
-  // warning only for those explicit picks so carousel/slideshow weeks don't
-  // collapse to text when the pick pipeline hasn't re-manifested every file.
+export function resolvePhotoPath(post) {
+  // Explicit PHOTO_FILE from the schedule is accepted only when the selection
+  // manifest audits it (the crew's keyword guesses are not). Rejected photos fall
+  // through to the same-date curated winner — or the post ships text-only.
   const acceptExplicit = (candidate) => {
     if (!candidate || !fs.existsSync(candidate)) return null;
-    if (photoSelectionManifest?.length) {
-      const audit = isManifestSelectionCompatible({
-        date: post.date,
-        service: post.service,
-        photoPath: candidate,
-        manifest: photoSelectionManifest,
-      });
-      if (!audit.ok) {
-        hopLog('facebook-poster', 'warn',
-          `[photo-guard] explicit PHOTO_FILE not in manifest (${audit.reason}) — allowing ${path.basename(candidate)}`);
-      }
+    const audit = auditPhotosInManifest({
+      date: post.date,
+      service: post.service,
+      photoPath: candidate,
+    });
+    if (!audit.ok) {
+      hopLog('facebook-poster', 'warn',
+        `[photo-guard] rejected ${path.basename(candidate)} (${audit.reason})`);
+      return null;
     }
     return candidate;
   };
@@ -663,24 +705,14 @@ function curatedPhotosForPost(post, max = 4) {
     for (const file of files) {
       if (out.length >= max) break;
       const candidate = path.join(GBP_CURATED_FOLDER, file);
-      if (manifestEmpty) {
-        out.push(candidate);
-        continue;
-      }
-      const audit = isManifestSelectionCompatible({
+      // Without a manifest, date-prefixed curated files are the pre-manifest
+      // trust boundary (they only land here via the pick pipeline). With one,
+      // an unaudited file is exactly what the guard rejects — no fill fallback.
+      if (manifestEmpty || auditPhotosInManifest({
         date: post.date,
         service: post.service,
         photoPath: candidate,
-        manifest: photoSelectionManifest,
-      });
-      if (audit.ok) out.push(candidate);
-    }
-    // Date-prefixed curated files with no matching manifest entry: still allow
-    // them for slideshow (same trust boundary as pre-manifest video fallback).
-    if (!out.length && files.length) {
-      for (const file of files.slice(0, max)) {
-        out.push(path.join(GBP_CURATED_FOLDER, file));
-      }
+      }).ok) out.push(candidate);
     }
     return out;
   } catch {

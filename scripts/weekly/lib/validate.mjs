@@ -7,6 +7,8 @@
  *
  *   validatePlan(plan, { facts, weekSpec, photos, history, policy })
  *     → { ok, errors: string[], warnings: string[] }
+ *   normalizeBoostPlan(plan, policy) → { plan, warnings }  deterministic boost arithmetic
+ *   downgradeCarousels(plan) → { plan, warnings }  every carousel becomes a photo (T14)
  *
  * Errors (any one fails the plan): schema; a date that is not the WeekSpec
  * date for that day; a phone number other than facts.phones.*; a domain other
@@ -19,7 +21,9 @@
  * another hook in the same plan (Facebook hooks, GBP headlines); a service on
  * more than 3 of the 7 GBP days; a missing or duplicated day slot; a Facebook
  * type that breaks the day rule (day 1 slideshow, 3/5 photo or carousel, 6
- * photo or text); a WeekSpec that lacks a slot date (fail closed).
+ * photo or text); a WeekSpec that lacks a slot date (fail closed); a first-person
+ * past-tense job claim, or a "Before:" label on an item with fewer than two
+ * photos (T13).
  *
  * Warnings (reported, never blocking): headline over 58 chars, body under 30
  * words (Facebook also over 80), the topic city named in fewer than 3 GBP
@@ -54,6 +58,8 @@ export const FB_TYPE_RULES = Object.freeze({
 });
 
 const GBP_TEXT_FIELDS = ['topic', 'trend_tie', 'headline', 'body', 'caption', 'cta', 'hashtags'];
+const GBP_ANECDOTE_FIELDS = ['topic', 'trend_tie', 'headline', 'body', 'caption', 'cta'];
+const FB_ANECDOTE_FIELDS = ['hook', 'body', 'cta', 'on_screen_text'];
 const FB_TEXT_FIELDS = ['hook', 'body', 'cta', 'hashtags', 'contact', 'on_screen_text', 'format', 'boost_targeting'];
 const FB_COPY_FIELDS = new Set(['hook', 'body', 'cta', 'on_screen_text']);
 const WEB_TEXT_FIELDS = ['title', 'target', 'description', 'draft.title', 'draft.meta_description', 'draft.html'];
@@ -224,6 +230,56 @@ export function findTenureClaims(text, { places = [] } = {}) {
     out.push(h);
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// Anecdotes (T13). Hypotheticals, general practice and photo descriptions are
+// fine; a first-person past-tense claim that a job was completed is not, because
+// the plan carries one photo per post and cannot prove it. The verb must follow
+// the pronoun directly (bar adverbs), so "we have replaced" — present perfect —
+// is not a past-tense claim, while "we just replaced" and "our crew replaced" are.
+const JOB_CLAIM_SUBJECT_SRC = '(?:we|our\\s+(?:team|crew|electricians?)|i)';
+const JOB_CLAIM_LEAD_SRC = '(?:(?:just|recently|already|also|then|finally|actually|previously|last\\s+(?:week|night|month|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|this\\s+(?:week|morning|afternoon)|today|yesterday)\\s+){0,2}';
+const JOB_CLAIM_VERBS = Object.freeze([
+  'installed', 'replaced', 'upgraded', 'repaired', 'fixed', 'serviced', 'mounted', 'swapped',
+  'added', 'removed', 'diagnosed', 'inspected', 'tested', 'finished', 'completed', 'wrapped',
+  'wired', 'rewired', 'ran', 'pulled', 'hooked', 'built', 'converted',
+]);
+const JOB_CLAIM_RE = new RegExp(`\\b${JOB_CLAIM_SUBJECT_SRC}\\s+${JOB_CLAIM_LEAD_SRC}(?:${JOB_CLAIM_VERBS.join('|')})\\b`, 'gi');
+/** A "Before:" label is a two-photo claim the one-photo-per-item schema cannot carry. */
+const BEFORE_LABEL_RE = /\bbefore\s*:/gi;
+
+/** Raw first-person past-tense job claims in `text`. */
+function findJobClaims(text) {
+  return [...textOf(text).matchAll(JOB_CLAIM_RE)].map((m) => m[0]);
+}
+
+/** Photos one item points at; a future multi-photo schema would field `photo_files`. */
+function itemPhotoCount(item) {
+  if (Array.isArray(item.photo_files)) return item.photo_files.filter(Boolean).length;
+  return item.photo_file ? 1 : 0;
+}
+
+/** T13: error on invented job stories and on "Before:" copy without two photos. */
+function checkAnecdotes({ gbp, fb }, errors) {
+  const platforms = [['gbp', gbp, GBP_ANECDOTE_FIELDS], ['facebook', fb, FB_ANECDOTE_FIELDS]];
+  for (const [platform, items, fields] of platforms) {
+    for (const item of items) {
+      for (const field of fields) {
+        const text = textOf(item[field]);
+        if (!text) continue;
+        for (const raw of findJobClaims(text)) {
+          errors.push(`${platform} day ${dayLabel(item)} ${field}: first-person past-tense job claim "${raw}"`
+            + ' — say what Grizzly does or what the photo shows, not a job we just finished');
+        }
+        const beforeLabels = [...text.matchAll(BEFORE_LABEL_RE)].length;
+        const photos = itemPhotoCount(item);
+        if (beforeLabels && photos < 2) {
+          errors.push(`${platform} day ${dayLabel(item)} ${field}: "Before:" copy needs two photos of the same job (this post carries ${photos})`);
+        }
+      }
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -557,6 +613,86 @@ function checkBoost({ fb, policy }, errors) {
   }
 }
 
+/**
+ * Deterministic boost normalizer (T12). Run before BOTH validation and render.
+ *
+ * The model's YES choices are preserved exactly: the same rows stay YES, no row is
+ * invented, dropped or re-picked. Only the arithmetic is rewritten, and only for 1
+ * or 2 YES rows: `days=1`, the budget split into whole cents (the odd cent goes to
+ * the first YES row in plan order), so the total is exactly `policy.boost_weekly_usd`.
+ * MAYBE/NO allocations are cleared to null.
+ *
+ * Anything the normalizer cannot express exactly — zero YES rows, more than
+ * `FB_MAX_YES_ROWS`, a budget that is not a positive cent amount — is returned
+ * unchanged so `validatePlan` still fails it. Never silently accepted.
+ * Returns `{ plan, warnings }`; the input plan is never mutated.
+ */
+export function normalizeBoostPlan(plan, policy) {
+  const warnings = [];
+  if (!isObject(plan) || Array.isArray(plan)) return { plan, warnings };
+  const out = clonePlan(plan);
+  const fb = list(out.facebook).filter(isObject);
+  const yes = fb.filter((item) => isObject(item.boost) && item.boost.decision === 'YES');
+  if (yes.length === 0 || yes.length > FB_MAX_YES_ROWS) return { plan: out, warnings };
+
+  const budget = isObject(policy) ? policy.boost_weekly_usd : undefined;
+  const cents = isNum(budget) && budget > 0 ? centAmount(budget) : null;
+  if (cents == null) {
+    warnings.push(`facebook: boost budget ${isNum(budget) ? `$${budget}` : '(missing)'} is not a positive cent amount; YES rows left unchanged for validation`);
+    return { plan: out, warnings };
+  }
+
+  const split = yes.length === 1 ? [cents] : [Math.ceil(cents / 2), cents - Math.ceil(cents / 2)];
+  const from = yes.map((item) => ({ day: dayLabel(item), daily_usd: item.boost.daily_usd, days: item.boost.days }));
+  const fromTotal = from.reduce((sum, o) => sum + (isNum(o.daily_usd) && isNum(o.days) ? o.daily_usd * o.days : 0), 0);
+  for (const [i, item] of yes.entries()) {
+    item.boost = { decision: 'YES', daily_usd: split[i] / 100, days: 1 };
+  }
+  warnings.push(`facebook: boost normalized from $${round2(fromTotal)}`
+    + ` (${from.map((o) => `day ${o.day} $${o.daily_usd}×${o.days}`).join(' + ')})`
+    + ` to $${cents / 100} (${split.map((c, i) => `day ${dayLabel(yes[i])} $${c / 100} × 1`).join(', ')}): days=1, integer-cent split`);
+
+  for (const item of fb) {
+    const boost = isObject(item.boost) ? item.boost : null;
+    if (!boost || boost.decision === 'YES') continue;
+    if (boost.decision !== 'MAYBE' && boost.decision !== 'NO') continue;
+    if (boost.daily_usd == null && boost.days == null) continue;
+    warnings.push(`facebook day ${dayLabel(item)}: cleared ${boost.decision} boost allocation (daily_usd=${boost.daily_usd}, days=${boost.days})`);
+    item.boost = { decision: boost.decision, daily_usd: null, days: null };
+  }
+  return { plan: out, warnings };
+}
+
+/**
+ * T14 deterministic normalization: every `carousel` becomes a `photo`, with a
+ * warning naming the day. The schema carries one photo per item, so a carousel
+ * could not prove two attached photos anyway; every other choice the model made
+ * is left exactly as it is. Run before BOTH validation and render.
+ * Returns `{ plan, warnings }`; the input plan is never mutated.
+ */
+export function downgradeCarousels(plan) {
+  const warnings = [];
+  if (!isObject(plan) || Array.isArray(plan)) return { plan, warnings };
+  const out = clonePlan(plan);
+  for (const item of list(out.facebook).filter(isObject)) {
+    if (item.type !== 'carousel') continue;
+    item.type = 'photo';
+    warnings.push(`facebook day ${dayLabel(item)}: carousel downgraded to photo (one photo per post, so two attached photos cannot be proven)`);
+  }
+  return { plan: out, warnings };
+}
+
+function clonePlan(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+/** Whole cents of `amount`, or null when it is not exactly representable to the cent. */
+function centAmount(amount) {
+  const raw = amount * 100;
+  const cents = Math.round(raw);
+  return Math.abs(raw - cents) < 1e-6 ? cents : null;
+}
+
 function checkHooks({ gbp, fb, history }, errors) {
   const past = new Map();
   for (const post of Array.isArray(history) ? history : list(history && history.posts)) {
@@ -668,6 +804,7 @@ export function validatePlan(plan, { facts, weekSpec, photos = [], history = nul
   checkDates({ plan, gbp, fb, weekSpec }, errors);
   checkSlots({ gbp, fb }, errors);
   checkCopy({ gbp, fb, web, notes, ctx }, errors, warnings);
+  checkAnecdotes({ gbp, fb }, errors);
   checkPhotos({ gbp, fb, photos }, errors);
   checkBoost({ fb, policy }, errors);
   checkHooks({ gbp, fb, history }, errors);

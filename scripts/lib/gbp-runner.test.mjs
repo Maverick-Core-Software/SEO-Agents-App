@@ -7,11 +7,14 @@ import {
   gbpListingUnverifiedMessage,
   gbpDailyStatusForExit,
   gbpScheduleStatusForExit,
+  gbpPolicyViolationMessage,
   gbpVerifyDisposition,
   isAbnormalExit,
   centralDateHour,
   runDailyGbp,
   runGbpForApprovedRun,
+  gbpGateKindForResult,
+  createGbpApiGateLatch,
 } from './gbp-runner.mjs';
 
 // excelDateToIso: Date, Excel serial, and string forms
@@ -97,6 +100,23 @@ assert.equal(
   gbpDailyStatusForExit(1, { result: 'failed', failure_reason: 'captcha', error: 'unusual traffic' }).status,
   'error',
 );
+// G2: exit 5 (content policy) is an error on both paths, with the violation detail.
+const policyResult = {
+  result: 'policy_violation',
+  error: 'Post 2026-09-26 violates GBP content policy:\n- [phone] caption contains a phone number',
+  violations: [{ rule: 'phone' }],
+};
+assert.equal(gbpScheduleStatusForExit(5, policyResult).status, 'error',
+  'exit 5 must not fall through to scheduled (the legacy daily path would re-post it)');
+assert.ok(gbpScheduleStatusForExit(5, policyResult).error.includes('phone number'),
+  'exit 5 keeps the policy detail');
+assert.equal(gbpDailyStatusForExit(5, policyResult).status, 'error');
+assert.ok(gbpDailyStatusForExit(5, policyResult).error.includes('phone number'),
+  'the daily path keeps the policy detail too');
+assert.equal(gbpDailyStatusForExit(5, policyResult).archive, false);
+assert.ok(gbpPolicyViolationMessage({ violations: [{}, {}] }).includes('2 violations'),
+  'a detail-free policy result still names the violation count');
+assert.equal(gbpScheduleStatusForExit(5, {}).status, 'error');
 
 // centralDateHour: 2026-06-27 14:30 UTC is 09:30 CDT (UTC-5 in June)
 const { todayDate, cstHour, cstMinute } = centralDateHour(new Date('2026-06-27T14:30:00Z'));
@@ -461,3 +481,270 @@ console.log('ok gbp-runner orchestration');
 }
 
 console.log('ok gbp-runner day1 approval gate');
+
+// ---------------------------------------------------------------------------
+// G1 (cutover Phase D): API-mode scheduling semantics.
+// ---------------------------------------------------------------------------
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import xlsx from 'xlsx';
+import { dailyTickDue, applyDriverResult } from './gbp-runner.mjs';
+
+// dailyTickDue: the once-per-day latch the workers keep around runDailyGbp.
+assert.equal(dailyTickDue({ cstHour: 8, todayDate: '2026-10-14', lastDailyGbpDate: '' }), false, 'before 09:00 CT: not due');
+assert.equal(dailyTickDue({ cstHour: 9, todayDate: '2026-10-14', lastDailyGbpDate: '' }), true, '09:00 CT, untouched day: due');
+assert.equal(dailyTickDue({ cstHour: 15, todayDate: '2026-10-14', lastDailyGbpDate: '2026-10-14' }), false, 'same day already ticked: not due');
+assert.equal(dailyTickDue({ cstHour: 9, todayDate: '2026-10-15', lastDailyGbpDate: '2026-10-14' }), true, 'next day: due again');
+assert.equal(dailyTickDue({ cstHour: 9, todayDate: '', lastDailyGbpDate: '' }), false, 'no date: never due');
+
+// --- runGbpForApprovedRun in API mode: Day 1 posts, Days 2-7 are marked
+// `scheduled` with NO poster call (the API has no native scheduling) ---
+{
+  const updates = [];
+  const makeQb = () => {
+    const qb = {
+      from: () => qb,
+      select: () => qb,
+      eq: () => qb,
+      update: (vals) => { updates.push(vals); return { eq: () => Promise.resolve({ data: null, error: null }) }; },
+    };
+    return qb;
+  };
+  const runPhaseCalls = [];
+  const runPhase = async (runId, phase, cmd, args) => {
+    runPhaseCalls.push({ cmd, args });
+    return { ok: true, exitCode: 0, stdout: '{"result":"posted","verified":true,"postUrl":"accounts/1/locations/2/localPosts/day1"}', stderr: '' };
+  };
+
+  await runGbpForApprovedRun({
+    runId: 'r1',
+    gbpPosts: [
+      { id: 'p1', day: 1, post_date: '2026-10-16', run_id: 'r1' },
+      { id: 'p2', day: 2, post_date: '2026-10-17', run_id: 'r1' },
+      { id: 'p3', day: 3, post_date: '2026-10-18', run_id: 'r1' },
+    ],
+    deps: {
+      supabase: makeQb(),
+      runPhase,
+      log: async () => {},
+      env: { GBP_POSTER: 'api' },
+      projectRoot: process.cwd(),
+      paths: { photoPick: 'C:/nonexistent/photo-pick.mjs', gbpPoster: 'C:/fake/gbp-api-poster.mjs', seoAgentsExe: 'seo-agents.exe' },
+    },
+  });
+
+  assert.equal(runPhaseCalls.some(c => c.args?.includes('--schedule')), false, 'API mode must never spawn --schedule');
+  const posterCalls = runPhaseCalls.filter(c => c.args?.[0] === 'C:/fake/gbp-api-poster.mjs');
+  assert.equal(posterCalls.length, 1, 'only Day 1 invokes the API poster at approval time');
+  assert.ok(posterCalls[0].args.includes('2026-10-16'), 'Day 1 poster call carries its date');
+  assert.equal(updates.filter(u => u.status === 'scheduled').length, 2, 'Days 2 and 3 are marked scheduled');
+  assert.equal(updates.some(u => u.status === 'scheduled_native'), false, 'no scheduled_native in API mode');
+  assert.equal(updates.find(u => u.status === 'posted')?.platform_post_id, 'accounts/1/locations/2/localPosts/day1');
+}
+
+// --- API mode: applyDriverResult closes the workbook Posted gate for every
+// post the API created, including exit 3 (created, GET-back not LIVE yet).
+// Playwright mode keeps the gate open on exit 3 (unchanged legacy behaviour). ---
+{
+  const makeWorkbook = (dir) => {
+    const file = path.join(dir, 'schedule.xlsx');
+    const ws = xlsx.utils.aoa_to_sheet([
+      ['Date', 'Status', 'Posted', 'AssetIdOrDescription'],
+      ['2026-10-17', 'Approved', false, ''],
+    ]);
+    const wb = xlsx.utils.book_new();
+    xlsx.utils.book_append_sheet(wb, ws, 'Posts');
+    xlsx.writeFile(wb, file);
+    return file;
+  };
+  const readPosted = (file) => {
+    const wb = xlsx.readFile(file);
+    const rows = xlsx.utils.sheet_to_json(wb.Sheets.Posts, { defval: '' });
+    return rows[0].Posted;
+  };
+  const makeQb = (updates) => {
+    const qb = {
+      from: () => qb,
+      update: (vals) => { updates.push(vals); return { eq: () => Promise.resolve({ data: null, error: null }) }; },
+    };
+    return qb;
+  };
+  const exit3 = { ok: false, exitCode: 3, stdout: '{"result":"posted","verified":false,"postUrl":"accounts/1/locations/2/localPosts/day2"}', stderr: '' };
+
+  const apiDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gbp-runner-api-'));
+  const apiBook = makeWorkbook(apiDir);
+  const apiUpdates = [];
+  const apiStatus = await applyDriverResult({
+    supabase: makeQb(apiUpdates), post: { id: 'p2', run_id: 'r1', post_date: '2026-10-17' }, result: exit3,
+    env: { GBP_POSTER: 'api', GBP_WORKBOOK_PATH: apiBook, GBP_ARCHIVE_FOLDER: path.join(apiDir, 'archive') }, log: async () => {},
+  });
+  assert.equal(apiStatus, 'needs_verification', 'exit 3 stays needs_verification for the operator');
+  assert.equal(readPosted(apiBook), true, 'API mode: workbook Posted=TRUE for a created-but-unconfirmed post');
+  // F3: the DB write on exit 3 carries the resource name (it was only reported before).
+  assert.equal(apiUpdates.length, 1);
+  assert.equal(apiUpdates[0].status, 'needs_verification');
+  assert.equal(apiUpdates[0].platform_post_id, 'accounts/1/locations/2/localPosts/day2',
+    'F3: API exit 3 persists platform_post_id (the localPost resource name) on the row');
+  assert.equal('posted_at' in apiUpdates[0], false, 'exit 3 does not stamp posted_at');
+
+  const pwDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gbp-runner-pw-'));
+  const pwBook = makeWorkbook(pwDir);
+  const pwUpdates = [];
+  await applyDriverResult({
+    supabase: makeQb(pwUpdates), post: { id: 'p2', run_id: 'r1', post_date: '2026-10-17' }, result: exit3,
+    env: { GBP_POSTER: 'playwright', GBP_WORKBOOK_PATH: pwBook, GBP_ARCHIVE_FOLDER: path.join(pwDir, 'archive') }, log: async () => {},
+  });
+  assert.notEqual(readPosted(pwBook), true, 'playwright mode: exit 3 leaves the Posted gate open (unchanged)');
+  assert.equal('platform_post_id' in pwUpdates[0], false, 'playwright mode: exit 3 DB write unchanged (no id)');
+
+  const errDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gbp-runner-err-'));
+  const errBook = makeWorkbook(errDir);
+  await applyDriverResult({
+    supabase: makeQb([]), post: { id: 'p2', run_id: 'r1', post_date: '2026-10-17' },
+    result: { ok: false, exitCode: 5, stdout: '{"result":"policy_violation","error":"image_missing"}', stderr: '' },
+    env: { GBP_POSTER: 'api', GBP_WORKBOOK_PATH: errBook, GBP_ARCHIVE_FOLDER: path.join(errDir, 'archive') }, log: async () => {},
+  });
+  assert.notEqual(readPosted(errBook), true, 'API mode: a refused post never closes the gate');
+  for (const d of [apiDir, pwDir, errDir]) fs.rmSync(d, { recursive: true, force: true });
+}
+
+// --- Daily tick publishes a `scheduled` row exactly once: the row leaves the
+// scheduled set on the first tick, so a second tick (worker restart, next
+// poll) runs the poster zero more times. ---
+{
+  const rows = [{ id: 'p2', run_id: 'r1', post_date: '2026-10-17', photo_file: '', status: 'scheduled' }];
+  const makeQb = () => {
+    const qb = {
+      from: () => qb,
+      select: () => qb,
+      eq: () => qb,
+      in: (_col, statuses) => { qb._statuses = statuses; return qb; },
+      order: () => Promise.resolve({ data: rows.filter(r => (qb._statuses || []).includes(r.status)) }),
+      update: (vals) => ({ eq: (_c, id) => { Object.assign(rows.find(r => r.id === id), vals); return Promise.resolve({ data: null, error: null }); } }),
+    };
+    return qb;
+  };
+  let posterRuns = 0;
+  const runPhase = async () => {
+    posterRuns += 1;
+    return { ok: true, exitCode: 0, stdout: '{"result":"posted","verified":true,"postUrl":"accounts/1/locations/2/localPosts/day2"}', stderr: '' };
+  };
+  const tick = () => runDailyGbp({
+    supabase: makeQb(), runPhase, log: async () => {}, env: { GBP_POSTER: 'api' },
+    todayDate: '2026-10-17', gbpPosterPath: 'C:/fake/gbp-api-poster.mjs', projectRoot: process.cwd(), gbpMode: 'api',
+  });
+  await tick();
+  assert.equal(posterRuns, 1, 'first tick posts the scheduled row');
+  assert.equal(rows[0].status, 'posted');
+  await tick();
+  await tick();
+  assert.equal(posterRuns, 1, 'later ticks on the same day post nothing (row is no longer scheduled)');
+}
+
+console.log('ok gbp-runner G1 api-mode scheduling');
+
+// --- Gated v4 API (poster exit 6 / result api_gated): the row stays scheduled,
+// never error (no alert storm), never posted (no false success), gate untouched. ---
+{
+  const gatedResult = { result: 'api_gated', reason: 'v4_gated', error: 'GBP v4 API (localPosts) returned 404 "route not served": the API is still gated for this project, nothing was posted.' };
+  assert.equal(gbpDailyStatusForExit(6, gatedResult).status, 'scheduled');
+  assert.equal(gbpDailyStatusForExit(6, gatedResult).archive, false);
+  assert.match(gbpDailyStatusForExit(6, gatedResult).error, /gated/);
+  assert.equal(gbpDailyStatusForExit(6, {}).status, 'scheduled', 'exit 6 alone is enough');
+  assert.equal(gbpDailyStatusForExit(0, { result: 'api_gated' }).status, 'scheduled', 'result alone is enough');
+  assert.equal(gbpScheduleStatusForExit(6, gatedResult).status, 'scheduled');
+
+  const updates = [];
+  const qb = { from: () => qb, update: (vals) => { updates.push(vals); return { eq: () => Promise.resolve({ data: null, error: null }) }; } };
+  const status = await applyDriverResult({
+    supabase: qb, post: { id: 'p1', run_id: 'r1', post_date: '2026-10-17' },
+    result: { ok: false, exitCode: 6, stdout: JSON.stringify(gatedResult), stderr: '' },
+    env: { GBP_POSTER: 'api', GBP_WORKBOOK_PATH: 'C:/nonexistent/schedule.xlsx' }, log: async () => {},
+  });
+  assert.equal(status, 'scheduled');
+  assert.equal(updates[0].status, 'scheduled');
+  assert.equal(updates[0].posted_at, undefined, 'no posted_at on a gated API');
+}
+
+console.log('ok gbp-runner api-gated exit 6');
+
+// --- F4: a gated (exit 6) or auth-failed API ALERTS, once per episode. Two gated
+// rows on one tick = one alert; a real answer ends the episode; the next gated
+// result alerts again. auth_failed keeps the row scheduled (never error). ---
+{
+  assert.equal(gbpGateKindForResult(6, {}), 'gated');
+  assert.equal(gbpGateKindForResult(0, { result: 'api_gated' }), 'gated');
+  assert.equal(gbpGateKindForResult(1, { result: 'auth_failed' }), 'auth');
+  assert.equal(gbpGateKindForResult(0, { result: 'posted', verified: true }), 'ok');
+  assert.equal(gbpGateKindForResult(5, { result: 'policy_violation' }), 'ok', 'a refusal proves the API answered');
+
+  const authResult = { result: 'auth_failed', reason: 'v4_auth', statusCode: 401, error: 'GBP v4 localPosts auth failed [401]; refresh the GBP token (scripts/authorize-gbp.mjs). Nothing was posted.' };
+  assert.equal(gbpDailyStatusForExit(1, authResult).status, 'scheduled', 'auth failure never flips the row to error');
+  assert.equal(gbpDailyStatusForExit(1, authResult).archive, false);
+  assert.match(gbpDailyStatusForExit(1, authResult).error, /auth failed \[401\]/);
+  assert.equal(gbpScheduleStatusForExit(1, authResult).status, 'scheduled');
+  assert.equal(gbpDailyStatusForExit(1, { result: 'failed', error: 'boom' }).status, 'error', 'a plain exit 1 is still an error');
+
+  const alerts = [];
+  const latch = createGbpApiGateLatch({ alert: async (kind, detail) => alerts.push({ kind, date: detail.post?.post_date }) });
+  const rows = [
+    { id: 'g1', run_id: 'r1', post_date: '2026-10-17', photo_file: '', status: 'scheduled' },
+    { id: 'g2', run_id: 'r1', post_date: '2026-10-17', photo_file: '', status: 'scheduled' },
+  ];
+  const makeQb = () => {
+    const qb = {
+      from: () => qb, select: () => qb, eq: () => qb,
+      in: (_col, statuses) => { qb._statuses = statuses; return qb; },
+      order: () => Promise.resolve({ data: rows.filter(r => (qb._statuses || []).includes(r.status)) }),
+      update: (vals) => ({ eq: (_c, id) => { Object.assign(rows.find(r => r.id === id), vals); return Promise.resolve({ data: null, error: null }); } }),
+    };
+    return qb;
+  };
+  let posterResult = { ok: false, exitCode: 6, stdout: '{"result":"api_gated","reason":"v4_gated","error":"gated"}', stderr: '' };
+  const tick = () => runDailyGbp({
+    supabase: makeQb(), runPhase: async () => posterResult, log: async () => {}, env: { GBP_POSTER: 'api' },
+    todayDate: '2026-10-17', gbpPosterPath: 'C:/fake/gbp-api-poster.mjs', projectRoot: process.cwd(), gbpMode: 'api', apiGate: latch,
+  });
+  await tick();
+  assert.equal(alerts.length, 1, 'exit 6 on two rows in one tick → exactly one alert');
+  assert.equal(alerts[0].kind, 'gated');
+  assert.deepEqual(rows.map(r => r.status), ['scheduled', 'scheduled'], 'gated rows stay scheduled');
+  await tick();
+  assert.equal(alerts.length, 1, 'the same episode on the next tick is silent');
+  assert.equal(latch.episode, 'gated');
+
+  // The API answers (a real post): the episode ends and the latch re-arms.
+  posterResult = { ok: true, exitCode: 0, stdout: '{"result":"posted","verified":true,"postUrl":"accounts/1/locations/2/localPosts/x"}', stderr: '' };
+  await tick();
+  assert.equal(latch.episode, 'ok');
+  assert.deepEqual(rows.map(r => r.status), ['posted', 'posted']);
+  assert.equal(alerts.length, 1, 'a good answer never alerts');
+
+  // A fresh gated episode alerts again; an auth episode is its own kind.
+  rows.forEach(r => { r.status = 'scheduled'; });
+  posterResult = { ok: false, exitCode: 6, stdout: '{"result":"api_gated"}', stderr: '' };
+  await tick();
+  assert.equal(alerts.length, 2, 'a new gated episode alerts once more');
+  posterResult = { ok: false, exitCode: 1, stdout: JSON.stringify(authResult), stderr: '' };
+  await tick();
+  assert.equal(alerts.length, 3, 'gated → auth is a different episode and alerts');
+  assert.equal(alerts[2].kind, 'auth');
+  assert.deepEqual(rows.map(r => r.status), ['scheduled', 'scheduled'], 'auth-failed rows stay scheduled');
+  await tick();
+  assert.equal(alerts.length, 3, 'the auth episode alerts once');
+
+  // The startup probe and the tick share the latch: a gated probe followed by a
+  // gated tick is one alert.
+  const alerts2 = [];
+  const latch2 = createGbpApiGateLatch({ alert: async (kind) => alerts2.push(kind) });
+  await latch2.report('gated', { stage: 'startup-probe' });
+  posterResult = { ok: false, exitCode: 6, stdout: '{"result":"api_gated"}', stderr: '' };
+  await runDailyGbp({
+    supabase: makeQb(), runPhase: async () => posterResult, log: async () => {}, env: { GBP_POSTER: 'api' },
+    todayDate: '2026-10-17', gbpPosterPath: 'C:/fake/gbp-api-poster.mjs', projectRoot: process.cwd(), gbpMode: 'api', apiGate: latch2,
+  });
+  assert.deepEqual(alerts2, ['gated'], 'startup probe + gated tick = one alert');
+}
+
+console.log('ok gbp-runner F4 api-gate alert latch');

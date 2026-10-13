@@ -1,0 +1,12 @@
+v1 accounts + locations    200   account accounts/102812174257783632337
+location                         accounts/102812174257783632337/locations/14305368671018787381 "Grizzly Electrical Solutions"
+v4 localPosts (gate)       200   count=1
+businessinformation v1     400   { "error": { "code": 400, "message": "Request contains an invalid argument.", 
+performance v1             400   { "error": { "code": 400, "message": "Request contains an invalid argument.", 
+qanda v1                   404   HTML error page
+verifications v1           404   { "error": { "code": 404, "message": "Requested entity was not found.", "sta
+
+--- token sanity ---
+business.manage scope: yes
+
+VERDICT: v4 localPosts reachable — API posting possible

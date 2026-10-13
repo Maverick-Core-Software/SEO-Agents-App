@@ -1,0 +1,12 @@
+[Unit]
+Description=Grizzly SEO reconcile, daily 10:10 America/Chicago
+
+[Timer]
+OnCalendar=*-*-* 10:10:00 America/Chicago
+AccuracySec=1s
+# Daily: if the host was down at 10:10, run once on the next boot.
+Persistent=true
+Unit=seo-reconcile.service
+
+[Install]
+WantedBy=timers.target

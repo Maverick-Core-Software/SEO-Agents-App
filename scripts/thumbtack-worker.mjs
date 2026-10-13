@@ -10,7 +10,7 @@
  * cutover — do not start Funnel from this script.
  */
 import http from 'node:http';
-import { fileURLToPath } from 'node:url';
+import { isMainModule } from './lib/entry.mjs';
 
 import { thumbtackListenPort } from './lib/thumbtack/config.mjs';
 import {
@@ -61,8 +61,7 @@ export function createThumbtackServer() {
   });
 }
 
-const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
-if (isMain) {
+if (isMainModule(import.meta.url)) {
   const host = process.env.THUMBTACK_BIND || '127.0.0.1';
   const server = createThumbtackServer();
   server.listen(thumbtackListenPort, host, () => {

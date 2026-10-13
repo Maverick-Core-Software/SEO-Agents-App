@@ -6,9 +6,22 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { gbpListingUnverifiedMessage, isGbpSessionExpiredText } from './gbp-listing.mjs';
 import { defaultGbpPhotoDirs } from './gbp-paths.mjs';
+import { resolveGbpArchiveFolder } from './platform-defaults.mjs';
+import { resolveGbpMode } from './gbp-mode.mjs';
 import { syncGbpScheduleToWorkbook, gbpPostToScheduleMarkdown } from '../sync-gbp-schedule.mjs';
 
 export { gbpListingUnverifiedMessage, isGbpSessionExpiredText };
+
+/** Hour (Central) from which the daily poster tick may run. */
+export const DAILY_TICK_HOUR = 9;
+
+// The once-per-day latch the workers keep around runDailyGbp: due only at/after
+// 09:00 Central and only when today's tick has not already completed. The caller
+// stores todayDate into its latch AFTER runDailyGbp returns, so a throw inside
+// the tick leaves the day open for the next poll instead of silently skipping it.
+export function dailyTickDue({ cstHour, todayDate, lastDailyGbpDate = '', hour = DAILY_TICK_HOUR } = {}) {
+  return Number(cstHour) >= hour && Boolean(todayDate) && lastDailyGbpDate !== todayDate;
+}
 
 // Excel cells store dates as Date objects, serial numbers, or strings depending
 // on how the workbook was written. Normalise all three to an ISO yyyy-mm-dd.
@@ -51,15 +64,81 @@ export function gbpCrashUnverifiedMessage(exitCode) {
   return `GBP poster/verify crashed (exit ${exitCode}) — treat as unverified. Check the live listing before retrying; do not auto-repost.`;
 }
 
+// Exit 5 = the driver's content-policy gate refused the post before the composer
+// opened (policy-check.mjs). It is never a post and never a scheduling success:
+// keep the violation detail so the operator can fix the caption/photo.
+export function gbpPolicyViolationMessage(parsed = {}) {
+  const detail = String(parsed.error || '').trim();
+  if (detail) return detail;
+  const count = Array.isArray(parsed.violations) ? parsed.violations.length : 0;
+  const suffix = count ? ` (${count} violation${count === 1 ? '' : 's'})` : '';
+  return `GBP content policy blocked this post${suffix} — fix the caption/photo before re-posting.`;
+}
+
 // Map a driver exit code to the weekly_posts update intent. `archive: true` means
 // the caller should also run markGbpPostedAndArchive. Exit codes (driver.mjs):
 //   0 = posted+verified, 3 = submitted-unverified, 4 = approval-gate-unset, else = error.
 // Driver JSON wins over a crashed exit: last week's live posts were marked error
 // because context.close() aborted after a successful submit/verify emit.
+// Exit 6 = the API poster found the v4 API gated (404 route not served). Nothing
+// was posted and nothing is wrong with the row: it stays `scheduled` with the
+// gating note, never error (no alert storm) and never posted (no false success).
+export const GBP_API_GATED_EXIT = 6;
+export function gbpApiGatedMessage(parsed = {}) {
+  return String(parsed.error || '').trim()
+    || 'GBP v4 API is gated for this project (404 route not served) — nothing was posted; keep GBP_POSTER=playwright until the access probe passes.';
+}
+// The API poster's gate answered 401/403 (`result: 'auth_failed'`, exit 1): a dead
+// or revoked token. Nothing was posted and nothing is wrong with the row, so it
+// stays `scheduled` (never error) and the gate latch alerts the operator (F4).
+export function gbpAuthFailedMessage(parsed = {}) {
+  return String(parsed.error || '').trim()
+    || 'GBP API auth failed (401/403) — nothing was posted; refresh the GBP token (scripts/authorize-gbp.mjs).';
+}
+
+// Which gate episode a poster result belongs to: 'gated' (exit 6 / api_gated),
+// 'auth' (result auth_failed) or 'ok' (anything else — a real post, a policy
+// refusal, a crash — all prove the API answered, so the episode ends).
+export function gbpGateKindForResult(exitCode, parsed = {}) {
+  const result = String(parsed.result || '').toLowerCase();
+  if (exitCode === GBP_API_GATED_EXIT || result === 'api_gated') return 'gated';
+  if (result === 'auth_failed') return 'auth';
+  return 'ok';
+}
+
+// One alert per gate episode (F4), the latch pattern of the session probe: the
+// first 'gated' or 'auth' report alerts, repeats of the same kind are silent,
+// an 'ok' report (or a different kind) ends the episode so the next one alerts
+// again. Shared by the worker's startup probe and every poster result, so a
+// gated startup followed by a gated 09:00 tick is one alert, not two.
+export function createGbpApiGateLatch({ alert = async () => {}, log = async () => {} } = {}) {
+  let episode = 'ok';
+  return {
+    get episode() { return episode; },
+    async report(kind, detail = {}) {
+      if (kind === 'ok') {
+        if (episode !== 'ok') await log(`GBP API gate episode '${episode}' ended`);
+        episode = 'ok';
+        return false;
+      }
+      if (episode === kind) return false;   // same episode: already alerted
+      episode = kind;
+      await alert(kind, detail);
+      return true;
+    },
+  };
+}
+
 export function gbpDailyStatusForExit(exitCode, parsed = {}) {
   const result = String(parsed.result || '').toLowerCase();
   const failureReason = String(parsed.failure_reason || '').toLowerCase();
   const failureDetail = String(parsed.error || '').trim();
+  if (exitCode === GBP_API_GATED_EXIT || result === 'api_gated') {
+    return { status: 'scheduled', error: gbpApiGatedMessage(parsed), archive: false, platform_post_id: null };
+  }
+  if (result === 'auth_failed') {
+    return { status: 'scheduled', error: gbpAuthFailedMessage(parsed), archive: false, platform_post_id: null };
+  }
   // Listing already has a live match — treat as posted even if we did not compose.
   if (result === 'already_live' || parsed.verified === true) {
     return { status: 'posted', error: null, archive: true, platform_post_id: parsed.postUrl || null };
@@ -95,6 +174,9 @@ export function gbpDailyStatusForExit(exitCode, parsed = {}) {
       platform_post_id: null,
     };
   }
+  if (exitCode === 5 || result === 'policy_violation') {
+    return { status: 'error', error: gbpPolicyViolationMessage(parsed), archive: false, platform_post_id: null };
+  }
   if (exitCode === 0 && result !== 'failed' && result !== 'needs_approval' && result !== 'policy_violation' && result !== 'scheduled_native') {
     // Submitted, not yet confirmed live. archive=false keeps the workbook Posted
     // gate open so a Grok "not_found" can trigger one retry; the flag flips only
@@ -125,6 +207,12 @@ export function gbpScheduleStatusForExit(exitCode, parsed = {}) {
   const result = String(parsed.result || '').toLowerCase();
   const failureReason = String(parsed.failure_reason || '').toLowerCase();
   const failureDetail = String(parsed.error || '').trim();
+  if (exitCode === GBP_API_GATED_EXIT || result === 'api_gated') {
+    return { status: 'scheduled', error: gbpApiGatedMessage(parsed) };
+  }
+  if (result === 'auth_failed') {
+    return { status: 'scheduled', error: gbpAuthFailedMessage(parsed) };
+  }
   // A known failure before the Post click is not a candidate for the legacy
   // daily fallback. Mark it visibly so the existing worker fault alert has a
   // precise, human-actionable recovery rather than a false scheduled state.
@@ -142,6 +230,12 @@ export function gbpScheduleStatusForExit(exitCode, parsed = {}) {
   }
   if (failureReason === 'data') {
     return { status: 'error', error: failureDetail || 'GBP poster rejected the post data before submission.' };
+  }
+  // Content policy is a hard stop, never the legacy daily fallback: a caption that
+  // Google refused once would be rejected again (and the refusal disables posting
+  // profile-wide), so exit 5 must alert with the violation, not look 'scheduled'.
+  if (exitCode === 5 || result === 'policy_violation') {
+    return { status: 'error', error: gbpPolicyViolationMessage(parsed) };
   }
   if (exitCode === 0 || result === 'scheduled_native') {
     return { status: 'scheduled_native', error: null };
@@ -227,10 +321,13 @@ async function withExcelRetry(filePath, fn, { maxRetries = 6, delayMs = 5000, lo
 
 // Called only after the driver verifies the post (exit 0): set Posted=TRUE in the
 // Excel workbook and move the photo to the dated archive folder. deps: { env, log }.
-export async function markGbpPostedAndArchive({ postDate, exitCode, runId, env, log }) {
-  if (exitCode !== 0) return;
+// `force` (API mode, G1): a localPost that Google created exists whatever the
+// GET-back said, so the workbook gate closes on exit 3 too; the API poster's own
+// already-posted guard reads that flag and refuses to create a second post.
+export async function markGbpPostedAndArchive({ postDate, exitCode, runId, env, log, force = false }) {
+  if (exitCode !== 0 && !force) return;
   const GBP_WORKBOOK_PATH = env.GBP_WORKBOOK_PATH || '';
-  const GBP_ARCHIVE_FOLDER = env.GBP_ARCHIVE_FOLDER || 'M:\\backups\\gbp-archive';
+  const GBP_ARCHIVE_FOLDER = resolveGbpArchiveFolder({ env });
   if (!GBP_WORKBOOK_PATH) { await log(runId, 'gbp', 'info', 'GBP_WORKBOOK_PATH not set — skipping Excel update'); return; }
   if (!fs.existsSync(GBP_WORKBOOK_PATH)) { await log(runId, 'gbp', 'warn', `GBP workbook not found: ${GBP_WORKBOOK_PATH}`); return; }
 
@@ -280,20 +377,36 @@ export async function markGbpPostedAndArchive({ postDate, exitCode, runId, env, 
 }
 
 // Apply a driver result to one weekly_posts row (shared by run + daily paths).
-export async function applyDriverResult({ supabase, post, result, env, log }) {
+// API mode (G1): every post the API poster created (it reports the localPost
+// resource name as postUrl, on exit 0 and exit 3 alike) closes the workbook
+// Posted gate, so neither the daily tick nor a retry can create it twice.
+// Playwright mode is unchanged: the gate closes only after verification.
+// `apiGate` (optional, createGbpApiGateLatch) is told the gate kind of every
+// result so a gated/auth-failed episode alerts once and ends on the next real answer.
+export async function applyDriverResult({ supabase, post, result, env, log, gbpMode, apiGate }) {
   const parsed = parseDriverJson(result.stdout);
   const map = gbpDailyStatusForExit(result.exitCode, parsed);
+  const apiMode = (gbpMode || resolveGbpMode(env || {})) === 'api';
+  const apiCreated = apiMode && Boolean(parsed.postUrl) && map.status !== 'error';
   const update = { status: map.status, error: map.error };
   if (map.status === 'posted') {
     update.posted_at = new Date().toISOString();
     update.platform_post_id = map.platform_post_id;
+  } else if (apiCreated) {
+    // F3: the post exists (exit 3 = created, GET-back not LIVE yet). Persist the
+    // localPost resource name so the operator can GET it from the row and the
+    // Phase F "Day 1 platform_post_id" gate holds; it was only being reported.
+    update.platform_post_id = map.platform_post_id || parsed.postUrl;
   }
   if (map.status === 'error') {
     update.error = (map.error || result.stderr || result.error || 'GBP poster failed').slice(0, 300);
   }
   await supabase.from('weekly_posts').update(update).eq('id', post.id);
-  if (map.archive) {
-    await markGbpPostedAndArchive({ postDate: post.post_date, exitCode: result.exitCode, runId: post.run_id, env, log });
+  if (map.archive || apiCreated) {
+    await markGbpPostedAndArchive({ postDate: post.post_date, exitCode: result.exitCode, runId: post.run_id, env, log, force: apiCreated });
+  }
+  if (apiGate) {
+    await apiGate.report(gbpGateKindForResult(result.exitCode, parsed), { post, message: map.error, exitCode: result.exitCode });
   }
   return map.status;
 }
@@ -301,10 +414,10 @@ export async function applyDriverResult({ supabase, post, result, env, log }) {
 // Run-time GBP for a freshly-approved run: curate photos (H:->E:), sync the Excel
 // workbook, stamp the approval gate for all days, post Day 1 immediately, mark
 // Days 2-7 scheduled.
-// deps: { supabase, runPhase, log, env, projectRoot, paths }
+// deps: { supabase, runPhase, log, env, projectRoot, paths, gbpMode?, apiGate? }
 //   paths: { photoPick, gbpPoster, seoAgentsExe }
 export async function runGbpForApprovedRun({ runId, gbpPosts, deps }) {
-  const { supabase, runPhase, log, env, projectRoot, paths } = deps;
+  const { supabase, runPhase, log, env, projectRoot, paths, apiGate } = deps;
 
   // 0. Curate (reads H:\, writes E:\, rewrites PHOTO_FILE in the schedule).
   if (fs.existsSync(paths.photoPick)) {
@@ -333,18 +446,33 @@ export async function runGbpForApprovedRun({ runId, gbpPosts, deps }) {
   }
 
   // 3. Post Day 1 now.
+  const gbpMode = deps.gbpMode || resolveGbpMode(env || {});
   const day1 = gbpPosts.find(p => p.day === 1);
   if (day1) {
     await log(runId, 'gbp', 'info', 'Posting Day 1 GBP immediately...');
     const r = await runPhase(runId, 'gbp', 'node', [paths.gbpPoster, '--date', day1.post_date], projectRoot);
-    const status = await applyDriverResult({ supabase, post: day1, result: r, env, log });
+    const status = await applyDriverResult({ supabase, post: day1, result: r, env, log, gbpMode, apiGate });
     await log(runId, 'gbp', status === 'posted' ? 'info' : 'warn', `Day 1 GBP → ${status} (exit ${r.exitCode})`);
   }
 
-  // 4. Schedule Days 2-7 natively (approval already stamped above).
   const later = gbpPosts
     .filter(p => p.day > 1)
     .sort((a, b) => a.day - b.day);
+
+  // 4a. API mode (G1): the Business Profile API has no scheduled posts, so Days
+  // 2-7 are marked `scheduled` with NO poster call; the daily tick (>= 09:00
+  // Central, once per day) publishes each row on its morning. Calling the API
+  // poster here would publish the whole week at once.
+  if (gbpMode === 'api') {
+    for (const post of later) {
+      await supabase.from('weekly_posts').update({ status: 'scheduled', error: null }).eq('id', post.id);
+      await log(runId, 'gbp', 'info', `Day ${post.day} ${post.post_date} → scheduled (API mode: the daily worker posts it at 09:00 CT)`);
+    }
+    await log(runId, 'gbp', 'info', `Days 2-7 scheduling: ${later.length} scheduled for the daily tick (API mode, no native scheduling)`);
+    return;
+  }
+
+  // 4b. Playwright mode: schedule Days 2-7 natively (approval already stamped above).
   let nativeCount = 0;
   let fallbackCount = 0;
   for (const post of later) {
@@ -398,7 +526,7 @@ export async function syncGbpRowToWorkbook({ post, env, log, runId }) {
 // Shifted/late-approved runs can leave today's row in Supabase but missing from the
 // workbook (driver: "No post found for date"). Restore the row from Supabase and
 // retry the driver once before giving up.
-export async function runDailyGbp({ supabase, runPhase, log, env, todayDate, gbpPosterPath, projectRoot, syncGbpRow = syncGbpRowToWorkbook }) {
+export async function runDailyGbp({ supabase, runPhase, log, env, todayDate, gbpPosterPath, projectRoot, syncGbpRow = syncGbpRowToWorkbook, gbpMode, apiGate }) {
   const { data: todayGbp } = await supabase
     .from('weekly_posts')
     .select('id, run_id, post_date, photo_file, status')
@@ -416,7 +544,7 @@ export async function runDailyGbp({ supabase, runPhase, log, env, todayDate, gbp
         result = await runPhase(post.run_id, 'gbp', 'node', [gbpPosterPath, '--date', post.post_date], projectRoot);
       }
     }
-    const status = await applyDriverResult({ supabase, post, result, env, log });
+    const status = await applyDriverResult({ supabase, post, result, env, log, gbpMode, apiGate });
     await log(post.run_id, 'gbp', status === 'error' ? 'error' : 'info', `Daily GBP ${post.post_date} → ${status} (exit ${result.exitCode})`);
   }
 }

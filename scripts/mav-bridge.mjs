@@ -29,11 +29,15 @@ import { sendHermesAlert } from './lib/hermes-alert.mjs';
 import { getSlackConfig, approvalBlocks, sendSlackBlocks } from './lib/slack-alert.mjs';
 import { approveAction, dismissAction } from './lib/slack-actions.mjs';
 import { makeRunPhase } from './lib/run-phase.mjs';
+import { resolveSeoAgentsExe } from './lib/platform-defaults.mjs';
+import { resolveGbpMode } from './lib/gbp-mode.mjs';
 import { runGbpForApprovedRun, runDailyGbp, centralDateHour } from './lib/gbp-runner.mjs';
 import { parseAfterTime, shouldRunFbBoostTick, decideBoostLaunch, summarizeBoostRun } from './lib/fb-boost-tick.mjs';
 import { fetchApprovedWebsiteTasks, executeNextWebsiteTask, sweepOrphanWebsiteTasks } from './lib/website-task-runner.mjs';
 import { liveRunStatus as deriveLiveRunStatus, countRunStatuses } from './lib/seo-run-status.mjs';
 import { MAX_JSON_BODY_BYTES, parseJsonBody } from './lib/http-json.mjs';
+import { resolveBind, bindWarning } from './lib/bridge-bind.mjs';
+import { pythonChildEnv } from './lib/child-env.mjs';
 
 const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -51,16 +55,13 @@ if (fs.existsSync(envPath)) {
 const SUPABASE_URL = process.env.SUPABASE_URL || '';
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY || '';
 const POLL_INTERVAL_MS = parseInt(process.env.MAV_BRIDGE_POLL_MS || '30000');
-const BRIDGE_PORT = parseInt(process.env.MAV_BRIDGE_PORT || '8790');
-const SEO_AGENTS_EXE = process.env.SEO_AGENTS_EXE
-  || [
-    path.join(PROJECT_ROOT, '.venv', 'Scripts', 'seo-agents.exe'),
-    path.join(PROJECT_ROOT, '.venv', 'bin', 'seo-agents'),
-    'C:\\Users\\carte\\AppData\\Local\\Programs\\Python\\Python312\\Scripts\\seo-agents.exe',
-  ].find((p) => fs.existsSync(p))
-  || path.join(PROJECT_ROOT, '.venv', 'Scripts', 'seo-agents.exe');
+// F13: an unspecified bind (0.0.0.0 / ::) throws here unless MAV_BRIDGE_ALLOW_ANY=1,
+// so a misconfigured .env stops the bridge before any route is reachable.
+const BRIDGE_BIND = resolveBind(process.env);
+const { host: BRIDGE_HOST, port: BRIDGE_PORT } = BRIDGE_BIND;
+const SEO_AGENTS_EXE = resolveSeoAgentsExe({ projectRoot: PROJECT_ROOT });
 const PENDING_PROMPT_FILE = path.join(PROJECT_ROOT, 'outputs', 'pending_prompt.json');
-const GBP_MODE = (process.env.GBP_POSTER || 'api').toLowerCase();
+const GBP_MODE = resolveGbpMode();
 const GBP_POSTER_PATH = GBP_MODE === 'playwright'
   ? path.join(PROJECT_ROOT, 'scripts', 'gbp-poster', 'driver.mjs')
   : path.join(PROJECT_ROOT, 'scripts', 'gbp-api-poster.mjs');
@@ -1397,6 +1398,7 @@ async function handleHttpRequest(req, res) {
     await log(null, 'bridge', 'info', `Kicking off facebook-schedule: days=${safeDays}${startDate ? ` start=${startDate}` : ''}`);
     execFileAsync(SEO_AGENTS_EXE, args, {
       cwd: PROJECT_ROOT,
+      env: pythonChildEnv(),
       timeout: 30 * 60 * 1000,
       encoding: 'utf8',
       windowsHide: true,
@@ -1459,6 +1461,7 @@ async function handleHttpRequest(req, res) {
 
 console.log(`[mav-bridge] Starting — polling Supabase every ${POLL_INTERVAL_MS / 1000}s`);
 console.log(`[mav-bridge] Project root: ${PROJECT_ROOT}`);
+console.log(`[mav-bridge] GBP_POSTER=${GBP_MODE} → ${path.basename(GBP_POSTER_PATH)} (MAV_BRIDGE_GBP=${GBP_ON ? 'on' : 'off'})`);
 
 const httpServer = http.createServer((req, res) => {
   handleHttpRequest(req, res).catch(e => {
@@ -1470,8 +1473,13 @@ const httpServer = http.createServer((req, res) => {
     try { sendJsonHttp(res, status, { error, hop: 'mav-bridge' }); } catch {}
   });
 });
-httpServer.listen(BRIDGE_PORT, '127.0.0.1', () => {
-  console.log(`[mav-bridge] HTTP server listening on http://127.0.0.1:${BRIDGE_PORT}`);
+httpServer.listen(BRIDGE_PORT, BRIDGE_HOST, () => {
+  console.log(`mav-bridge listening on ${BRIDGE_HOST}:${BRIDGE_PORT}`);
+  const warning = bindWarning(BRIDGE_BIND);
+  if (warning) {
+    console.error(`[mav-bridge] ${warning}`);
+    log(null, 'bridge', 'warn', warning).catch(() => {});
+  }
 });
 
 poll(); // run immediately on start

@@ -17,6 +17,8 @@ Rowlett across the DFW metroplex; geography is a first-class selection input.
   without a `now` fallback parameter.
 - Modules never write outside `outputs/shadow/`, `state/weekly/`, and the file store dir passed
   in. Nothing in this package ever writes to `weekly_posts` or `website_tasks` in S1–S3.
+  Phase C (`--mode new`, below) is the one exception: `run.mjs` exports to `outputs/` and
+  `lib/project.mjs` writes the publisher tables, and only in that mode.
 - Never print secrets. Never log token values or full API keys.
 - Each module: pure functions plus at most one I/O entry point. Tests under
   `scripts/weekly/test/<module>.test.mjs`, fixtures under `scripts/weekly/test/fixtures/`.
@@ -146,3 +148,88 @@ Pre-written. Fields: `services[]` (`key`, `label`, `priority` 1–5, `query_temp
 
 Every implementer and reviewer ends with a structured report: files created or changed, test
 command and counts, lint result, and any deviation from this contract with the reason.
+
+## Wave 2/3 interface notes (added by lane A, sole writer)
+
+The orchestrator, the wrapper (`scripts/run-weekly-seo.py`) and the watchdog
+(`scripts/seo-watchdog.mjs`, `scripts/seo-monitor.mjs`) depend on these hand-off surfaces.
+Names and shapes are binding; changing one is a material change (see the freeze table in
+`FRIDAY-RUNBOOK.md`).
+
+- **Alert receipt (T1)** — `lib/notify.mjs`: `notifyAttempt({ store, attempt, event, message,
+  now })` → `{ sent, channel, reason, skipped? }`, idempotent per attempt+event, event ∈
+  `succeeded|degraded|failed`. The delivery receipt is the attempt stage `notify:<event>`
+  (`status: ok|failed`; on success its `error` field carries the channel — `via
+  hermes+smtp`; on failure it carries the reason). `formatAttemptMessage` carries topic,
+  item counts, validation result, runtime, spend and the summary path. `--notify` is passed
+  for `shadow` only, so a rehearsal never touches an alert channel.
+- **Attempt identity (T6)** — `<outDir>/current-attempt.json` from `lib/attempt.mjs`
+  (`publishAttemptIdentity`/`readAttemptIdentity`): `{ attempt_id, week_of, mode, status,
+  started_at, finished_at, lease_until, updated_at }`, published at attempt creation and
+  refreshed at finish; a killed run leaves it `running`. It is the wrapper's finalization
+  guard, and it deliberately carries no `stages` — the receipt stays in the attempt record,
+  which the wrapper must therefore be able to read locally after the run.
+- **Attempt-derived health block** — `outputs/weekly-runner-health.json` → `shadow`
+  (`outputs/<rehearsal>/weekly-runner-health.json` in rehearsal): `{ status, mode, source:
+  'attempt', launched_at, at, week_of, log_file, child?, attempt_id?, started_at?,
+  finished_at?, runtime_s?, spent_usd?, budget_usd?, error?, notify_expected, notify }`.
+  `status` is the attempt record's own status, or the pre-launch `running` marker, or
+  `failed (no attempt written)` / `failed (stale attempt)` / `failed (killed at the
+  deadline)`. Legacy health keys are preserved alongside it.
+- **Memory freshness** — `outputs/reconcile-health.json` from `scripts/weekly/reconcile.mjs`:
+  `{ status, last_attempt_at, last_success_at, started_at, duration_ms, counts, error }`.
+  Only a clean pass advances `last_success_at`, and that is the only freshness the watchdog
+  reads (never table rows); a dry run writes nothing.
+- **Normalization call sites** — `lib/validate.mjs` exports two pure plan normalizers that
+  `run.mjs` calls before validation **and** render: `normalizeBoostPlan(plan, policy)` →
+  `{ plan, warnings }` (T12 deterministic boost arithmetic) and
+  `downgradeCarousels(plan)` → `{ plan, warnings }` (T14 every `carousel` → `photo`).
+
+## Phase C: `--mode new` (cutover, T21)
+
+`MODES = ['shadow', 'new', 'offline']` in `run.mjs`; `LIVE_MODES = ['shadow', 'new']`
+(live collectors, real model, preflight probe); `NOTIFY_MODES = ['shadow', 'new']` (`--notify`
+sends; offline never does); `SUPABASE_REQUIRED_MODES = ['new']`.
+
+- **Store** — `selectStore` picks Supabase for both live modes; for `new` a missing
+  `SUPABASE_URL`/`SUPABASE_SERVICE_KEY` throws `StoreRefused` (`exitCode 2`) instead of the
+  shadow file-store fallback. The store is selected before the model key check and before the
+  metered preflight, so a refused run spends nothing and records nothing.
+- **Exports** — `stage.mjs` `EXPORT_MODES = ['shadow', 'new', 'offline']`;
+  `DEFAULT_EXPORT_DIRS.new = OUTPUTS_DIR` (shadow/offline keep `SHADOW_DIR`). The seven export
+  files are identical in layout to shadow's; only the directory differs, because the legacy
+  consumers (`gbp-photo-pick`, `sync-gbp-schedule`, `facebook-poster`, `fb-boost-ledger`,
+  `fb-photo-pick`) read `outputs/*_posting_schedule.md`. `resolveOptions` defaults `--out` to
+  `outputs/` and `--legacy-dir` to none in `new`.
+- **Projection** — `run.mjs` passes a `project` callback into `stagePlan` only in `new`.
+  `stagePlan` invokes it after the revision + items are stored and only when
+  `validation.ok`; the callback runs as its own attempt stage `project` (ok/failed) and calls
+  `projectPlan({ supabase, plan, revisionId, items, now, allowLive: true, autoApprove:
+  SEO_AUTO_APPROVE === '1', log })`. The result (`{ runId, posts, tasks, linked, approved }` plus
+  `attempt_id`, `revision_id`, `week_of`, `auto_approve`, `projected_at`) is mirrored to
+  `<out>/projection.json` (`MIRROR_FILES.projection`) and passed to `formatAttemptMessage` as
+  `projection` so the alert states what reached the MCC gate. A thrown projection fails the
+  `project` and `stage` stages and the attempt; nothing retries it.
+- **Row shapes** are `lib/project.mjs`'s and mirror `supabase-sync.mjs` exactly; the publishers
+  (mav-bridge, gbp-worker) are unchanged.
+- **Budget** — `config/weekly-policy.json` `budget_usd` is `5` (was 20); `WEEKLY_BUDGET_USD`
+  and `--budget-usd` still override, in that order.
+- **Wrapper** — `scripts/run-weekly-seo.py`: `PIPELINE_MODES = ('shadow', 'new', 'offline')`;
+  `SEO_PIPELINE=new` routes `main()` to `run_new_pipeline()` before any crew work (no crew
+  preflight probe, no research/execute/schedule crews, no `supabase-sync`), launches
+  `run.mjs --mode new --store state/weekly --out outputs --notify [--week-of]` (the Monday from
+  `outputs/week_spec.json` only when it lies in the next seven days) under
+  `PIPELINE_TIMEOUT_S` (`SEO_PIPELINE_TIMEOUT_MIN`, else `SEO_SHADOW_TIMEOUT_MIN`, else 30 min),
+  then writes the top-level health fields (`status` success|failed, `date`, `topic`,
+  `returncode`, `error`) from the attempt block, re-merges the `shadow` block, and writes
+  `outputs/approval-notify.json` from the attempt's `notify:<event>` receipt and
+  `projection.json` so the legacy NOTIFY MISS / AUTO-APPROVE rules keep working. `legacy` and
+  `shadow` wrapper paths are unchanged.
+- **Reconcile health** — `scripts/weekly/reconcile.mjs` exports `runReconcile`/`writeHealth`
+  (entry guarded); `outputs/reconcile-health.json` is written on success (`last_success_at`
+  advances) and on every failure path (`status: 'failed'`, `last_error`, previous
+  `last_success_at` carried forward); a dry run writes nothing.
+- **Tests** — `test/e2e-new-mode.test.mjs` (publisher contract against a fake store and an
+  in-memory Supabase fake, legacy-parser parity of the exports, store refusal, notify receipts in
+  shadow and new), `test/reconcile-health.test.mjs`, and `tests/test_cutover_new_mode.py`
+  (wrapper never invokes the crew runner in `new`).

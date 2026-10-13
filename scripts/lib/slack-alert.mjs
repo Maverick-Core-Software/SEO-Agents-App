@@ -30,13 +30,27 @@ function readEnvFile(filePath) {
   }
 }
 
-export function getSlackConfig(env = process.env, hermesEnv = null) {
-  // Passing an env object is deliberately hermetic for tests/callers. Runtime
-  // bridge calls use the default process.env and may read Hermes' local config.
-  const fallback = hermesEnv ?? (env === process.env ? readEnvFile(HERMES_ENV_PATH) : {});
-  const token = env.SLACK_BOT_TOKEN || fallback.SLACK_BOT_TOKEN || '';
-  const channel = env.SLACK_ALERT_CHANNEL || fallback.SLACK_ALERT_CHANNEL || fallback.SLACK_HOME_CHANNEL || '';
+// Core resolver. Env is always primary. The Hermes-owned %LOCALAPPDATA% file is
+// read only on win32 and only when env leaves a value unset. Injected `readFile`
+// and `platform` make the no-file-read guarantee testable on any host.
+export function _resolveSlackConfig(env = process.env, platform = process.platform, readFile = () => ({})) {
+  let token = env.SLACK_BOT_TOKEN || '';
+  let channel = env.SLACK_ALERT_CHANNEL || '';
+  if (platform === 'win32' && (!token || !channel)) {
+    const fallback = readFile() || {};
+    token = token || fallback.SLACK_BOT_TOKEN || '';
+    channel = channel || fallback.SLACK_ALERT_CHANNEL || fallback.SLACK_HOME_CHANNEL || '';
+  }
   return { enabled: Boolean(token && channel), token, channel };
+}
+
+export function getSlackConfig(env = process.env, hermesEnv = null) {
+  // An injected hermesEnv is the fallback source (hermetic tests). Otherwise the
+  // real Hermes file is read only for the default process.env on win32. Any other
+  // env object gets no file fallback.
+  if (hermesEnv) return _resolveSlackConfig(env, 'win32', () => hermesEnv);
+  if (env === process.env) return _resolveSlackConfig(env, process.platform, () => readEnvFile(HERMES_ENV_PATH));
+  return _resolveSlackConfig(env, 'hermetic', () => ({}));
 }
 
 const BUTTON_LABELS = {

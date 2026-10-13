@@ -1,0 +1,31 @@
+== probe run3 20:16:54Z
+accountmanagement v1     200                        
+                         ^^ 200 OK: {
+  "accounts": [
+    {
+      "name": "accounts/102812174257783632337",
+      "type
+legacy v4 (gated)        404                        
+                         msg: HTML error page (route not served)
+v4 $discovery            404  NOT_FOUND             
+businessinformation v1   400  INVALID_ARGUMENT      
+performance v1           400  INVALID_ARGUMENT      
+qanda v1                 404                        
+                         msg: HTML error page (route not served)
+verifications v1         404  NOT_FOUND             
+
+--- token sanity ---
+business.manage scope: yes
+
+VERDICT: still gated (v4 404s). Leave GBP_POSTER on playwright.
+accounts list 200 count= 1
+  accounts/102812174257783632337  type=PERSONAL  role=  verification=UNVERIFIED
+    locations 200 count=1 
+      locations/14305368671018787381  "Grizzly Electrical Solutions"
+businessinformation v1 locations   404  NOT_FOUND Requested entity was not found.
+v4 accounts list                   404  non-JSON (<!DOCTYPE html> <html lang=en> <meta c…)
+v4 locations list                  404  non-JSON (<!DOCTYPE html> <html lang=en> <meta c…)
+bizinfo v1 location        200  name,title,metadata
+v4 localPosts list         200  localPosts=3
+v4 location get            404  non-JSON <!DOCTYPE html> <html lang=en>
+performance v1 metrics     200  timeSeries

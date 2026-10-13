@@ -22,8 +22,16 @@ from pathlib import Path
 from typing import Any
 
 from seo_agents.crew import OUTPUT_DIR, PROJECT_ROOT
+from seo_agents.paths import LEGACY_WIN_WEBSITE_REPO, resolve_default
 
-WEBSITE_REPO_DIR = Path(os.getenv("WEBSITE_REPO_DIR", r"C:\Workspace\Active\Grizzly Launch\grizzly-website"))
+# Sibling checkout of the website repo (../grizzly-website from this repo). The LXC needs a
+# clone there plus a git identity and credential for commits/pushes (owner item).
+# Override with WEBSITE_REPO_DIR.
+WEBSITE_REPO_DIR = resolve_default(
+    "WEBSITE_REPO_DIR",
+    PROJECT_ROOT.parent / "grizzly-website",
+    legacy_win=LEGACY_WIN_WEBSITE_REPO,
+)
 WEBSITE_BRANCH = os.getenv("WEBSITE_BRANCH", "master")
 WEBSITE_SITE_URL = os.getenv("WEBSITE_SITE_URL", "https://www.grizzlyelectricaltx.com/").rstrip("/") + "/"
 WEBSITE_GIT_TIMEOUT_S = int(os.getenv("WEBSITE_GIT_TIMEOUT_S", "120"))

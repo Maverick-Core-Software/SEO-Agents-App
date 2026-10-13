@@ -18,8 +18,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const CAPTION_MAX = 1500;
-const IMAGE_MIN_BYTES = 10240;
-const IMAGE_EXTS = new Set(['.jpg', '.jpeg', '.png']);
+export const IMAGE_MIN_BYTES = 10240;
+export const IMAGE_EXTS = new Set(['.jpg', '.jpeg', '.png']);
+// Sources GBP's uploader rejects as-is. A conversion-capable caller judges the
+// CONVERTED artifact (its name and its byte length); nobody ships these raw.
+export const IMAGE_CONVERT_EXTS = new Set(['.heic', '.heif']);
 
 // Phone patterns: (469) 863-9804 / 469-863-9804 / 469.863.9804 / 4698639804 /
 // +1 469 863 9804 / 863-9804 / vanity 555-555-TREE.
@@ -45,6 +48,30 @@ const BANNED_WORDS = /\b(sex\w*|fuck\w*|shit\w*|bitch\w*|damn(ed|it)?|porn\w*|nu
 // Regulated goods/services (restricted content policy). An electrical
 // contractor's posts should never mention these; any hit is a red flag.
 const REGULATED = /\b(alcohol|beer|wine|liquor|vodka|whiskey|tobacco|cigarettes?|vapes?|vaping|cannabis|marijuana|cbd|kratom|guns?|firearms?|ammo|ammunition|casinos?|gambling|lottery|betting|pharmacy|pharmaceutical|prescription|opioids?)\b/i;
+
+/**
+ * GBP image policy on its own, for the photo resolvers and picker: only the
+ * FINAL artifact (JPG/PNG, >= 10 KB) is something GBP accepts. When the artifact
+ * only exists in memory (a just-converted HEIC), pass the destination name and
+ * the converted byte length so the converted bytes are what gets judged.
+ * @param {string} imagePath path/name the artifact would be uploaded under
+ * @param {{sizeBytes?: number}} [opts] converted size, when not on disk
+ * @returns {{rule: string, detail: string}[]} violations (empty = compliant)
+ */
+export function checkImagePolicy(imagePath, { sizeBytes } = {}) {
+    const violations = [];
+    const ext = path.extname(String(imagePath || '')).toLowerCase();
+    if (!IMAGE_EXTS.has(ext)) {
+        violations.push({ rule: 'image-format', detail: `Image extension "${ext}" — GBP reliably accepts only JPG/PNG.` });
+    }
+    const size = sizeBytes === undefined
+        ? (fs.existsSync(imagePath) ? fs.statSync(imagePath).size : null)
+        : sizeBytes;
+    if (size !== null && size < IMAGE_MIN_BYTES) {
+        violations.push({ rule: 'image-too-small', detail: 'Image is under 10 KB — below Google\'s minimum for post photos.' });
+    }
+    return violations;
+}
 
 /**
  * Validate a post payload against Google's post content policy.
@@ -114,13 +141,7 @@ export function checkPostPolicy(payload, opts = {}) {
     }
 
     if (payload.imagePath) {
-        const ext = path.extname(payload.imagePath).toLowerCase();
-        if (!IMAGE_EXTS.has(ext)) {
-            violations.push({ rule: 'image-format', detail: `Image extension "${ext}" — GBP reliably accepts only JPG/PNG.` });
-        }
-        if (fs.existsSync(payload.imagePath) && fs.statSync(payload.imagePath).size < IMAGE_MIN_BYTES) {
-            violations.push({ rule: 'image-too-small', detail: `Image is under 10 KB — below Google's minimum for post photos.` });
-        }
+        violations.push(...checkImagePolicy(payload.imagePath));
     }
 
     return violations;

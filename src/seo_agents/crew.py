@@ -14,6 +14,8 @@ from crewai_tools import ScrapeWebsiteTool, SerpApiGoogleSearchTool
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field, PrivateAttr
 
+from seo_agents.paths import default_gbp_photo_dir
+
 
 class TaskCompletion(BaseModel):
     """One completed (or blocked) execution-queue task. Field names match what
@@ -54,7 +56,9 @@ def structured_completions_enabled() -> bool:
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PROMPT_DIR = PROJECT_ROOT / "prompts" / "agents"
 BASELINE_DIR = PROJECT_ROOT / "knowledge" / "baselines"
-OUTPUT_DIR = PROJECT_ROOT / "outputs"
+# SEO_OUTPUT_DIR overrides the repo-relative outputs folder (same rule as evidence.py),
+# so the crew and the evidence writer never disagree about where a run lands.
+OUTPUT_DIR = Path(os.getenv("SEO_OUTPUT_DIR") or (PROJECT_ROOT / "outputs"))
 ARCHIVE_DIR = OUTPUT_DIR / "archive"
 
 DEFAULT_SITE_URL = "https://www.grizzlyelectricaltx.com/"
@@ -157,7 +161,10 @@ def _serper_key_valid() -> bool:
 
 def build_tools() -> list:
     tools = [ScrapeWebsiteTool()]
-    if _serper_key_valid():
+    # The legacy SerpApi tool is skipped by default (thin SERP data is accepted,
+    # 2026-09-24 decision): opt back in with SEO_LEGACY_SERPAPI=1.
+    legacy_serpapi = os.getenv("SEO_LEGACY_SERPAPI", "").strip().lower() in {"1", "true", "yes", "on"}
+    if legacy_serpapi and _serper_key_valid():
         try:
             tools.insert(0, SerpApiGoogleSearchTool())
         except Exception:
@@ -1032,7 +1039,7 @@ def build_poster_crew(
     """
     exec_llm = build_exec_llm()
 
-    photo_path = os.getenv("GBP_PHOTO_PATH", r"C:\Workspace\Shared\Assets\Media\Grizzly\GBP Post Photos")
+    photo_path = os.getenv("GBP_PHOTO_PATH") or str(default_gbp_photo_dir())
     photo_dir = Path(photo_path)
     manifest_path = photo_dir / "gbp-photo-manifest.csv"
 
@@ -1182,7 +1189,7 @@ def build_facebook_crew(
     """
     exec_llm = build_exec_llm()
 
-    photo_path = os.getenv("GBP_PHOTO_PATH", r"C:\Workspace\Shared\Assets\Media\Grizzly\GBP Post Photos")
+    photo_path = os.getenv("GBP_PHOTO_PATH") or str(default_gbp_photo_dir())
     photo_dir = Path(photo_path)
     manifest_path = photo_dir / "gbp-photo-manifest.csv"
 

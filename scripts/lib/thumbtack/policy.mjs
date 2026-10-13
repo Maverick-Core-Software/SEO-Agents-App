@@ -9,7 +9,7 @@ const INTERNAL_LANGUAGE = [
   /<\/?(?:think|analysis|tool)[^>]*>/i,
 ];
 
-export const CUSTOMER_FALLBACK = "I'm sorry — I'm having trouble on my end right now. Please give our office a call at (469) 863-9804 and we'll take care of you from there.";
+export const CUSTOMER_FALLBACK = "I'm sorry — I'm having trouble on my end right now. Please give our office a call at (469) 716-9870 and we'll take care of you from there.";
 
 export function getThumbtackAutomationStatus({
   autoReplyEnabled,

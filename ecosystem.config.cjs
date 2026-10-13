@@ -1,4 +1,5 @@
 // PM2 process definition for the Facebook comment agent.
+// Linux/AIWA equivalent (cutover B4): deploy/aiwa/ecosystem.linux.config.cjs
 // Secrets come from .env (loaded by the script itself) — never hardcode here.
 module.exports = {
   apps: [
@@ -25,6 +26,8 @@ module.exports = {
       // timed out at launchPersistentContext on 2026-09-11 after the PC was locked
       // the night before). The task-launched instance still starts each morning
       // and exits at once on the single-instance pidfile lock.
+      // launched by Task Scheduler since 2026-09-25; do not pm2 start
+      // autorestart is off so pm2 never relaunches it next to the Task Scheduler instance.
       name: 'gbp-worker',
       // gbp-worker-service.mjs sets argv[1] then imports gbp-worker.mjs; pm2's fork
       // wrapper otherwise trips the worker's import-safe guard and it never starts.
@@ -32,7 +35,7 @@ module.exports = {
       cwd: 'C:\\Workspace\\Active\\SEO-Agents-App',
       interpreter: 'node',
       watch: false,
-      autorestart: true,
+      autorestart: false,
       max_restarts: 10,
       restart_delay: 15000,
       log_date_format: 'YYYY-MM-DD HH:mm:ss',

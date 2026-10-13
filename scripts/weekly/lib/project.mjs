@@ -75,7 +75,8 @@ export function websiteActionToTaskRow(action, runId, { revisionId = null, taskI
       source: 'weekly',
       revision_id: revisionId,
       task_id: taskId,
-      draft: action.draft || null,
+      // T20 / root decision 10: title + description only at projection. The
+      // HTML draft is deferred as a known gap; it stays on the plan item.
       source_ids: action.source_ids || [],
     },
     status: action.owner_gate ? 'waiting_on_owner' : 'pending_approval',
@@ -97,7 +98,15 @@ export function planToRows(plan, runId, { revisionId = null } = {}) {
  * run's pending rows, insert the new ones, then optionally auto-approve through
  * the existing autoApproveRun (compare-and-set with rollback).
  *
- * @returns {Promise<{ runId, posts, tasks, approved }>}
+ * `items` are the revision's plan items. Each is linked to the row that was
+ * inserted for it (T19): posts by (platform, post_date), website actions by plan
+ * order — `planToRows` writes one task per action in plan order and stage.mjs
+ * numbers the plan items in that same order. `projected_ref` always holds the
+ * inserted row's id; a platform id (a Facebook/GBP post id) is never stored
+ * there, it lives on weekly_posts.platform_post_id. No performance row is written
+ * here: GBP metrics stay absent until a real measurement exists, never zero-filled.
+ *
+ * @returns {Promise<{ runId, posts, tasks, linked, approved }>}
  */
 export async function projectPlan({ supabase, plan, revisionId = null, items = [], now = new Date(), allowLive = false, autoApprove = false, autoApproveImpl = null, log = () => {} }) {
   if (!allowLive) throw new Error('projectPlan: refused (allowLive is false); only --mode new may project into weekly_posts / website_tasks');
@@ -118,12 +127,15 @@ export async function projectPlan({ supabase, plan, revisionId = null, items = [
     ? (must(await supabase.from('website_tasks').insert(tasks).select('id, title'), 'website_tasks insert') || [])
     : [];
 
-  // Link plan items to the projected rows so reconcile can copy status back.
+  // Link plan items to the projected rows so reconcile can copy status back (T19).
   const byKey = new Map(insertedPosts.map((r) => [`${r.platform}|${String(r.post_date).slice(0, 10)}`, r.id]));
+  const websiteRefs = insertedTasks.map((r) => r.id);
   let linked = 0;
+  let websiteIndex = 0;
   for (const item of items) {
-    if (item.platform === 'website' || !item.slot_date) continue;
-    const ref = byKey.get(`${item.platform}|${item.slot_date}`);
+    const ref = item.platform === 'website'
+      ? (websiteRefs[websiteIndex++] ?? null)
+      : (item.slot_date ? byKey.get(`${item.platform}|${item.slot_date}`) ?? null : null);
     if (!ref) continue;
     must(await supabase.from('plan_items').update({ projected_ref: ref }).eq('id', item.id), 'plan_items link');
     linked += 1;

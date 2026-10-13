@@ -32,7 +32,7 @@ End your report with: [END:GBP]
 ## Business Context
 - Business: Grizzly Electrical Solutions
 - Address: 8902 Merritt Rd. Rowlett, TX 75089
-- Phone: (469) 863-9804
+- Phone: (469) 716-9870
 - Service area: DFW — McKinney to Waxahachie, Rockwall to West Fort Worth
 - Primary services: electrical troubleshooting, panel replacement, service upgrades, EV charger installation, recessed lighting, generator installs, remodel electrical, light commercial
 

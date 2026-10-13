@@ -1,0 +1,12 @@
+[Unit]
+Description=Grizzly SEO watchdog, daily 10:00 America/Chicago
+
+[Timer]
+OnCalendar=*-*-* 10:00:00 America/Chicago
+AccuracySec=1s
+# Daily: if the host was down at 10:00, run once on the next boot (matches StartWhenAvailable).
+Persistent=true
+Unit=seo-watchdog.service
+
+[Install]
+WantedBy=timers.target

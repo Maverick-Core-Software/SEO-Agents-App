@@ -67,6 +67,7 @@ from seo_agents.status import (
 )
 from seo_agents.website import apply_edit, website_adapter_status
 from seo_agents.observability import emit_research_complete
+from seo_agents.paths import default_gbp_photo_dir
 
 
 RESEARCH_OUTPUTS = [
@@ -92,8 +93,11 @@ _PHASE_LABELS = {
 }
 
 
+# HERMES_CLI overrides. Default: the Windows venv on nt, `hermes` on PATH elsewhere.
 _DEFAULT_HERMES_CLI = (
     r"C:\Users\carte\AppData\Local\hermes\hermes-agent\venv\Scripts\hermes.exe"
+    if os.name == "nt"
+    else "hermes"
 )
 
 
@@ -849,7 +853,7 @@ def _run_execute_pipeline() -> None:
         print(gbp_result)
         schedule_path = OUTPUT_DIR / "gbp_posting_schedule.md"
         _require_fresh_schedule(schedule_path, 7, "GBP", kickoff1)
-        photo_path = os.getenv("GBP_PHOTO_PATH", r"C:\Workspace\Shared\Assets\Media\Grizzly\GBP Post Photos")
+        photo_path = os.getenv("GBP_PHOTO_PATH") or str(default_gbp_photo_dir())
         archived_photos = archive_used_photos(schedule_path, Path(photo_path))
         if archived_photos:
             print(f"📁 Archived {len(archived_photos)} photo(s) to Archive folder")
@@ -1122,10 +1126,7 @@ def main() -> None:
             schedule_path = OUTPUT_DIR / "gbp_posting_schedule.md"
             print(f"\n✅ GBP posting schedule saved to: {schedule_path}")
             # Archive used photos and update manifest
-            photo_path = os.getenv(
-                "GBP_PHOTO_PATH",
-                r"C:\Workspace\Shared\Assets\Media\Grizzly\GBP Post Photos"
-            )
+            photo_path = os.getenv("GBP_PHOTO_PATH") or str(default_gbp_photo_dir())
             archived = archive_used_photos(schedule_path, Path(photo_path))
             if archived:
                 print(f"📁 Archived {len(archived)} photo(s) to Archive folder and updated manifest:")

@@ -47,7 +47,7 @@ Exact current keys at any time:
 - Single `<style>` block (~line 135) with CSS variables: --ink #0c0b0a backgrounds, --paper #f3efe6 text, --red #d63c14 brand red. Fonts Barlow Condensed (headings) / Barlow (body) / Instrument Serif (italic `<em>` accents). Alternating dark/light sections via the `on-light` class.
 - Scroll animations use `class="reveal"` plus an optional `style="--d:.15s"` delay — never remove them. (The old data-reveal attributes are gone.)
 - Business hours appear in TWO places: the contact section Hours block (~line 1031) AND the JSON-LD openingHoursSpecification in local-schema (~line 50). An hours change must update both (the adapter flags this in its run notes).
-- Main phone (469) 863-9804 appears in: meta/OG descriptions (head), local-schema, header, nav overlay, hero CTA, emergency section, contact section, footer NAP, and the form toast (~line 1102). Text line (469) 896-3862 appears in: nav overlay, sms-strip, the "Are quotes really free?" FAQ answer, and faq-schema.
+- Main phone (469) 716-9870 appears in: meta/OG descriptions (head), local-schema, header, nav overlay, hero CTA, emergency section, contact section, footer NAP, and the form toast (~line 1102). Text line (469) 896-3862 appears in: nav overlay, sms-strip, the "Are quotes really free?" FAQ answer, and faq-schema.
 - The reviews section cards and the local-schema `review` array carry the same 6 reviews — change one, change both.
 - Service rows in #services link to the standalone service-page directories; keep hrefs valid when renaming pages (sitemap.xml lists all 31 URLs).
 - Blog pages are self-contained (own head, fonts, styles); the homepage nav overlay and footer both link to /blog/.

@@ -2,23 +2,34 @@
 /**
  * run.mjs — orchestrator CLI for the weekly content pipeline (scripts/weekly).
  *
- *   node scripts/weekly/run.mjs --mode shadow|offline [--week-of YYYY-MM-DD] [--now ISO]
+ *   node scripts/weekly/run.mjs --mode shadow|new|offline [--week-of YYYY-MM-DD] [--now ISO]
  *        [--store <dir>] [--out <dir>] [--budget-usd N] [--fixtures <dir>]
  *        [--legacy-dir <dir>] [--photos-dir <dir>] [--notify]
  *
  * Order (DESIGN.md, "integrator"): attempt → collect (every collector in parallel
  * with Promise.allSettled) → select → generate → validate (one regeneration with
  * the errors appended, then fail) → stage → compare (shadow, when legacy outputs
- * exist) → finish. Every stage is wrapped with stageStart/stageEnd; any throw
- * marks the attempt failed and exits 1; unavailable collectors degrade the run
- * instead of stopping it. Exit 0 on `succeeded` or `degraded`.
+ * exist) → finish. A live mode probes the pinned model once, tiny and metered,
+ * before the attempt record exists (T7). Every stage is wrapped with
+ * stageStart/stageEnd; any throw marks the attempt failed and exits 1;
+ * unavailable collectors degrade the run instead of stopping it. Exit 0 on
+ * `succeeded` or `degraded`.
  *
  * `offline` runs the whole chain with no network: fixture collectors and a fake
  * LLM that answers with a canned ModelPlan (test/fixtures/e2e). `shadow` runs the
  * live collectors and DeepSeek, stores to Supabase when SUPABASE_URL and
  * SUPABASE_SERVICE_KEY are set (else the file store, with a warning) and always
- * mirrors the attempt, revision, observations and summary into --out. Nothing
- * here writes weekly_posts or website_tasks.
+ * mirrors the attempt, revision, observations and summary into --out. Neither
+ * of those modes writes weekly_posts or website_tasks.
+ *
+ * `new` is the live cutover mode (Phase C): the same chain as `shadow`, but the
+ * store must be Supabase (no file-store fallback: the run is refused with exit 2
+ * when SUPABASE_URL / SUPABASE_SERVICE_KEY are missing), the legacy Markdown
+ * schedules are exported to outputs/ (the --out default) where the legacy
+ * photo-pick, workbook-sync and poster scripts read them, and the staged
+ * revision is projected into seo_runs / weekly_posts / website_tasks through
+ * lib/project.mjs (`projectPlan`, allowLive) so mav-bridge and gbp-worker
+ * consume it unchanged. SEO_AUTO_APPROVE=1 auto-approves the projected run.
  *
  * `runWeekly(options, deps)` is the library entry the e2e test drives in-process;
  * `main()` only runs when this file is the entry point.
@@ -35,30 +46,46 @@ import { LeaseHeld, ValidationFailed } from './lib/errors.mjs';
 import { ModelPlanSchema, ObservationSchema, SCHEMA_VERSION, parseOrIssues } from './lib/schemas.mjs';
 import { addDays, computeWeekSpec, parseDate, weekSpecForWeekOf } from './lib/week-spec.mjs';
 import { createCostMeter } from './lib/cost-meter.mjs';
-import { createLlmClient } from './lib/llm.mjs';
+import { createLlmClient, preflightModel } from './lib/llm.mjs';
 import { loadFacts } from './lib/facts.mjs';
 import { createFileStore } from './lib/store.mjs';
 import { createSupabaseStore } from './lib/store-supabase.mjs';
-import { createAttempt, errorText, finishAttempt, readGitSha, stageEnd, stageStart } from './lib/attempt.mjs';
+import { CURRENT_ATTEMPT_FILE, createAttempt, errorText, finalizeAbandonedAttempt, finishAttempt, publishAttemptIdentity, readGitSha, stageEnd, stageStart } from './lib/attempt.mjs';
 import { collectSearchConsole } from './lib/collectors/search-console.mjs';
 import { collectFacebook } from './lib/collectors/facebook.mjs';
-import { buildSerpQueries, collectSerp } from './lib/collectors/serpapi.mjs';
+import { buildSerpQueries, collectSerp, NOTE_QUOTA_EXHAUSTED } from './lib/collectors/serpapi.mjs';
 import {
   POSTS_TABLE, TASKS_TABLE, collectHistory, postObservation, summaryObservation, taskObservation,
   unavailableObservation as historyUnavailable, chicagoDate,
 } from './lib/collectors/history.mjs';
 import { rankCandidates } from './lib/select.mjs';
 import { buildGenerationInput, generatePlan, promptVersion } from './lib/generate.mjs';
-import { validatePlan } from './lib/validate.mjs';
+import { downgradeCarousels, normalizeBoostPlan, validatePlan } from './lib/validate.mjs';
 import { renderFacebookSchedule, renderGbpSchedule, renderPlanSummary, renderWebsiteQueue } from './lib/render.mjs';
-import { exportPaths, stagePlan } from './lib/stage.mjs';
+import { exportPaths, failedExportDir, stagePlan } from './lib/stage.mjs';
 import { LEGACY_FILES, compareWithLegacy, redactSecrets } from './lib/compare.mjs';
 import { formatAttemptMessage, notifyAttempt } from './lib/notify.mjs';
+import { projectPlan } from './lib/project.mjs';
 import { defaultGbpPhotoDirs, existingPhotoSearchDirs } from '../lib/gbp-paths.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-export const MODES = Object.freeze(['shadow', 'offline']);
+export const MODES = Object.freeze(['shadow', 'new', 'offline']);
+/** Modes that run the live collectors and the real model (everything but offline). */
+export const LIVE_MODES = Object.freeze(['shadow', 'new']);
+/** Modes in which --notify sends the attempt-bound alert (a rehearsal never does). */
+export const NOTIFY_MODES = Object.freeze(['shadow', 'new']);
+/** Modes whose store must be Supabase; a missing configuration refuses the run instead of falling back. */
+export const SUPABASE_REQUIRED_MODES = Object.freeze(['new']);
+
+/** Thrown by selectStore when a mode that must use Supabase has no configuration; the CLI exits 2. */
+export class StoreRefused extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'StoreRefused';
+    this.exitCode = 2;
+  }
+}
 export const OFFLINE_MODEL = 'offline-fixture';
 export const DEFAULT_FIXTURES_DIR = path.join(__dirname, 'test', 'fixtures', 'e2e');
 /** Where an offline run keeps its state and exports, away from the live week's lease and shadow files. */
@@ -80,25 +107,34 @@ export const MIRROR_FILES = Object.freeze({
   observations: 'observations.jsonl',
   meter: 'meter.json',
   compare: 'compare.md',
+  /** new mode only: what projectPlan wrote (run id, row counts, links, auto-approve verdict). */
+  projection: 'projection.json',
 });
 export const COLLECTOR_NAMES = Object.freeze(['search_console', 'facebook', 'serpapi', 'history']);
 export const PRIOR_WINNER_WEEKS = 2;
 
 const IMAGE_RE = /\.(jpe?g|png|webp)$/i;
 const USAGE = [
-  'usage: node scripts/weekly/run.mjs --mode shadow|offline [options]',
+  'usage: node scripts/weekly/run.mjs --mode shadow|new|offline [options]',
   '',
-  '  --mode shadow|offline   shadow: live collectors + DeepSeek, Supabase store when configured',
+  '  --mode shadow|new|offline',
+  '                          shadow: live collectors + DeepSeek, Supabase store when configured',
+  '                          new: live cutover — Supabase store required (exit 2 without it), legacy',
+  '                               schedules exported to outputs/, plan projected into weekly_posts /',
+  '                               website_tasks (SEO_AUTO_APPROVE=1 auto-approves the run)',
   '                          offline: fixture collectors + canned plan, no network (the e2e path)',
   '  --week-of YYYY-MM-DD    plan this Monday week (default: the week for --now / today, Chicago)',
   '  --now ISO               fixed clock for every timestamp and window (default: the wall clock)',
   '  --store <dir>           file store root (default: state/weekly; offline: state/weekly/offline)',
-  '  --out <dir>             export dir (default: outputs/shadow; offline: outputs/shadow/offline)',
+  '  --out <dir>             export dir (default: outputs/shadow; new: outputs; offline: outputs/shadow/offline)',
   '  --budget-usd N          spend ceiling (default: WEEKLY_BUDGET_USD, then policy.budget_usd)',
   '  --fixtures <dir>        offline fixtures (default: scripts/weekly/test/fixtures/e2e)',
-  '  --legacy-dir <dir>      legacy outputs to compare against (default: outputs; offline: skip unless given)',
+  '  --legacy-dir <dir>      legacy outputs to compare against (default: outputs in shadow; new/offline: skip unless given)',
   '  --photos-dir <dir>      photo inventory (default: the GBP photo folders from scripts/lib/gbp-paths.mjs)',
-  '  --notify                shadow only: send the Hermes/SMTP attempt alert',
+  '  --notify                shadow and new: send the Hermes/SMTP attempt alert',
+  '  --force-replan          new: replace this week\'s pending_approval rows (refused otherwise when',
+  '                          seo_runs(week_of) exists; never overrides approved/executing/done runs',
+  '                          or non-pending weekly_posts rows)',
   '  -h, --help              this text',
 ].join('\n');
 
@@ -120,7 +156,7 @@ const VALUE_FLAGS = {
   '--legacy-dir': 'legacyDir',
   '--photos-dir': 'photosDir',
 };
-const BOOL_FLAGS = { '--notify': 'notify', '--help': 'help', '-h': 'help' };
+const BOOL_FLAGS = { '--notify': 'notify', '--force-replan': 'forceReplan', '--help': 'help', '-h': 'help' };
 
 /** Parse argv (without node and the script path). Throws on an unknown or valueless flag. */
 export function parseArgs(argv = []) {
@@ -148,15 +184,21 @@ export function resolveOptions(options = {}) {
   const mode = options.mode;
   if (!MODES.includes(mode)) throw new Error(`--mode must be one of ${MODES.join(', ')} (got ${mode === undefined ? 'nothing' : JSON.stringify(mode)})\n${USAGE}`);
   const offline = mode === 'offline';
+  const live = mode === 'new';
+  // new: the legacy consumers (gbp-photo-pick, sync-gbp-schedule, facebook-poster,
+  // fb-boost-ledger, fb-photo-pick) read outputs/*_posting_schedule.md, so the
+  // export dir is outputs/ itself; there is no legacy run to compare against.
+  const defaultOut = offline ? OFFLINE_OUT_DIR : (live ? OUTPUTS_DIR : SHADOW_DIR);
   return {
     ...options,
     mode,
     storeDir: path.resolve(options.storeDir || (offline ? OFFLINE_STORE_DIR : STATE_DIR)),
-    outDir: path.resolve(options.outDir || (offline ? OFFLINE_OUT_DIR : SHADOW_DIR)),
+    outDir: path.resolve(options.outDir || defaultOut),
     fixturesDir: path.resolve(options.fixturesDir || DEFAULT_FIXTURES_DIR),
-    legacyDir: options.legacyDir ? path.resolve(options.legacyDir) : (offline ? null : OUTPUTS_DIR),
+    legacyDir: options.legacyDir ? path.resolve(options.legacyDir) : ((offline || live) ? null : OUTPUTS_DIR),
     photosDir: options.photosDir ? path.resolve(options.photosDir) : null,
     notify: Boolean(options.notify),
+    forceReplan: Boolean(options.forceReplan),
   };
 }
 
@@ -436,20 +478,86 @@ export function createFixtureLlm({ planPath, meter = null, model = OFFLINE_MODEL
 /**
  * offline → file store at storeDir. shadow → Supabase store when both env vars
  * are set (an injected client is used when given), else the file store with a
- * warning. Returns { store, kind, supabase }.
+ * warning. new → Supabase store, and a missing configuration is refused with
+ * StoreRefused (exit 2): a live run that silently fell back to the file store
+ * would stage a week nothing publishes. Returns { store, kind, supabase }.
  */
 export function selectStore({ mode, storeDir, env = process.env, deps = {}, warn = noop }) {
   if (deps.store) return { store: deps.store, kind: 'injected', supabase: deps.supabase || null };
-  if (mode === 'shadow') {
+  if (LIVE_MODES.includes(mode)) {
     const url = env.SUPABASE_URL;
     const key = env.SUPABASE_SERVICE_KEY;
     if (url && key) {
       const client = deps.supabase || createClient(url, key);
       return { store: createSupabaseStore(client), kind: 'supabase', supabase: client };
     }
-    warn(`SUPABASE_URL / SUPABASE_SERVICE_KEY not set; shadow run uses the file store at ${storeDir}`);
+    if (SUPABASE_REQUIRED_MODES.includes(mode)) {
+      throw new StoreRefused(`SUPABASE_URL / SUPABASE_SERVICE_KEY not set; --mode ${mode} requires the Supabase store and never falls back to the file store (set both in .env, or run --mode shadow / --mode offline)`);
+    }
+    warn(`SUPABASE_URL / SUPABASE_SERVICE_KEY not set; ${mode} run uses the file store at ${storeDir}`);
   }
   return { store: createFileStore(storeDir), kind: 'file', supabase: deps.supabase || null };
+}
+
+/** seo_runs statuses a `new` run must never replan over, --force-replan or not. */
+export const RERUN_BLOCKING_RUN_STATUSES = Object.freeze(['approved', 'executing', 'done']);
+
+/** Thrown by checkRerunGuard; the CLI exits 2 (refused) before any attempt record exists. */
+export class RerunRefused extends Error {
+  constructor(message, details = {}) {
+    super(message);
+    this.name = 'RerunRefused';
+    Object.assign(this, details);
+  }
+}
+
+/**
+ * V4 rerun guard (new mode). Refuses — always — when seo_runs(week_of) is
+ * approved/executing/done or when any non-pending weekly_posts row exists for
+ * that week's run(s); refuses an existing pending run unless --force-replan,
+ * which only lets projectPlan replace the pending_approval rows (it deletes
+ * nothing else). A week with no seo_runs row passes. Runs before the attempt
+ * record is created, so a refused rerun leaves no trace in the store.
+ */
+export async function checkRerunGuard({ supabase, weekOf, forceReplan = false, log = noop }) {
+  if (!supabase) throw new TypeError('checkRerunGuard: supabase client is required');
+  const runsRes = await supabase.from('seo_runs').select('id, status').eq('week_of', weekOf);
+  if (runsRes.error) throw new Error(`rerun guard: seo_runs lookup failed: ${runsRes.error.message || runsRes.error}`);
+  const runs = Array.isArray(runsRes.data) ? runsRes.data : [];
+  if (!runs.length) return { weekOf, runs: 0, pending: 0, nonPending: 0, replan: false };
+
+  const blocking = runs.filter((r) => RERUN_BLOCKING_RUN_STATUSES.includes(String(r.status || '').toLowerCase()));
+  if (blocking.length) {
+    throw new RerunRefused(
+      `seo_runs ${blocking[0].id} for week ${weekOf} is ${blocking[0].status}; a replan would duplicate an approved week (--force-replan does not override this)`,
+      { code: 'run_status', weekOf, runs },
+    );
+  }
+  let pending = 0;
+  const nonPending = [];
+  for (const run of runs) {
+    const rowsRes = await supabase.from('weekly_posts').select('id, status, platform, post_date').eq('run_id', run.id);
+    if (rowsRes.error) throw new Error(`rerun guard: weekly_posts lookup failed: ${rowsRes.error.message || rowsRes.error}`);
+    for (const row of (Array.isArray(rowsRes.data) ? rowsRes.data : [])) {
+      if (String(row.status || '').toLowerCase() === 'pending_approval') pending += 1;
+      else nonPending.push(row);
+    }
+  }
+  if (nonPending.length) {
+    const seen = [...new Set(nonPending.map((r) => r.status))].join(', ');
+    throw new RerunRefused(
+      `week ${weekOf} already has ${nonPending.length} weekly_posts row(s) past pending_approval (${seen}); refusing to replan over approved or published posts (--force-replan does not override this)`,
+      { code: 'rows', weekOf, runs, nonPending: nonPending.length },
+    );
+  }
+  if (!forceReplan) {
+    throw new RerunRefused(
+      `seo_runs ${runs[0].id} for week ${weekOf} already exists (${runs[0].status}, ${pending} pending_approval row(s)); pass --force-replan to replace the pending rows`,
+      { code: 'exists', weekOf, runs, pending },
+    );
+  }
+  log(`rerun guard: --force-replan for week ${weekOf}: ${pending} pending_approval row(s) will be replaced by the projection; no approved or published rows exist`);
+  return { weekOf, runs: runs.length, pending, nonPending: 0, replan: true };
 }
 
 /** Winners of the last `weeks` weeks from stored revisions (validation.ok only), newest revision per week. */
@@ -496,6 +604,19 @@ export function formatRunSummary(result) {
     lines.push(`${pad('validate', 10)}${validation.ok ? 'ok' : 'FAILED'} — ${validation.errors.length} error(s), ${validation.warnings.length} warning(s)`);
     for (const e of validation.errors.slice(0, 5)) lines.push(`${pad('', 10)}- ${e}`);
   }
+  // T12: a rewritten boost allocation changes published numbers, so it is stated
+  // in the summary even when the plan validated clean. T14: a downgraded carousel
+  // changes the post type, so it is stated as well.
+  const boostWarnings = result.boostWarnings || [];
+  if (boostWarnings.length) {
+    lines.push(`${pad('boost', 10)}${boostWarnings.length} boost normalizer warning(s)`);
+    for (const w of boostWarnings.slice(0, 2)) lines.push(`${pad('', 10)}- ${w}`);
+  }
+  const carouselWarnings = result.carouselWarnings || [];
+  if (carouselWarnings.length) {
+    lines.push(`${pad('carousel', 10)}${carouselWarnings.length} downgraded to photo`);
+    for (const w of carouselWarnings.slice(0, 2)) lines.push(`${pad('', 10)}- ${w}`);
+  }
   const stages = Object.entries(attempt.stages || {}).map(([name, s]) => `${name} ${s.status}`);
   if (stages.length) lines.push(`${pad('stages', 10)}${stages.join(' · ')}`);
   const written = Object.values(paths).filter(Boolean);
@@ -520,14 +641,32 @@ async function writeText(file, text) {
   await fsp.writeFile(file, text, 'utf8');
 }
 
-/** The plan's degraded flag is a fact about the inputs; code owns it, the model only explains it. */
-function applyDegraded(plan, selection, reason) {
-  if (!plan || !plan.notes) return plan;
-  if (selection && selection.degraded && !plan.notes.degraded) {
-    plan.notes.degraded = true;
-    plan.notes.degraded_reason = plan.notes.degraded_reason || reason;
+/**
+ * SerpApi source availability/quota evidence (Lane S3): the collector's
+ * `quota_exhausted` marker, or a SerpApi source set that produced no ok
+ * observation at all. Returns the reason to degrade the plan, or null.
+ */
+function serpDegradedReason(availability = {}, observations = []) {
+  const a = (availability && availability.serpapi) || { ok: 0, unavailable: 0, error: 0 };
+  const failed = Number(a.unavailable || 0) + Number(a.error || 0);
+  if (observations.some((o) => o && o.source === 'serpapi'
+    && typeof o.note === 'string' && o.note.includes(NOTE_QUOTA_EXHAUSTED))) {
+    return 'SerpApi quota exhausted; this run carries no SERP evidence';
   }
-  if (plan.notes.degraded && !plan.notes.degraded_reason) plan.notes.degraded_reason = reason;
+  if (!a.ok && (failed > 0 || observations.some((o) => o && o.source === 'serpapi'))) {
+    return `SerpApi returned no usable results (${a.unavailable} unavailable, ${a.error} error); this run carries no SERP evidence`;
+  }
+  return null;
+}
+
+/** The plan's degraded flag is a fact about the inputs; code owns it, the model only explains it. */
+function applyDegraded(plan, selection, reason, sourceReason = null) {
+  if (!plan || !plan.notes) return plan;
+  if ((selection && selection.degraded) || sourceReason) {
+    if (!plan.notes.degraded) plan.notes.degraded = true;
+    plan.notes.degraded_reason = plan.notes.degraded_reason || sourceReason || reason;
+  }
+  if (plan.notes.degraded && !plan.notes.degraded_reason) plan.notes.degraded_reason = sourceReason || reason;
   return plan;
 }
 
@@ -556,20 +695,59 @@ export async function runWeekly(options = {}, deps = {}) {
   const meter = createCostMeter({ ceilingUsd: budgetUsd, pricing: policy.pricing || {} });
   const model = offline ? OFFLINE_MODEL : (env.WEEKLY_MODEL || (policy.models && policy.models.generate) || 'deepseek-chat');
 
+  // Store first: a mode that must use Supabase is refused here, before the
+  // model key is checked and before the metered preflight probe spends anything.
+  const { store, kind: storeKind, supabase } = selectStore({ mode: opts.mode, storeDir: opts.storeDir, env, deps, warn });
+
+  // V4: a live week that already reached the publisher tables is not replanned
+  // by accident. Runs before the attempt exists; RerunRefused exits 2.
+  if (opts.mode === 'new') {
+    if (!supabase) throw new StoreRefused('--mode new needs the Supabase client for the rerun guard and the projection; none was configured or injected');
+    const guard = await checkRerunGuard({ supabase, weekOf: weekSpec.week_of, forceReplan: opts.forceReplan, log });
+    if (guard.replan) warn(`replanning week ${weekSpec.week_of}: ${guard.pending} pending_approval row(s) will be replaced`);
+  }
+
   let llm = deps.llm || null;
   if (!llm) {
     if (offline) {
       llm = createFixtureLlm({ planPath: path.join(opts.fixturesDir, FIXTURE_FILES.plan), meter, model });
     } else {
       const apiKey = env.DEEPSEEK_API_KEY;
-      if (!apiKey) throw new Error('DEEPSEEK_API_KEY is not set; shadow mode needs the DeepSeek key (or run --mode offline)');
+      if (!apiKey) throw new Error(`DEEPSEEK_API_KEY is not set; ${opts.mode} mode needs the DeepSeek key (or run --mode offline)`);
       llm = createLlmClient({ apiKey, model, meter, fetchImpl: deps.fetchImpl });
     }
   }
 
-  const { store, kind: storeKind, supabase } = selectStore({ mode: opts.mode, storeDir: opts.storeDir, env, deps, warn });
+  // T7: one tiny metered probe of the pinned model, before the attempt record
+  // exists — a pinned id the provider no longer serves is visible up front
+  // instead of as a failed week. Offline runs use a fixture and skip it.
+  let preflight = null;
+  if (!offline) {
+    preflight = await preflightModel({ llm, meter });
+    if (preflight.ok) {
+      log(`preflight: ${preflight.requested} → ${preflight.served}`);
+      if (preflight.served !== preflight.requested) warn(`preflight: the API served ${preflight.served} for the pinned ${preflight.requested}`);
+      for (const issue of preflight.issues) warn(`preflight: ${issue.path || '(root)'}: ${issue.message}`);
+    } else {
+      warn(`preflight failed: ${preflight.error}`);
+    }
+  }
+
   const collectors = deps.collectors
     || (offline ? createFixtureCollectors(opts.fixturesDir) : createLiveCollectors({ policy, env, meter, supabase, fetchImpl: deps.fetchImpl }));
+
+  // The identity of whatever run last used this export dir.
+  const identityFile = path.join(opts.outDir, CURRENT_ATTEMPT_FILE);
+  // A killed or timed-out run cannot finalize itself (a kill is uncatchable on
+  // Windows), so the next run finalizes the abandoned attempt the published
+  // identity names before taking the lease — otherwise that dead attempt still
+  // holds the week's lease and refuses this run.
+  try {
+    const reaped = await finalizeAbandonedAttempt({ store, identityFile, now });
+    if (reaped) log(`reaped abandoned attempt ${reaped.id}: marked failed, lease released`);
+  } catch (e) {
+    warn(`could not finalize the abandoned attempt: ${redactSecrets(errorText(e))}`);
+  }
 
   const attempt = await createAttempt({
     store,
@@ -582,19 +760,72 @@ export async function runWeekly(options = {}, deps = {}) {
     budgetUsd,
   });
   log(`attempt ${attempt.id} (${opts.mode}, week of ${weekSpec.week_of}, store ${storeKind}, budget $${budgetUsd})`);
+  // The preflight ran before this record existed; its outcome is written here so
+  // a failed probe is visible on the attempt and in the meter entry (T7).
+  if (preflight) {
+    try {
+      await stageEnd(store, attempt, 'preflight', preflight.ok ? {} : { error: preflight.error }, clock());
+    } catch (e) {
+      warn(`could not record the preflight stage: ${redactSecrets(errorText(e))}`);
+    }
+  }
+  // Publish the identity before any work starts (T6): the wrapper checks the
+  // attempt record it reads against this file and never patches a foreign
+  // attempt. A run killed mid-flight leaves this file saying `running`.
+  try {
+    publishAttemptIdentity(identityFile, attempt, clock());
+  } catch (e) {
+    warn(`could not publish ${identityFile}: ${redactSecrets(errorText(e))}`);
+  }
 
   const result = {
     attempt, weekSpec, storeKind, observations: [], history: null, selection: null, plan: null,
     validation: null, revision: null, compare: null, availability: {}, paths: {}, spentUsd: 0, llmCalls: 0,
+    boostWarnings: [], carouselWarnings: [], projection: null, notify: null,
   };
   const retrievedAt = now.toISOString();
   const outPaths = exportPaths(opts.outDir);
-  const mirror = {
-    revision: path.join(opts.outDir, MIRROR_FILES.revision),
-    observations: path.join(opts.outDir, MIRROR_FILES.observations),
-    meter: path.join(opts.outDir, MIRROR_FILES.meter),
-    compare: path.join(opts.outDir, MIRROR_FILES.compare),
-  };
+  const mirrorPathsFor = (dir) => ({
+    revision: path.join(dir, MIRROR_FILES.revision),
+    observations: path.join(dir, MIRROR_FILES.observations),
+    meter: path.join(dir, MIRROR_FILES.meter),
+    compare: path.join(dir, MIRROR_FILES.compare),
+    projection: path.join(dir, MIRROR_FILES.projection),
+  });
+  const mirror = mirrorPathsFor(opts.outDir);
+
+  // new mode: the projection stagePlan invokes once the revision is stored (and
+  // only for a plan that passed validation). It is its own stage on the attempt
+  // so a failed projection is visible as `project failed`, never as a staged
+  // week that quietly reached no publisher. SEO_AUTO_APPROVE=1 approves the
+  // projected run through the legacy autoApproveRun compare-and-set.
+  const autoApprove = env.SEO_AUTO_APPROVE === '1';
+  const project = opts.mode === 'new'
+    ? async ({ plan: validPlan, revision, items, now: at }) => {
+      await stageStart(store, attempt, 'project', clock());
+      try {
+        const projection = await projectPlan({
+          supabase, plan: validPlan, revisionId: revision.id, items, now: at, allowLive: true, autoApprove,
+          log: (m) => log(`project: ${m}`),
+        });
+        result.projection = {
+          ...projection,
+          attempt_id: attempt.id,
+          revision_id: revision.id,
+          week_of: validPlan.week_of,
+          auto_approve: autoApprove,
+          projected_at: at.toISOString(),
+        };
+        await writeJson(mirror.projection, result.projection);
+        result.paths.projection = mirror.projection;
+        await stageEnd(store, attempt, 'project', {}, clock());
+        log(`project: seo_runs ${projection.runId} — ${projection.posts} post(s), ${projection.tasks} task(s), ${projection.linked} linked${autoApprove ? `, auto-approve ${projection.approved && projection.approved.ok ? 'ok' : `refused (${(projection.approved && projection.approved.reason) || 'unknown'})`}` : ''}`);
+      } catch (e) {
+        await stageEnd(store, attempt, 'project', { error: e }, clock());
+        throw e;
+      }
+    }
+    : undefined;
 
   let failure = null;
   try {
@@ -633,14 +864,36 @@ export async function runWeekly(options = {}, deps = {}) {
     const degradedReason = missing.length
       ? `unavailable this run: ${missing.join(', ')}; demand and opportunity fell back to policy defaults`
       : 'selection ran on partial data';
+    // Source availability/quota evidence, not inferred from the selection: the
+    // selection can stay un-degraded while SerpApi answered with nothing.
+    const serpReason = serpDegradedReason(result.availability, result.observations);
     const input = buildGenerationInput({ facts, selection, weekSpec, photos, history, policy });
-    let plan = applyDegraded(await generatePlan(input, { llm, meter, attemptId: attempt.id }), selection, degradedReason);
+    let plan = applyDegraded(await generatePlan(input, { llm, meter, attemptId: attempt.id }), selection, degradedReason, serpReason);
     result.llmCalls += 1;
     await stageEnd(store, attempt, 'generate', {}, clock());
 
     // ── validate (one regeneration with the errors appended) ─────────────
     await stageStart(store, attempt, 'validate', clock());
     const validateCtx = { facts, weekSpec, photos, history, policy };
+    // T12: the deterministic boost normalizer runs before BOTH validation and
+    // render. It preserves the model's YES choices exactly and only rewrites the
+    // arithmetic; anything it cannot express exactly is left for the validator to
+    // fail, so nothing is silently accepted.
+    const normalizeBoosts = (candidate) => {
+      const { plan: normalized, warnings } = normalizeBoostPlan(candidate, policy);
+      for (const w of warnings) log(`boost: ${w}`);
+      result.boostWarnings.push(...warnings);
+      return normalized;
+    };
+    // T14: every carousel becomes a photo before validation and render (the
+    // singular-photo schema cannot prove two attached photos), with a warning.
+    const normalizePlan = (candidate) => {
+      const { plan: downgraded, warnings } = downgradeCarousels(normalizeBoosts(candidate));
+      for (const w of warnings) log(`carousel: ${w}`);
+      result.carouselWarnings.push(...warnings);
+      return downgraded;
+    };
+    plan = normalizePlan(plan);
     let validation = validatePlan(plan, validateCtx);
     if (!validation.ok) {
       log(`validate: ${validation.errors.length} error(s); regenerating once`);
@@ -649,7 +902,7 @@ export async function runWeekly(options = {}, deps = {}) {
         task: `${input.task} A previous plan for this same request failed validation; every problem is listed under previous_attempt.validation_errors. Fix all of them and keep everything else within the rules.`,
         previous_attempt: { validation_errors: validation.errors, validation_warnings: validation.warnings, plan },
       };
-      plan = applyDegraded(await generatePlan(retryInput, { llm, meter, attemptId: attempt.id }), selection, degradedReason);
+      plan = normalizePlan(applyDegraded(await generatePlan(retryInput, { llm, meter, attemptId: attempt.id }), selection, degradedReason, serpReason));
       result.llmCalls += 1;
       validation = validatePlan(plan, validateCtx);
     }
@@ -670,9 +923,9 @@ export async function runWeekly(options = {}, deps = {}) {
       website: renderWebsiteQueue(plan),
       summary: renderPlanSummary(plan, selection, attempt),
     };
-    const revision = await stagePlan({ store, attempt, plan, selection, validation, rendered, mode: opts.mode, now: clock(), outDir: opts.outDir });
+    const revision = await stagePlan({ store, attempt, plan, selection, validation, rendered, mode: opts.mode, now: clock(), outDir: opts.outDir, project });
     result.revision = revision;
-    result.paths = { ...outPaths };
+    result.paths = { ...outPaths, ...(result.paths.projection ? { projection: result.paths.projection } : {}) };
     await stageEnd(store, attempt, 'stage', {}, clock());
     log(`stage: revision ${revision.id} → ${opts.outDir}`);
     if (validationError) throw validationError;
@@ -709,35 +962,82 @@ export async function runWeekly(options = {}, deps = {}) {
     warn(`finishAttempt failed: ${redactSecrets(errorText(e))}`);
     if (!failure) failure = e;
   }
+  // Refresh the identity so the wrapper can tell a finished attempt from one that
+  // was killed (status stays `running` when finishAttempt itself did not land).
+  try {
+    publishAttemptIdentity(identityFile, attempt, clock());
+  } catch (e) {
+    warn(`could not refresh ${identityFile}: ${redactSecrets(errorText(e))}`);
+  }
 
   // Mirror the final records into --out (stage.mjs wrote the mid-run snapshot).
+  // V5: a new-mode attempt that failed before its projection succeeded mirrors
+  // into outputs/shadow/failed-<attempt>/ instead, so outputs/ holds nothing of
+  // a week the publishers never received. attempt.json is still written to
+  // --out as well: the wrapper derives the attempt health from that mirror.
+  const failedDir = opts.mode === 'new' && failure && !result.projection ? failedExportDir(opts.outDir, attempt.id) : null;
+  const finalPaths = failedDir ? exportPaths(failedDir) : outPaths;
+  const finalMirror = failedDir ? mirrorPathsFor(failedDir) : mirror;
+  if (failedDir) {
+    result.paths = { ...finalPaths };
+    log(`failed before projection: attempt artifacts kept under ${failedDir}`);
+  }
   try {
-    if (result.revision || fs.existsSync(opts.outDir)) {
+    if (result.revision || fs.existsSync(opts.outDir) || failedDir) {
       await writeJson(outPaths.attempt, attempt);
       result.paths.attempt = outPaths.attempt;
-      if (result.revision) { await writeJson(mirror.revision, result.revision); result.paths.revision = mirror.revision; }
+      if (failedDir) await writeJson(finalPaths.attempt, attempt);
+      if (result.revision) { await writeJson(finalMirror.revision, result.revision); result.paths.revision = finalMirror.revision; }
       if (result.observations.length) {
-        await writeText(mirror.observations, result.observations.map((o) => JSON.stringify(o)).join('\n') + '\n');
-        result.paths.observations = mirror.observations;
+        await writeText(finalMirror.observations, result.observations.map((o) => JSON.stringify(o)).join('\n') + '\n');
+        result.paths.observations = finalMirror.observations;
       }
-      await writeJson(mirror.meter, { spent_usd: result.spentUsd, ceiling_usd: budgetUsd, entries: meter.entries() });
-      result.paths.meter = mirror.meter;
+      await writeJson(finalMirror.meter, { spent_usd: result.spentUsd, ceiling_usd: budgetUsd, entries: meter.entries() });
+      result.paths.meter = finalMirror.meter;
+      if (result.compare) {
+        // The report was built during the compare stage, before the attempt was
+        // finished, so it still said "running". Rebuild it from the final record
+        // (a rebuild failure leaves the stage-time report in place).
+        try {
+          const report = compareWithLegacy({
+            shadowDir: opts.outDir, outputsDir: opts.legacyDir, facts, weekSpec, policy, attempt, spentUsd: result.spentUsd, now: clock(),
+          });
+          await writeText(mirror.compare, report);
+          result.compare = report;
+        } catch (e) {
+          warn(`compare refresh failed: ${redactSecrets(errorText(e))}`);
+        }
+      }
       if (result.plan) {
-        await writeText(outPaths.summary, renderPlanSummary(result.plan, result.selection, attempt));
-        result.paths.summary = outPaths.summary;
+        await writeText(finalPaths.summary, renderPlanSummary(result.plan, result.selection, attempt));
+        result.paths.summary = finalPaths.summary;
       }
     }
   } catch (e) {
     warn(`mirror to ${opts.outDir} failed: ${redactSecrets(errorText(e))}`);
   }
 
-  if (opts.notify && opts.mode === 'shadow') {
+  // T1 receipt: notifyAttempt writes the `notify:<event>` stage on the attempt
+  // record (store + in-memory copy), and the mirror below re-writes attempt.json
+  // so the wrapper can lift the receipt into the health file after the run.
+  if (opts.notify && NOTIFY_MODES.includes(opts.mode)) {
     try {
-      const message = formatAttemptMessage({ attempt, event: finalStatus, plan: result.plan, summary: { path: result.paths.summary } });
-      const receipt = await notifyAttempt({ store, attempt, event: finalStatus, message, now: clock() });
+      const message = formatAttemptMessage({
+        attempt, event: finalStatus, plan: result.plan, validation: result.validation, summary: { path: result.paths.summary },
+        projection: result.projection,
+      });
+      const transports = deps.notifyTransports || {};
+      const receipt = await notifyAttempt({ store, attempt, event: finalStatus, message, now: clock(), ...transports });
+      result.notify = receipt;
       log(`notify: ${receipt.sent ? `sent via ${receipt.channel}` : `not sent (${receipt.reason})`}`);
     } catch (e) {
+      result.notify = { sent: false, channel: 'none', reason: errorText(e) };
       warn(`notify failed: ${redactSecrets(errorText(e))}`);
+    }
+    try {
+      if (result.paths.attempt) await writeJson(outPaths.attempt, attempt);
+    } catch (e) {
+      warn(`could not re-mirror the attempt with its notify receipt: ${redactSecrets(errorText(e))}`);
     }
   }
 
@@ -779,6 +1079,10 @@ export async function main(argv = process.argv.slice(2)) {
     console.log(result.summary);
     return 0;
   } catch (e) {
+    if (e instanceof StoreRefused || e instanceof RerunRefused) {
+      console.error(`[weekly] refused: ${e.message}`);
+      return 2;
+    }
     if (e instanceof LeaseHeld) {
       console.error(`[weekly] refused: ${e.message} (attempt ${e.attempt_id || '?'} recorded as failed)`);
       return 1;
