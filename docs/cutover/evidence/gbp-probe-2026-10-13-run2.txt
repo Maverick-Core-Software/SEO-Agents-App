@@ -1,0 +1,49 @@
+accountmanagement v1     200                        
+                         ^^ 200 OK: {
+  "accounts": [
+    {
+      "name": "accounts/109390422554535998331",
+      "accountName": "Carter Barns",
+      "type
+legacy v4 (gated)        404                        
+                         msg: HTML error page (route not served)
+v4 $discovery            404  NOT_FOUND             
+businessinformation v1   400  INVALID_ARGUMENT      
+performance v1           400  INVALID_ARGUMENT      
+qanda v1                 404                        
+                         msg: HTML error page (route not served)
+verifications v1         404  NOT_FOUND             
+
+--- token sanity ---
+business.manage scope: yes
+
+VERDICT: still gated (v4 404s). Leave GBP_POSTER on playwright.
+node:internal/modules/esm/load:193
+    throw new ERR_UNSUPPORTED_ESM_URL_SCHEME(parsed, schemes);
+          ^
+
+Error [ERR_UNSUPPORTED_ESM_URL_SCHEME]: Only URLs with a scheme in: file, data, and node are supported by the default ESM loader. On Windows, absolute paths must be valid file:// URLs. Received protocol 'd:'
+    at throwIfUnsupportedURLScheme (node:internal/modules/esm/load:193:11)
+    at defaultLoadSync (node:internal/modules/esm/load:146:3)
+    at #loadAndMaybeBlockOnLoaderThread (node:internal/modules/esm/loader:802:12)
+    at #loadSync (node:internal/modules/esm/loader:834:53)
+    at ModuleLoader.load (node:internal/modules/esm/loader:783:26)
+    at ModuleLoader.loadAndTranslate (node:internal/modules/esm/loader:494:31)
+    at #getOrCreateModuleJobAfterResolve (node:internal/modules/esm/loader:560:36)
+    at afterResolve (node:internal/modules/esm/loader:607:52)
+    at ModuleLoader.getOrCreateModuleJob (node:internal/modules/esm/loader:613:12)
+    at ModuleJob.syncLink (node:internal/modules/esm/module_job:163:33) {
+  code: 'ERR_UNSUPPORTED_ESM_URL_SCHEME'
+}
+
+Node.js v24.19.0
+businessinformation v1 locations   200  
+v4 accounts list                   404  non-JSON (<!DOCTYPE html> <html lang=en> <meta c…)
+v4 locations list                  404  non-JSON (<!DOCTYPE html> <html lang=en> <meta c…)
+accounts list 200 count= 1
+  accounts/109390422554535998331  type=PERSONAL  role=  verification=UNVERIFIED
+    locations 200 count=0 
+== v4 retry 20:12:50Z
+businessinformation v1 locations   200  
+v4 accounts list                   404  non-JSON (<!DOCTYPE html> <html lang=en> <meta c…)
+v4 locations list                  404  non-JSON (<!DOCTYPE html> <html lang=en> <meta c…)
