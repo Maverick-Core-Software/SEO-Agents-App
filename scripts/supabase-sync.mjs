@@ -21,9 +21,10 @@ const PROJECT_ROOT = path.resolve(__dirname, '..');
 const APPROVAL_NOTIFY_STATE = path.join(PROJECT_ROOT, 'state', 'approval-notified.json');
 const APPROVAL_NOTIFY_RESULT = path.join(PROJECT_ROOT, 'outputs', 'approval-notify.json');
 
-// Load .env
+// Load .env (skipped when WEEKLY_SKIP_DOTENV=1, the hermetic-run opt-out shared
+// with scripts/weekly/lib/env.mjs; the weekly pipeline imports this module).
 const envPath = path.join(PROJECT_ROOT, '.env');
-if (fs.existsSync(envPath)) {
+if (process.env.WEEKLY_SKIP_DOTENV !== '1' && fs.existsSync(envPath)) {
   for (const line of fs.readFileSync(envPath, 'utf8').split(/\r?\n/)) {
     const m = line.match(/^([A-Z_][A-Z0-9_]*)=(.*)$/);
     if (m && !process.env[m[1]]) process.env[m[1]] = m[2].trim();

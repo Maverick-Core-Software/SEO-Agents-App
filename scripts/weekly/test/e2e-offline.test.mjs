@@ -32,6 +32,7 @@ import { buildSerpQueries, collectSerp } from '../lib/collectors/serpapi.mjs';
 import { POLICY_PATH, OUTPUTS_DIR, SHADOW_DIR, STATE_DIR } from '../lib/paths.mjs';
 // Legacy parsers (supabase-sync.mjs guards its CLI with invokedDirectly; importing only reads .env).
 import { parseFacebookSchedule, parseGbpSchedule, resolveWeekOf } from '../../supabase-sync.mjs';
+import { hermeticChildEnv, scrubProcessEnv } from './hermetic-env.mjs';
 
 const execFileP = promisify(execFile);
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -95,13 +96,17 @@ function scriptedLlm(mutators) {
 }
 const badPhone = (plan) => { plan.gbp[0].body += ' Call (214) 555-0199 today.'; };
 
+// Hermetic whatever the checkout's .env holds (see hermetic-env.mjs).
 let realFetch;
+let restoreEnv;
 before(() => {
+  restoreEnv = scrubProcessEnv();
   realFetch = globalThis.fetch;
   globalThis.fetch = () => { throw new Error('network reachable from the e2e test'); };
 });
 after(() => {
   globalThis.fetch = realFetch;
+  restoreEnv();
   for (const dir of tmpDirs) fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -644,7 +649,7 @@ describe('kill/timeout (T6)', () => {
     const child = spawn(process.execPath, ['--input-type=module', '-e', HANGING_CHILD], {
       cwd: PROJECT_ROOT,
       stdio: 'ignore',
-      env: { ...process.env, KILL_RUN_URL: pathToFileURL(RUN).href, KILL_NOW: NOW, KILL_STORE: storeDir, KILL_OUT: outDir },
+      env: hermeticChildEnv({ KILL_RUN_URL: pathToFileURL(RUN).href, KILL_NOW: NOW, KILL_STORE: storeDir, KILL_OUT: outDir }),
     });
     try {
       await waitFor(() => fs.existsSync(identityFile), 'the published attempt identity');
@@ -733,7 +738,7 @@ describe('CLI (subprocess)', () => {
     const outDir = path.join(tmp('cli-out'), 'shadow');
     const { stdout } = await execFileP(process.execPath, [
       RUN, '--mode', 'offline', '--now', NOW, '--store', storeDir, '--out', outDir, '--legacy-dir', LEGACY_DIR, '--budget-usd', '3',
-    ], { cwd: PROJECT_ROOT, timeout: 60_000 });
+    ], { cwd: PROJECT_ROOT, timeout: 60_000, env: hermeticChildEnv() });
     assert.match(stdout, /\[weekly\] attempt 2026-09-07-/);
     assert.match(stdout, /status succeeded/);
     assert.match(stdout, /of \$3\.00/);
@@ -744,16 +749,16 @@ describe('CLI (subprocess)', () => {
   });
 
   it('exit 2 on a usage error, 1 on a run error, 0 on --help', async () => {
-    const usage = await execFileP(process.execPath, [RUN, '--bogus'], { cwd: PROJECT_ROOT, timeout: 60_000 }).catch((e) => e);
+    const usage = await execFileP(process.execPath, [RUN, '--bogus'], { cwd: PROJECT_ROOT, timeout: 60_000, env: hermeticChildEnv() }).catch((e) => e);
     assert.equal(usage.code, 2);
     assert.match(usage.stderr, /unknown option --bogus/);
-    const mode = await execFileP(process.execPath, [RUN, '--mode', 'nope'], { cwd: PROJECT_ROOT, timeout: 60_000 }).catch((e) => e);
+    const mode = await execFileP(process.execPath, [RUN, '--mode', 'nope'], { cwd: PROJECT_ROOT, timeout: 60_000, env: hermeticChildEnv() }).catch((e) => e);
     assert.equal(mode.code, 2);
     assert.match(mode.stderr, /--mode must be one of shadow, new, offline/);
-    const monday = await execFileP(process.execPath, [RUN, '--mode', 'offline', '--week-of', '2026-09-08', '--store', tmp('cli-x'), '--out', tmp('cli-y')], { cwd: PROJECT_ROOT, timeout: 60_000 }).catch((e) => e);
+    const monday = await execFileP(process.execPath, [RUN, '--mode', 'offline', '--week-of', '2026-09-08', '--store', tmp('cli-x'), '--out', tmp('cli-y')], { cwd: PROJECT_ROOT, timeout: 60_000, env: hermeticChildEnv() }).catch((e) => e);
     assert.equal(monday.code, 1);
     assert.match(monday.stderr, /--week-of must be a Monday/);
-    const help = await execFileP(process.execPath, [RUN, '--help'], { cwd: PROJECT_ROOT, timeout: 60_000 });
+    const help = await execFileP(process.execPath, [RUN, '--help'], { cwd: PROJECT_ROOT, timeout: 60_000, env: hermeticChildEnv() });
     assert.match(help.stdout, /^usage: node scripts\/weekly\/run\.mjs/);
   });
 });
@@ -769,7 +774,7 @@ describe('junction alias (the scheduler path: C:\\Workspace -> D:\\Workspace)', 
     const moduleUrl = pathToFileURL(path.join(JUNCTION_ROOT, 'Active', 'SEO-Agents-App', 'scripts', 'weekly', 'lib', 'paths.mjs')).href;
     const { stdout } = await execFileP(process.execPath, [
       '--input-type=module', '-e', `const m = await import(${JSON.stringify(moduleUrl)}); console.log(JSON.stringify(m));`,
-    ], { cwd: JUNCTION_ROOT, timeout: 60_000 });
+    ], { cwd: JUNCTION_ROOT, timeout: 60_000, env: hermeticChildEnv() });
     const paths = JSON.parse(stdout.trim());
     assert.equal(paths.PROJECT_ROOT, PROJECT_ROOT, 'the alias resolves to the real repo root');
     assert.ok(!paths.PROJECT_ROOT.toUpperCase().startsWith('C:\\'), 'never the junction path');
@@ -782,7 +787,7 @@ describe('junction alias (the scheduler path: C:\\Workspace -> D:\\Workspace)', 
     const outDir = path.join(tmp('junction-out'), 'shadow');
     const { stdout } = await execFileP(process.execPath, [
       JUNCTION_RUN, '--mode', 'offline', '--now', NOW, '--store', storeDir, '--out', outDir, '--legacy-dir', LEGACY_DIR,
-    ], { cwd: JUNCTION_ROOT, timeout: 60_000 });
+    ], { cwd: JUNCTION_ROOT, timeout: 60_000, env: hermeticChildEnv() });
     assert.match(stdout, /status succeeded/);
     const files = fs.readdirSync(path.join(storeDir, 'attempts'));
     assert.equal(files.length, 1, 'exactly one attempt in the isolated store');

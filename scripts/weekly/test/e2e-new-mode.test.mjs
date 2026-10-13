@@ -31,6 +31,7 @@ import { OUTPUTS_DIR, PROJECT_ROOT, SHADOW_DIR } from '../lib/paths.mjs';
 import { parseFacebookSchedule, parseGbpSchedule, resolveWeekOf } from '../../supabase-sync.mjs';
 import { parseGbpScheduleMarkdown } from '../../sync-gbp-schedule.mjs';
 import { parseScheduleText } from '../../facebook-poster.mjs';
+import { hermeticChildEnv, scrubProcessEnv } from './hermetic-env.mjs';
 
 const execFileP = promisify(execFile);
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -55,13 +56,19 @@ function tmp(label = 'new') {
 }
 const readJson = (file) => JSON.parse(fs.readFileSync(file, 'utf8'));
 
+// Hermetic whatever the checkout's .env holds: the imports above can load it
+// into this process, so credentials are scrubbed before any test runs and
+// run.mjs's own loadEnv() is switched off (main() calls it in-process).
 let realFetch;
+let restoreEnv;
 before(() => {
+  restoreEnv = scrubProcessEnv();
   realFetch = globalThis.fetch;
   globalThis.fetch = () => { throw new Error('network reachable from the new-mode e2e test'); };
 });
 after(() => {
   globalThis.fetch = realFetch;
+  restoreEnv();
   for (const dir of tmpDirs) fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -420,16 +427,12 @@ describe('--mode new: store selection', () => {
     assert.equal(resolveOptions({ mode: 'shadow' }).outDir, SHADOW_DIR);
   });
 
-  // A subprocess inherits the real environment and run.mjs loads .env, so this
-  // case runs only where neither can supply Supabase credentials: a refused
-  // run must never be a live one by accident.
-  const liveEnvPossible = fs.existsSync(path.join(PROJECT_ROOT, '.env')) || Boolean(process.env.SUPABASE_URL);
-  it('CLI: exit 2 with the refusal when Supabase is not configured', { skip: liveEnvPossible && 'a .env or SUPABASE_URL is present; the subprocess could reach a live store' }, async () => {
+  // Hermetic child: explicit allowlisted env, WEEKLY_SKIP_DOTENV=1, no Supabase
+  // or LLM credentials. Runs the same whether or not the checkout has a .env.
+  it('CLI: exit 2 with the refusal when Supabase is not configured', async () => {
     const storeDir = tmp('cli-store');
     const outDir = tmp('cli-out');
-    const env = { ...process.env, DEEPSEEK_API_KEY: 'present-but-irrelevant' };
-    delete env.SUPABASE_URL;
-    delete env.SUPABASE_SERVICE_KEY;
+    const env = hermeticChildEnv({ DEEPSEEK_API_KEY: 'present-but-irrelevant' });
     const r = await execFileP(process.execPath, [RUN, '--mode', 'new', '--now', NOW, '--store', storeDir, '--out', outDir], { cwd: PROJECT_ROOT, timeout: 60_000, env }).catch((e) => e);
     assert.equal(r.code, 2);
     assert.match(r.stderr, /\[weekly\] refused: SUPABASE_URL \/ SUPABASE_SERVICE_KEY not set; --mode new requires the Supabase store/);
@@ -437,7 +440,7 @@ describe('--mode new: store selection', () => {
     assert.deepEqual(fs.readdirSync(outDir), []);
   });
 
-  it('main() maps StoreRefused to exit 2 in-process', { skip: liveEnvPossible && 'a .env or SUPABASE_URL is present' }, async () => {
+  it('main() maps StoreRefused to exit 2 in-process', async () => {
     const saved = { SUPABASE_URL: process.env.SUPABASE_URL, SUPABASE_SERVICE_KEY: process.env.SUPABASE_SERVICE_KEY, DEEPSEEK_API_KEY: process.env.DEEPSEEK_API_KEY };
     delete process.env.SUPABASE_URL;
     delete process.env.SUPABASE_SERVICE_KEY;
