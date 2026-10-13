@@ -125,10 +125,11 @@ def tail_crew_log(lines: int = 40) -> list:
 
 def _venv_python() -> Path:
     """The interpreter that has the crew installed: the venv first, else this one."""
-    for cand in (
-        PROJECT_ROOT / ".venv" / "Scripts" / "python.exe",  # Windows venv
-        PROJECT_ROOT / ".venv" / "bin" / "python",           # POSIX venv
-    ):
+    win_venv = PROJECT_ROOT / ".venv" / "Scripts" / "python.exe"  # Windows venv
+    posix_venv = PROJECT_ROOT / ".venv" / "bin" / "python"        # POSIX venv
+    # The platform's own venv first; the other layout is only a fallback.
+    candidates = (win_venv, posix_venv) if sys.platform == "win32" else (posix_venv, win_venv)
+    for cand in candidates:
         if cand.exists():
             return cand
     return Path(sys.executable)

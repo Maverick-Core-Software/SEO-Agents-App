@@ -14,6 +14,8 @@ from crewai_tools import ScrapeWebsiteTool, SerpApiGoogleSearchTool
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field, PrivateAttr
 
+from seo_agents.paths import default_gbp_photo_dir
+
 
 class TaskCompletion(BaseModel):
     """One completed (or blocked) execution-queue task. Field names match what
@@ -1035,7 +1037,7 @@ def build_poster_crew(
     """
     exec_llm = build_exec_llm()
 
-    photo_path = os.getenv("GBP_PHOTO_PATH", r"C:\Workspace\Shared\Assets\Media\Grizzly\GBP Post Photos")
+    photo_path = os.getenv("GBP_PHOTO_PATH") or str(default_gbp_photo_dir())
     photo_dir = Path(photo_path)
     manifest_path = photo_dir / "gbp-photo-manifest.csv"
 
@@ -1185,7 +1187,7 @@ def build_facebook_crew(
     """
     exec_llm = build_exec_llm()
 
-    photo_path = os.getenv("GBP_PHOTO_PATH", r"C:\Workspace\Shared\Assets\Media\Grizzly\GBP Post Photos")
+    photo_path = os.getenv("GBP_PHOTO_PATH") or str(default_gbp_photo_dir())
     photo_dir = Path(photo_path)
     manifest_path = photo_dir / "gbp-photo-manifest.csv"
 

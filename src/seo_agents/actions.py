@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from seo_agents.crew import OUTPUT_DIR
+from seo_agents.paths import PROJECT_ROOT, resolve_default
 from seo_agents.website import WEBSITE_ACTION_TYPES, run_website_action, website_adapter_status
 from seo_agents.observability import (
     emit_adapter_run,
@@ -36,29 +37,24 @@ ACTION_COMPLETIONS_CONFIG_FILE = Path(os.getenv(
     "config/action-completions.json",
 ))
 ACTION_RUN_DIR = OUTPUT_DIR / "action_runs"
-GBP_POSTER_SCRIPT = Path(os.getenv(
+GBP_POSTER_SCRIPT = resolve_default(
     "GBP_POSTER_SCRIPT",
-    r"C:\Users\carte\.claude\skills\gbp-poster\driver.mjs",
-))
-GBP_POSTER_CONFIG = Path(os.getenv(
+    PROJECT_ROOT / "scripts" / "gbp-poster" / "driver.mjs",
+    legacy_win=r"C:\Users\carte\.claude\skills\gbp-poster\driver.mjs",
+)
+GBP_POSTER_CONFIG = resolve_default(
     "GBP_POSTER_CONFIG",
-    r"C:\Users\carte\.codex\plugins\grizzly-gbp-poster\config.local.json",
-))
-GBP_BROWSER_SESSION_DIR = Path(os.getenv(
-    "GBP_BROWSER_SESSION_DIR",
-    r"C:\Users\carte\.claude\gbp-session",
-))
+    PROJECT_ROOT / "config" / "gbp-poster.config.json",
+    legacy_win=r"C:\Users\carte\.codex\plugins\grizzly-gbp-poster\config.local.json",
+)
+GBP_BROWSER_SESSION_DIR = Path(os.getenv("GBP_BROWSER_SESSION_DIR") or (Path.home() / ".claude" / "gbp-session"))
 GBP_POSTER_TIMEOUT_S = int(os.getenv("GBP_POSTER_TIMEOUT_S", "420"))
 GBP_POSTER_HEADLESS = os.getenv("GBP_POSTER_HEADLESS", "0").lower() in {"1", "true", "yes", "on"}
-GBP_PROFILE_ADAPTER = os.getenv(
-    "GBP_PROFILE_ADAPTER",
-    r"C:\Workspace\Active\SEO-Agents-App\scripts\gbp-profile-adapter.mjs",
-).strip()
+GBP_PROFILE_ADAPTER = (os.getenv("GBP_PROFILE_ADAPTER")
+    or str(PROJECT_ROOT / "scripts" / "gbp-profile-adapter.mjs")).strip()
 GBP_PROFILE_ADAPTER_TIMEOUT_S = int(os.getenv("GBP_PROFILE_ADAPTER_TIMEOUT_S", "300"))
-FACEBOOK_POSTER_ADAPTER = os.getenv(
-    "FACEBOOK_POSTER_ADAPTER",
-    r"C:\Workspace\Active\SEO-Agents-App\scripts\facebook-poster.mjs",
-).strip()
+FACEBOOK_POSTER_ADAPTER = (os.getenv("FACEBOOK_POSTER_ADAPTER")
+    or str(PROJECT_ROOT / "scripts" / "facebook-poster.mjs")).strip()
 # Allow >720s so a slow Veo 3 video render (see gemini-video-generator MAX_POLL_ATTEMPTS)
 # plus upload completes before this subprocess is killed.
 FACEBOOK_POSTER_TIMEOUT_S = int(os.getenv("FACEBOOK_POSTER_TIMEOUT_S", "900"))
