@@ -1,22 +1,20 @@
 /**
  * gbp-api-auth.mjs
  * Authentication helper for Google Business Profile API operations.
- * Reads token from C:\Users\carte\gmail-multi\tokens\grizzly1.json and auto-refreshes when needed.
+ * Reads the token from GBP_TOKEN_FILE (default under the secrets dir, see
+ * platform-defaults.mjs) and auto-refreshes when needed.
  */
 
 import fs from 'node:fs';
-import path from 'node:path';
+import { resolveGbpClientSecret, resolveGbpTokenFile } from './platform-defaults.mjs';
 
-const GMAIL_MULTI_DIR = 'C:/Users/carte/gmail-multi';
 // GBP API calls must be billed to the project where the Business Profile APIs are
 // enabled (the project you know as hermes-agent; project_id exalted-slice-502415-s0,
 // number 1084301840332). The older gmail-multi credentials.json carries the right
 // OAuth scope but the wrong consumer project → every GBP call returns quota=0.
 // Run scripts/authorize-gbp.mjs once to mint a token under this client.
-const CREDENTIALS_FILE = process.env.GBP_CLIENT_SECRET
-  || path.join(GMAIL_MULTI_DIR, 'client_secret_hermes_gbp.json');
-const TOKEN_FILE = process.env.GBP_TOKEN_FILE
-  || path.join(GMAIL_MULTI_DIR, 'tokens', 'grizzly-gbp.json');
+const CREDENTIALS_FILE = resolveGbpClientSecret();
+const TOKEN_FILE = resolveGbpTokenFile();
 
 export async function getGbpAccessToken() {
   if (!fs.existsSync(TOKEN_FILE)) {

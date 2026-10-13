@@ -27,3 +27,6 @@ state/
 .serena/
 nul
 logs/
+
+# Local secrets (OAuth client + token files). Default secrets dir is <repo>/secrets.
+secrets/

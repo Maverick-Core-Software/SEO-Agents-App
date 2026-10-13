@@ -32,9 +32,10 @@ import xlsx from 'xlsx';
 import { fileURLToPath } from 'node:url';
 import { getGbpAccessToken, gbpFetch } from './lib/gbp-api-auth.mjs';
 import { checkPostPolicy, formatViolations } from './gbp-poster/policy-check.mjs';
+import { resolveGbpPosterConfig } from './lib/platform-defaults.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
-const DEFAULT_CONFIG = 'C:\\Workspace\\Active\\SEO-Agents-App\\config\\gbp-poster.config.json';
+const DEFAULT_CONFIG = resolveGbpPosterConfig();
 
 // ── Pure helpers ───────────────────────────────────────────────────────────
 
@@ -204,8 +205,11 @@ async function verifyPost(postName) {
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const config = JSON.parse(fs.readFileSync(args.config, 'utf8'));
-
-  const workbookPath = path.join(config.config_dir || '', config.workbook_path || '');
+  // Env overrides let a host point at its own workbook and photo mounts without
+  // editing the checked-in config (which carries the PC's Windows paths).
+  if (process.env.GBP_CURATED_FOLDER) config.curated_photo_folder = process.env.GBP_CURATED_FOLDER;
+  const workbookDir = process.env.GBP_WORKBOOK_DIR || config.config_dir || '';
+  const workbookPath = process.env.GBP_WORKBOOK_PATH || path.join(workbookDir, config.workbook_path || '');
   if (!workbookPath || !fs.existsSync(workbookPath)) {
     throw new Error(`Workbook not found: ${workbookPath || '(missing workbook_path)'}`);
   }

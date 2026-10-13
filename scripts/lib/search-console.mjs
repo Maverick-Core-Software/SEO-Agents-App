@@ -9,8 +9,10 @@
  * token file differ.
  */
 
-export const SEARCH_CONSOLE_TOKEN_FILE_DEFAULT =
-  'C:/Users/carte/gmail-multi/tokens/grizzly-search-console.json';
+import { resolveSearchConsoleTokenFile } from './platform-defaults.mjs';
+
+// Platform default only; callers apply SEARCH_CONSOLE_TOKEN_FILE themselves.
+export const SEARCH_CONSOLE_TOKEN_FILE_DEFAULT = resolveSearchConsoleTokenFile({ env: {} });
 
 const GRIZZLY_SITE_PREFERENCES = [
   'sc-domain:grizzlyelectricaltx.com',

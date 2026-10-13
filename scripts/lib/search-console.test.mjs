@@ -112,6 +112,10 @@ describe('formatQueryRows', () => {
 
 describe('SEARCH_CONSOLE_TOKEN_FILE_DEFAULT', () => {
   it('points at the grizzly search-console token', () => {
-    assert.equal(SEARCH_CONSOLE_TOKEN_FILE_DEFAULT, 'C:/Users/carte/gmail-multi/tokens/grizzly-search-console.json');
+    if (process.platform === 'win32') {
+      assert.equal(SEARCH_CONSOLE_TOKEN_FILE_DEFAULT, 'C:/Users/carte/gmail-multi/tokens/grizzly-search-console.json');
+    } else {
+      assert.match(SEARCH_CONSOLE_TOKEN_FILE_DEFAULT, /secrets\/tokens\/grizzly-search-console\.json$/);
+    }
   });
 });

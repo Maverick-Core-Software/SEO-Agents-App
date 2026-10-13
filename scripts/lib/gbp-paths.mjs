@@ -4,13 +4,16 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { derivePostServiceType, SERVICE_TYPE_KEYWORDS } from './photo-selection.mjs';
 import { checkImagePolicy, IMAGE_CONVERT_EXTS } from '../gbp-poster/policy-check.mjs';
+import { resolveGbpPhotoLocalCache, resolveGbpCuratedDefault } from './platform-defaults.mjs';
 
-export const DEFAULT_GBP_LOCAL_CACHE =
-  'C:\\Workspace\\Shared\\Assets\\Media\\Grizzly\\GBP Post Photos';
+// Platform defaults with no env applied; defaultGbpPhotoDirs() consults the env vars.
+export const DEFAULT_GBP_LOCAL_CACHE = resolveGbpPhotoLocalCache({ env: {} });
+export const DEFAULT_GBP_CURATED_FOLDER = resolveGbpCuratedDefault({ env: {} });
 // Curated lives under the local cache; E: was a drive letter that no longer exists
-// on this box (2026-08-29). Keep it as a last-resort path if it ever remounts.
-export const DEFAULT_GBP_CURATED_FOLDER = path.join(DEFAULT_GBP_LOCAL_CACHE, 'Curated');
-export const LEGACY_GBP_CURATED_FOLDER = 'E:\\Media\\Grizzly\\Curated';
+// on this box (2026-08-29). Keep it as a last-resort path on win32 if it ever remounts.
+export const LEGACY_GBP_CURATED_FOLDER = process.platform === 'win32'
+  ? 'E:\\Media\\Grizzly\\Curated'
+  : '';
 
 const IMAGE_NAME_RE = /\.(jpe?g|png|webp)$/i;
 
