@@ -16,7 +16,7 @@ export const FIXTURE_DETAIL_POST = {
     'Older 100A panels were not built for today\'s HVAC, EV chargers, and home offices stacked on one bus. Grizzly Electrical pulls permit, labels every circuit, and leaves the panel photo-ready for inspection. Same-week slots in Rowlett, Garland, and Rockwall while storm season is still on the calendar.',
   caption:
     '100A panels are tapping out in this heat. We upgrade to 200A, pull the permit, and label every circuit — inspection-ready. Call Grizzly.',
-  cta: 'Call Grizzly — (469) 863-9804',
+  cta: 'Call Grizzly — (469) 716-9870',
   hashtags: '#DFWElectrician #PanelUpgrade #RowlettTX #GrizzlyElectrical',
   photo_file: 'panel-upgrade.jpg [CONFIRM]',
   type: 'photo',
