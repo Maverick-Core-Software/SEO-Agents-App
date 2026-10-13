@@ -36,6 +36,7 @@ import { parseAfterTime, shouldRunFbBoostTick, decideBoostLaunch, summarizeBoost
 import { fetchApprovedWebsiteTasks, executeNextWebsiteTask, sweepOrphanWebsiteTasks } from './lib/website-task-runner.mjs';
 import { liveRunStatus as deriveLiveRunStatus, countRunStatuses } from './lib/seo-run-status.mjs';
 import { MAX_JSON_BODY_BYTES, parseJsonBody } from './lib/http-json.mjs';
+import { resolveBind } from './lib/bridge-bind.mjs';
 
 const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -53,7 +54,7 @@ if (fs.existsSync(envPath)) {
 const SUPABASE_URL = process.env.SUPABASE_URL || '';
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY || '';
 const POLL_INTERVAL_MS = parseInt(process.env.MAV_BRIDGE_POLL_MS || '30000');
-const BRIDGE_PORT = parseInt(process.env.MAV_BRIDGE_PORT || '8790');
+const { host: BRIDGE_HOST, port: BRIDGE_PORT } = resolveBind(process.env);
 const SEO_AGENTS_EXE = resolveSeoAgentsExe({ projectRoot: PROJECT_ROOT });
 const PENDING_PROMPT_FILE = path.join(PROJECT_ROOT, 'outputs', 'pending_prompt.json');
 const GBP_MODE = resolveGbpMode();
@@ -1467,8 +1468,8 @@ const httpServer = http.createServer((req, res) => {
     try { sendJsonHttp(res, status, { error, hop: 'mav-bridge' }); } catch {}
   });
 });
-httpServer.listen(BRIDGE_PORT, '127.0.0.1', () => {
-  console.log(`[mav-bridge] HTTP server listening on http://127.0.0.1:${BRIDGE_PORT}`);
+httpServer.listen(BRIDGE_PORT, BRIDGE_HOST, () => {
+  console.log(`mav-bridge listening on ${BRIDGE_HOST}:${BRIDGE_PORT}`);
 });
 
 poll(); // run immediately on start
