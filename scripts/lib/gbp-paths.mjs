@@ -5,6 +5,7 @@ import path from 'node:path';
 import { derivePostServiceType, SERVICE_TYPE_KEYWORDS } from './photo-selection.mjs';
 import { checkImagePolicy, IMAGE_CONVERT_EXTS } from '../gbp-poster/policy-check.mjs';
 import { resolveGbpPhotoLocalCache, resolveGbpCuratedDefault } from './platform-defaults.mjs';
+import { photoBasename, photoKey } from './photo-name.mjs';
 
 // Platform defaults with no env applied; defaultGbpPhotoDirs() consults the env vars.
 export const DEFAULT_GBP_LOCAL_CACHE = resolveGbpPhotoLocalCache({ env: {} });
@@ -160,7 +161,7 @@ export function pickCuratedFallbackPhoto({
   log = defaultSkipLog,
 } = {}) {
   const used = new Set(
-    (usedPaths || []).map((p) => path.basename(String(p || '')).toLowerCase()).filter(Boolean),
+    (usedPaths || []).map((p) => photoKey(p)).filter(Boolean),
   );
   const serviceType = derivePostServiceType({
     service: service || '',
@@ -175,7 +176,7 @@ export function pickCuratedFallbackPhoto({
   const any = [];
   for (const dir of scanDirs) {
     for (const name of listImageNames(dir)) {
-      if (used.has(name.toLowerCase())) continue;
+      if (used.has(photoKey(name))) continue;
       const full = path.join(dir, name);
       if (!photoPassesPolicy(full, log)) continue;
       any.push(full);
@@ -204,7 +205,7 @@ export function resolveGbpImagePath(imagePath, {
   const candidates = [];
   if (imagePath) {
     candidates.push(imagePath);
-    const base = path.basename(imagePath);
+    const base = photoBasename(imagePath);
     for (const dir of existingPhotoSearchDirs({ curatedDir, localCache, curatedPreferred })) {
       candidates.push(path.join(dir, base));
     }

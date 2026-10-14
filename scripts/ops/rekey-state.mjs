@@ -7,12 +7,16 @@
 //   - state/photo-cache.json: object keys (file paths) under --from become --to
 //     (inside each value, a string `filePath` under --from is rewritten too).
 //   - state/photo-selection-manifest.json: `photoPath` on every entry under --from.
+// Case fix: after a path is rewritten under --to (or already is), if the exact-case file is
+// missing but a case-only match exists on disk under --to, the path takes the on-disk casing
+// ("case-fixed"). Windows names can differ in case from the Linux files; see photo-case-audit.mjs.
 // Never touches hash, score or any other field.
 // Dry-run by default. --apply writes <file>.bak-<ts> before replacing a file that
 // has changes. Idempotent: a second --apply finds nothing to change.
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { makeCaseFixer } from '../lib/photo-case.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(HERE, '..', '..');
@@ -45,12 +49,35 @@ export function rekeyPath(value, fromRoot, toRoot) {
   return to + rest;
 }
 
-function emptyStats() {
-  return { total: 0, rewritten: 0, unchanged: 0, collisions: 0, valueFilePaths: 0 };
+/**
+ * Target for one stored path: rekeyed under toRoot when it is under fromRoot, kept when it is
+ * already under toRoot, otherwise null. fixCase (optional) then applies the on-disk casing.
+ * Returns { path, moved, caseFixed } or null.
+ */
+export function retarget(p, fromRoot, toRoot, fixCase = null) {
+  if (typeof p !== 'string' || p === '') return null;
+  let next = rekeyPath(p, fromRoot, toRoot);
+  const moved = next !== null;
+  if (!moved) {
+    const to = trimTrailingSlashes(normalizeSlashes(toRoot));
+    const v = normalizeSlashes(p);
+    if (to === '' || v.slice(0, to.length) !== to || v[to.length] !== '/') return null;
+    next = p;
+  }
+  const fixed = fixCase ? fixCase(next) : null;
+  const caseFixed = fixed !== null && fixed !== next;
+  return { path: caseFixed ? fixed : next, moved, caseFixed };
 }
 
-/** Rekeys a photo-cache object. Returns { out, stats, samples }. Input is not mutated. */
-export function rekeyCache(cache, fromRoot, toRoot) {
+function emptyStats() {
+  return { total: 0, rewritten: 0, unchanged: 0, collisions: 0, valueFilePaths: 0, caseFixed: 0, changed: 0 };
+}
+
+/**
+ * Rekeys a photo-cache object. Returns { out, stats, samples }. Input is not mutated.
+ * stats.changed counts renamed keys plus rewritten value.filePath fields (case fixes included).
+ */
+export function rekeyCache(cache, fromRoot, toRoot, fixCase = null) {
   const stats = emptyStats();
   const samples = [];
   const out = {};
@@ -59,14 +86,17 @@ export function rekeyCache(cache, fromRoot, toRoot) {
   for (const [key, value] of entries) {
     let nextValue = value;
     if (value && typeof value === 'object' && !Array.isArray(value)) {
-      const rewrittenFile = rekeyPath(value.filePath, fromRoot, toRoot);
-      if (rewrittenFile !== null) {
-        nextValue = { ...value, filePath: rewrittenFile };
-        stats.valueFilePaths += 1;
+      const file = retarget(value.filePath, fromRoot, toRoot, fixCase);
+      if (file && file.path !== value.filePath) {
+        nextValue = { ...value, filePath: file.path };
+        stats.changed += 1;
+        if (file.moved) stats.valueFilePaths += 1;
+        if (file.caseFixed) stats.caseFixed += 1;
       }
     }
-    const newKey = rekeyPath(key, fromRoot, toRoot);
-    if (newKey === null) {
+    const target = retarget(key, fromRoot, toRoot, fixCase);
+    const newKey = target ? target.path : key;
+    if (newKey === key) {
       out[key] = nextValue;
       stats.unchanged += 1;
       continue;
@@ -78,28 +108,32 @@ export function rekeyCache(cache, fromRoot, toRoot) {
       continue;
     }
     out[newKey] = nextValue;
-    stats.rewritten += 1;
+    stats.changed += 1;
+    if (target.moved) stats.rewritten += 1;
+    if (target.caseFixed) stats.caseFixed += 1;
     if (samples.length < 3) samples.push({ from: key, to: newKey });
   }
   return { out, stats, samples };
 }
 
 /** Rekeys manifest `photoPath` fields. Accepts {version, platforms:{...}} or a plain array. */
-export function rekeyManifest(manifest, fromRoot, toRoot) {
-  const stats = { entries: 0, rewritten: 0, unchanged: 0 };
+export function rekeyManifest(manifest, fromRoot, toRoot, fixCase = null) {
+  const stats = { entries: 0, rewritten: 0, unchanged: 0, caseFixed: 0, changed: 0 };
   const samples = [];
   const next = JSON.parse(JSON.stringify(manifest));
   const visit = (entry) => {
     if (!entry || typeof entry !== 'object') return;
     stats.entries += 1;
-    const rewritten = rekeyPath(entry.photoPath, fromRoot, toRoot);
-    if (rewritten === null) {
+    const target = retarget(entry.photoPath, fromRoot, toRoot, fixCase);
+    if (target === null || target.path === entry.photoPath) {
       stats.unchanged += 1;
       return;
     }
-    if (samples.length < 3) samples.push({ from: entry.photoPath, to: rewritten });
-    entry.photoPath = rewritten;
-    stats.rewritten += 1;
+    if (samples.length < 3) samples.push({ from: entry.photoPath, to: target.path });
+    entry.photoPath = target.path;
+    stats.changed += 1;
+    if (target.moved) stats.rewritten += 1;
+    if (target.caseFixed) stats.caseFixed += 1;
   };
   if (Array.isArray(next)) {
     next.forEach(visit);
@@ -140,22 +174,23 @@ export function runRekey({ stateDir, from, to, apply = false, now = new Date() }
   const cacheFile = path.join(stateDir, CACHE_NAME);
   const manifestFile = path.join(stateDir, MANIFEST_NAME);
   const plans = [];
+  const fixCase = makeCaseFixer(to);
 
   if (fs.existsSync(cacheFile)) {
     const { data, trailingNewline } = readJson(cacheFile);
-    const result = rekeyCache(data, from, to);
-    const changed = result.stats.rewritten + result.stats.valueFilePaths;
-    report.cache = { ...result.stats, samples: result.samples, changed };
+    const result = rekeyCache(data, from, to, fixCase);
+    const changed = result.stats.changed;
+    report.cache = { ...result.stats, samples: result.samples };
     report.changes += changed;
     if (changed > 0) plans.push({ file: cacheFile, data: result.out, trailingNewline });
   }
 
   if (fs.existsSync(manifestFile)) {
     const { data, trailingNewline } = readJson(manifestFile);
-    const result = rekeyManifest(data, from, to);
-    report.manifest = { ...result.stats, samples: result.samples, changed: result.stats.rewritten };
-    report.changes += result.stats.rewritten;
-    if (result.stats.rewritten > 0) plans.push({ file: manifestFile, data: result.out, trailingNewline });
+    const result = rekeyManifest(data, from, to, fixCase);
+    report.manifest = { ...result.stats, samples: result.samples };
+    report.changes += result.stats.changed;
+    if (result.stats.changed > 0) plans.push({ file: manifestFile, data: result.out, trailingNewline });
   }
 
   if (!report.cache && !report.manifest) {
@@ -193,11 +228,11 @@ function printReport(report) {
   console.log(`rekey-state ${mode}`);
   if (report.cache) {
     const c = report.cache;
-    console.log(`photo-cache.json: keys=${c.total} rewritten=${c.rewritten} unchanged=${c.unchanged} collisions=${c.collisions} value.filePath=${c.valueFilePaths}`);
+    console.log(`photo-cache.json: keys=${c.total} rewritten=${c.rewritten} unchanged=${c.unchanged} collisions=${c.collisions} value.filePath=${c.valueFilePaths} case-fixed=${c.caseFixed}`);
   }
   if (report.manifest) {
     const m = report.manifest;
-    console.log(`photo-selection-manifest.json: entries=${m.entries} photoPath rewritten=${m.rewritten} unchanged=${m.unchanged}`);
+    console.log(`photo-selection-manifest.json: entries=${m.entries} photoPath rewritten=${m.rewritten} unchanged=${m.unchanged} case-fixed=${m.caseFixed}`);
   }
   console.log(`total changes=${report.changes}`);
   for (const b of report.backups) console.log(`backup: ${b}`);

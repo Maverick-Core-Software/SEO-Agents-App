@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { rekeyPath, rekeyCache, rekeyManifest, runRekey } from './rekey-state.mjs';
+import { runAudit } from './photo-case-audit.mjs';
 
 const OLD_ROOT = 'C:\\Workspace\\Shared\\Assets\\Media\\Grizzly\\GBP Post Photos';
 const NEW_ROOT = '/srv/seo/photos';
@@ -195,4 +196,56 @@ test('missing state files fail loudly', () => {
   const empty = path.join(root, 'empty');
   fs.mkdirSync(empty, { recursive: true });
   assert.throws(() => runRekey({ stateDir: empty, from: OLD_ROOT, to: NEW_ROOT, apply: false }), /no photo-cache\.json/);
+});
+
+test('case-fix: a rewritten path takes the on-disk casing; dry-run matches apply; audit is clean after', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'rekey-case-'));
+  try {
+    const photos = path.join(tmp, 'photos');
+    fs.mkdirSync(path.join(photos, 'Curated'), { recursive: true });
+    fs.writeFileSync(path.join(photos, 'Curated', 'IMG_1234.JPG'), 'x');
+    fs.writeFileSync(path.join(photos, 'Curated', 'exact.jpg'), 'x');
+    const stateDir = path.join(tmp, 'state');
+    fs.mkdirSync(stateDir);
+    const cacheFile = path.join(stateDir, 'photo-cache.json');
+    const manifestFile = path.join(stateDir, 'photo-selection-manifest.json');
+    const k1 = `${OLD_ROOT}\\Curated\\IMG_1234.jpg`;
+    const k2 = `${OLD_ROOT}\\Curated\\exact.jpg`;
+    fs.writeFileSync(cacheFile, JSON.stringify({
+      [k1]: { filePath: k1, hash: 'aaa', score: 4 },
+      [k2]: { filePath: k2, hash: 'bbb', score: 5 },
+    }, null, 2));
+    fs.writeFileSync(manifestFile, JSON.stringify({ version: 1, platforms: { gbp: [{ photoPath: k1, photoHash: 'aaa' }] } }, null, 2));
+
+    const pre = runAudit({ photos, cache: cacheFile, manifest: manifestFile });
+    assert.equal(pre.totals.case, 2, 'before rekey the Windows-cased reference is case-only in both files');
+    assert.equal(pre.exit, 2);
+
+    const dry = runRekey({ stateDir, from: OLD_ROOT, to: photos, apply: false, now: NOW });
+    assert.equal(dry.cache.rewritten, 2);
+    assert.equal(dry.cache.caseFixed, 2, 'key and filePath of the case-only entry');
+    assert.equal(dry.manifest.caseFixed, 1);
+    assert.equal(dry.changes, 5);
+    assert.deepEqual(dry.written, []);
+
+    const applied = runRekey({ stateDir, from: OLD_ROOT, to: photos, apply: true, now: NOW });
+    assert.equal(applied.changes, 5);
+    assert.equal(applied.written.length, 2);
+
+    const fixedKey = `${photos.replace(/\\/g, '/')}/Curated/IMG_1234.JPG`;
+    const afterCache = readJson(cacheFile);
+    assert.equal(afterCache[fixedKey].filePath, fixedKey);
+    assert.equal(afterCache[fixedKey].hash, 'aaa');
+    assert.equal(afterCache[k1], undefined);
+    assert.equal(readJson(manifestFile).platforms.gbp[0].photoPath, fixedKey);
+
+    const post = runAudit({ photos, cache: cacheFile, manifest: manifestFile });
+    assert.equal(post.totals.case, 0);
+    assert.equal(post.exit, 0);
+
+    const again = runRekey({ stateDir, from: OLD_ROOT, to: photos, apply: true, now: new Date(NOW.getTime() + 60000) });
+    assert.equal(again.changes, 0);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
 });

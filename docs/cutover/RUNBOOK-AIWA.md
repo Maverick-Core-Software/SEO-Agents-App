@@ -22,7 +22,7 @@ or SCP from an agent), per `aiwa-deployment.md`.
 
 1. Copy the repo tree (or a tag archive) to `/opt/seo`. Install.sh expects it there.
 2. As root: `bash /opt/seo/deploy/aiwa/install.sh`
-   - Installs apt packages (ffmpeg, fonts-dejavu-core, rclone, git), NodeSource Node 22, uv, pm2.
+   - Installs apt packages (ffmpeg, fonts-dejavu-core, rclone, git), NodeSource Node 24, uv, pm2.
    - Creates user `seo`, `/opt/seo` (+ logs, state, outputs), `/opt/seo/secrets` (700), `/srv/seo/{photos,photos-inbox,gbp,gbp-archive}` (the rclone inbox is outside the photo cache), then `chown -R seo:seo /opt/seo /srv/seo` (the tree was copied as root).
    - Sets the host timezone to America/Chicago. Copies the units to `/etc/systemd/system` and runs `daemon-reload`.
    - Runs `npm ci` (with `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1`, no browsers needed in API mode) and `uv sync --locked` as `seo`.
@@ -114,6 +114,9 @@ Then rewrite the state paths from the Windows root to the posix root:
 1. Dry-run (default): `runuser -u seo -- node /opt/seo/scripts/ops/rekey-state.mjs --from 'C:\Workspace\Shared\Assets\Media\Grizzly\GBP Post Photos' --to /srv/seo/photos`
 2. Apply, after the dry-run counts look right: add `--apply`. Backups go to `state/*.bak-<ts>`.
 3. A second `--apply` must report `total changes=0`.
+4. Case audit (read-only), before and after the copy: `runuser -u seo -- node /opt/seo/scripts/ops/photo-case-audit.mjs --photos /srv/seo/photos --manifest /opt/seo/state/photo-selection-manifest.json --cache /opt/seo/state/photo-cache.json --scan /opt/seo/state/curated-labels.json --workbook '/srv/seo/gbp/Grizzly GBP Schedule.xlsx'`.
+   `rekey-state.mjs --apply` rewrites case-only references to the on-disk name (`case-fixed=` in its report); the post-rekey audit must exit 0 (exit 2 lists case-only, missing and ambiguous references, and same-folder collisions).
+   E4 does not pass while missing references remain; triage them first (E:\Media\Grizzly\Curated paths are outside the copy source).
 
 Evidence: file counts on both sides and a sample sha256 match. Record them in `docs/cutover/evidence/`.
 
