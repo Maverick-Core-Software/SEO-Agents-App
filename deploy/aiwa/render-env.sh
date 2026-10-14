@@ -106,6 +106,18 @@ case "${VALS[MAV_BRIDGE_BIND]:-}" in
   0.0.0.0|::|'[::]'|'*') problems+=("MAV_BRIDGE_BIND must be one LXC address, not an unspecified address (the bridge refuses it; RUNBOOK 3a)") ;;
 esac
 
+# Alert transports: at least one of Hermes CLI, direct Slack, or SMTP must be configured
+# (the alert chain is hermes -> slack -> smtp; on AIWA only Slack is expected).
+transports=()
+[ -n "${VALS[HERMES_CLI]:-}" ] && transports+=("hermes")
+[ -n "${VALS[SLACK_BOT_TOKEN]:-}" ] && [ -n "${VALS[SLACK_ALERT_CHANNEL]:-}" ] && transports+=("slack")
+[ -n "${VALS[SMTP_APP_PASSWORD]:-}" ] && [ -n "${VALS[SMTP_FROM]:-}" ] && [ -n "${VALS[SMTP_TO]:-}" ] && transports+=("smtp")
+if [ "${#transports[@]}" -eq 0 ]; then
+  problems+=("no alert transport configured: set HERMES_CLI, or SLACK_BOT_TOKEN+SLACK_ALERT_CHANNEL, or SMTP_APP_PASSWORD+SMTP_FROM+SMTP_TO")
+else
+  echo "alert transports configured: ${transports[*]}"
+fi
+
 # --check-paths: every path-valued name resolves on this host.
 if [ "$PATH_CHECK" -eq 1 ]; then
   DIR_NAMES=(GBP_WORKBOOK_DIR GBP_ARCHIVE_FOLDER GBP_PHOTOS_FOLDER GBP_PHOTOS_LOCAL_CACHE)
@@ -121,7 +133,8 @@ if [ "$PATH_CHECK" -eq 1 ]; then
   done
   for name in "${BIN_NAMES[@]}"; do
     in_missing "$name" && continue
-    v="${VALS[$name]}"
+    v="${VALS[$name]:-}"
+    [ -z "$v" ] && continue   # optional binary (HERMES_CLI) left unset
     case "$v" in
       */*) [ -x "$v" ] || problems+=("$name does not point at an executable file") ;;
       *) command -v "$v" >/dev/null 2>&1 || problems+=("$name is not on PATH") ;;

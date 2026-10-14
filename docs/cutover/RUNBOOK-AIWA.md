@@ -84,13 +84,13 @@ through `runuser`. Both are credentials: Carter supplies them, no agent prints t
      PC-built `rclone.conf` to `/opt/seo/.config/rclone/rclone.conf` (owner `seo`, mode 600).
    - `.env`: `SEO_RCLONE_REMOTE=<remote>`. Check (read-only, names only):
      `runuser -u seo -- rclone lsd "<remote>:GBP Photos" | head -3`.
-2. **hermes config** (`HERMES_CLI` alerts from mav-bridge, gbp-worker, the weekly run, monitor and watchdog use
-   the gateway's platform credentials in `~/.hermes`, so for `seo` that is `/opt/seo/.hermes`):
-   - Install the hermes CLI on the LXC and set `HERMES_CLI` in `.env` to its absolute path (`render-env.sh
-     --check-paths` requires it to exist or be on PATH).
-   - Copy the hermes config/credentials to `/opt/seo/.hermes/` (owner `seo`, mode 700 dir / 600 files).
-   - Probe: `runuser -u seo -- <HERMES_CLI> --help` exits 0; a test alert goes through the Slack channel.
-   Without it every alert falls to the SMTP secondary only.
+2. **alert transport**: the alert chain is Hermes CLI → direct Slack → SMTP (PR #11). There is **no Hermes CLI in
+   the LXC** (Hermes runs on the Proxmox host and in other CTs and is not reachable from `seo-prod`), so leave
+   `HERMES_CLI` empty and rely on the direct Slack hop: `.env` `SLACK_BOT_TOKEN` + `SLACK_ALERT_CHANNEL` (the
+   `hermespc` bot, channel id for `#ops-alerts`; verified 2026-10-13 via `auth.test` + `conversations.info`,
+   `is_member=true`). `render-env.sh` fails unless at least one transport is configured and prints which ones are.
+   SMTP (`SMTP_APP_PASSWORD`/`SMTP_FROM`/`SMTP_TO`) is optional. E6 gate: at least one alert must arrive with the
+   receipt naming `slack` as the delivering channel.
 3. **Facebook ad account**: `.env` `FB_AD_ACCOUNT_ID=act_<id>` (Meta Ads Manager). `fb-boost-marketing` reports
    the boost client as not `ready` without it, and `FB_BOOST_API=1` in F3 would silently skip every boost tick.
 4. **GBP account and location**: `.env` `GBP_ACCOUNT_ID=accounts/102812174257783632337` and
