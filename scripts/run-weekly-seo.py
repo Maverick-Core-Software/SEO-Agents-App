@@ -328,9 +328,15 @@ def _preflight_shared(errors: list[str]) -> list[str]:
         Path(hermes).exists() if os.path.isabs(hermes) else shutil.which(hermes) is not None
     )
     smtp = (os.environ.get("SMTP_APP_PASSWORD") or "").strip()
-    if not hermes_found and not smtp:
+    # The direct Slack hop (SLACK_BOT_TOKEN + SLACK_ALERT_CHANNEL) is the AIWA default:
+    # the LXC has no Hermes CLI, so it counts as a live channel.
+    slack = bool((os.environ.get("SLACK_BOT_TOKEN") or "").strip()) and bool(
+        (os.environ.get("SLACK_ALERT_CHANNEL") or "").strip()
+    )
+    if not hermes_found and not smtp and not slack:
         errors.append(
-            f"both alert channels dead: hermes missing ({hermes}) and SMTP_APP_PASSWORD empty"
+            f"all alert channels dead: hermes missing ({hermes}), no Slack "
+            "(SLACK_BOT_TOKEN + SLACK_ALERT_CHANNEL), and SMTP_APP_PASSWORD empty"
         )
 
     gbp_dir = os.environ.get("GBP_BROWSER_SESSION_DIR", "").strip()
