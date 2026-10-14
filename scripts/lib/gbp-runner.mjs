@@ -34,6 +34,20 @@ export function excelDateToIso(value) {
   return String(value || '').slice(0, 10);
 }
 
+// Photo column of the GBP schedule workbook. Exact names first, in the order the workbook
+// writer uses (sync-gbp-schedule.mjs GBP_WORKBOOK_HEADERS: AssetIdOrDescription; the older
+// lint-workbook.mjs fallback: Related Picture). Only then a fuzzy match, which must skip
+// AssetSource: it is a different column (the source label, e.g. "Workspace Shared") that
+// sits before AssetIdOrDescription, so a plain includes('asset') picked the wrong one.
+const PHOTO_COLUMN_NAMES = ['AssetIdOrDescription', 'Related Picture'];
+export function photoColumnIndex(header) {
+  for (const name of PHOTO_COLUMN_NAMES) {
+    const idx = header.indexOf(name);
+    if (idx >= 0) return idx;
+  }
+  return header.findIndex(h => /asset/i.test(h) && !/source/i.test(h));
+}
+
 // The driver prints a JSON result as the last stdout line. Pull it out; tolerate noise.
 export function parseDriverJson(stdout) {
   try {
@@ -343,8 +357,7 @@ export async function markGbpPostedAndArchive({ postDate, exitCode, runId, env, 
       const header = rows[0].map(h => String(h).trim());
       const dateCol = header.findIndex(h => h.toLowerCase() === 'date');
       const postedCol = header.findIndex(h => h.toLowerCase() === 'posted');
-      const photoCol = header.findIndex(h =>
-        h === 'AssetIdOrDescription' || h === 'Related Picture' || h.toLowerCase().includes('asset'));
+      const photoCol = photoColumnIndex(header);
 
       if (dateCol === -1) { await log(runId, 'gbp', 'warn', 'GBP workbook: Date column not found'); return; }
 
