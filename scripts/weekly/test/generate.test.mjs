@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ModelPlanSchema, PlanSchema, parseOrIssues } from '../lib/schemas.mjs';
-import { GenerationInvalid, BudgetExceeded } from '../lib/errors.mjs';
+import { GenerationInvalid, BudgetExceeded, GenerateTimeout } from '../lib/errors.mjs';
 import { createCostMeter } from '../lib/cost-meter.mjs';
 import { parseJsonLoose } from '../lib/llm.mjs';
 import { loadFacts } from '../lib/facts.mjs';
@@ -29,6 +29,8 @@ import {
   REDACTED_PHONE,
   LABELS,
   FB_TYPES_BY_DAY,
+  createGenerateBudget,
+  generateMaxMsFromEnv,
 } from '../lib/generate.mjs';
 
 // Every NANP shape validate.mjs findPhoneNumbers flags; anything it would catch must be absent here.
@@ -785,5 +787,67 @@ describe('generate.model-plan.json obeys the rules it is meant to demonstrate', 
       assert.equal(a.draft === null, a.type !== 'website_blog_post');
       assert.doesNotMatch(JSON.stringify(a), /wordpress|cms|plugin/i);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Generate wall-clock budget (WEEKLY_GENERATE_MAX_MS)
+// ---------------------------------------------------------------------------
+
+describe('generate budget (WEEKLY_GENERATE_MAX_MS)', () => {
+  it('a client that never settles fails the stage within the bound, naming the limit', { timeout: 5000 }, async () => {
+    const llm = { chatJSON: () => new Promise(() => {}) };
+    const budget = createGenerateBudget(50);
+    const started = Date.now();
+    try {
+      await assert.rejects(
+        () => generatePlan(makeInput(), { llm, attemptId: 'att-b1', systemPrompt: 'JSON please.', budget }),
+        (e) => e instanceof GenerateTimeout && e.message === 'generate exceeded 50 ms',
+      );
+    } finally {
+      budget.stop();
+    }
+    assert.ok(Date.now() - started < 2000, 'the stage must end at the bound, not at the client');
+  });
+
+  it('the bound covers the repair: a slow first reply leaves the repair cut off, and nothing loops after it', { timeout: 5000 }, async () => {
+    let calls = 0;
+    const llm = {
+      chatJSON: async () => {
+        calls += 1;
+        if (calls === 1) {
+          await new Promise((r) => setTimeout(r, 30));
+          return { data: null, issues: [{ path: '', message: 'model output is not JSON: empty response' }], raw: '' };
+        }
+        return new Promise(() => {});
+      },
+    };
+    const budget = createGenerateBudget(80);
+    try {
+      await assert.rejects(
+        () => generatePlan(makeInput(), { llm, attemptId: 'att-b2', systemPrompt: 'JSON please.', budget }),
+        (e) => e instanceof GenerateTimeout && e.message === 'generate exceeded 80 ms',
+      );
+    } finally {
+      budget.stop();
+    }
+    assert.equal(calls, 2, 'exactly the first call and its one repair were started');
+  });
+
+  it('a generous budget leaves the normal path unchanged', async () => {
+    const budget = createGenerateBudget(60000);
+    try {
+      const plan = await generatePlan(makeInput(), { llm: fakeLlm([loadModelPlan()]), attemptId: 'att-b3', systemPrompt: 'JSON please.', budget });
+      assert.equal(plan.attempt_id, 'att-b3');
+    } finally {
+      budget.stop();
+    }
+  });
+
+  it('WEEKLY_GENERATE_MAX_MS: default 10 min, positive numbers only', () => {
+    assert.equal(generateMaxMsFromEnv({}), 600000);
+    assert.equal(generateMaxMsFromEnv({ WEEKLY_GENERATE_MAX_MS: '120000' }), 120000);
+    assert.throws(() => generateMaxMsFromEnv({ WEEKLY_GENERATE_MAX_MS: '0' }), /positive number/);
+    assert.throws(() => generateMaxMsFromEnv({ WEEKLY_GENERATE_MAX_MS: 'ten minutes' }), /positive number/);
   });
 });

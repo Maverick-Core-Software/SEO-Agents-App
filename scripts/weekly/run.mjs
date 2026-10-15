@@ -46,7 +46,7 @@ import { LeaseHeld, ValidationFailed } from './lib/errors.mjs';
 import { ModelPlanSchema, ObservationSchema, SCHEMA_VERSION, parseOrIssues } from './lib/schemas.mjs';
 import { addDays, computeWeekSpec, parseDate, weekSpecForWeekOf } from './lib/week-spec.mjs';
 import { createCostMeter } from './lib/cost-meter.mjs';
-import { createLlmClient, preflightModel } from './lib/llm.mjs';
+import { createLlmClient, createFallbackLlm, fallbackFromEnv, preflightModel, timeoutMsFromEnv } from './lib/llm.mjs';
 import { photoFilesIn, photoKey } from '../lib/photo-name.mjs';
 import { loadFacts } from './lib/facts.mjs';
 import { createFileStore } from './lib/store.mjs';
@@ -60,7 +60,7 @@ import {
   unavailableObservation as historyUnavailable, chicagoDate,
 } from './lib/collectors/history.mjs';
 import { rankCandidates } from './lib/select.mjs';
-import { buildGenerationInput, generatePlan, promptVersion } from './lib/generate.mjs';
+import { buildGenerationInput, generatePlan, promptVersion, createGenerateBudget, generateMaxMsFromEnv } from './lib/generate.mjs';
 import { downgradeCarousels, normalizeBoostPlan, validatePlan } from './lib/validate.mjs';
 import { renderFacebookSchedule, renderGbpSchedule, renderPlanSummary, renderWebsiteQueue } from './lib/render.mjs';
 import { exportPaths, failedExportDir, stagePlan } from './lib/stage.mjs';
@@ -588,6 +588,7 @@ export function formatRunSummary(result) {
   lines.push(`weekly ${attempt.mode} run — week of ${attempt.week_of} (GBP from ${weekSpec ? weekSpec.gbp_start : '?'})`);
   lines.push(`${pad('attempt', 10)}${attempt.id}  status ${attempt.status}  spend $${Number(attempt.spent_usd || 0).toFixed(4)} of $${Number(attempt.budget_usd || 0).toFixed(2)}  store ${storeKind || '?'}`);
   if (attempt.error) lines.push(`${pad('error', 10)}${redactSecrets(String(attempt.error))}`);
+  if (attempt.llm?.fallback_used) lines.push(`${pad('llm', 10)}LLM fallback used: ${attempt.llm.fallback} (${attempt.llm.reason})`);
   const sources = COLLECTOR_NAMES.map((name) => {
     const a = availability[name] || { ok: 0, unavailable: 0, error: 0 };
     const bad = a.unavailable + a.error;
@@ -707,6 +708,8 @@ export async function runWeekly(options = {}, deps = {}) {
     if (guard.replan) warn(`replanning week ${weekSpec.week_of}: ${guard.pending} pending_approval row(s) will be replaced`);
   }
 
+  // WEEKLY_LLM_TIMEOUT_MS / WEEKLY_GENERATE_MAX_MS are parsed up front so a bad value fails at startup.
+  const generateMaxMs = generateMaxMsFromEnv(env);
   let llm = deps.llm || null;
   if (!llm) {
     if (offline) {
@@ -714,7 +717,17 @@ export async function runWeekly(options = {}, deps = {}) {
     } else {
       const apiKey = env.DEEPSEEK_API_KEY;
       if (!apiKey) throw new Error(`DEEPSEEK_API_KEY is not set; ${opts.mode} mode needs the DeepSeek key (or run --mode offline)`);
-      llm = createLlmClient({ apiKey, model, meter, fetchImpl: deps.fetchImpl });
+      const primaryTimeoutMs = timeoutMsFromEnv(env);
+      const primaryClient = createLlmClient({ apiKey, model, meter, fetchImpl: deps.fetchImpl, timeoutMs: primaryTimeoutMs });
+      // Optional OpenAI-compatible fallback (WEEKLY_FALLBACK_*): a DeepSeek outage
+      // degrades to it instead of failing the week. Unset = the primary alone.
+      const fallbackSpec = fallbackFromEnv(env, primaryTimeoutMs);
+      llm = fallbackSpec
+        ? createFallbackLlm({
+          primary: primaryClient,
+          fallback: createLlmClient({ apiKey: fallbackSpec.apiKey, model: fallbackSpec.model, baseUrl: fallbackSpec.endpoint, meter, fetchImpl: deps.fetchImpl, unpricedAsNull: true, timeoutMs: fallbackSpec.timeoutMs }),
+        })
+        : primaryClient;
     }
   }
 
@@ -726,7 +739,9 @@ export async function runWeekly(options = {}, deps = {}) {
     preflight = await preflightModel({ llm, meter });
     if (preflight.ok) {
       log(`preflight: ${preflight.requested} → ${preflight.served}`);
-      if (preflight.served !== preflight.requested) warn(`preflight: the API served ${preflight.served} for the pinned ${preflight.requested}`);
+      const route = typeof llm.status === 'function' ? llm.status() : null;
+      if (route?.fallback_used) warn(`LLM fallback used: ${route.fallback} (${route.reason})`);
+      else if (preflight.served !== preflight.requested) warn(`preflight: the API served ${preflight.served} for the pinned ${preflight.requested}`);
       for (const issue of preflight.issues) warn(`preflight: ${issue.path || '(root)'}: ${issue.message}`);
     } else {
       warn(`preflight failed: ${preflight.error}`);
@@ -769,6 +784,23 @@ export async function runWeekly(options = {}, deps = {}) {
       warn(`could not record the preflight stage: ${redactSecrets(errorText(e))}`);
     }
   }
+  // LLM route (WEEKLY_FALLBACK_*): mirror the client's route onto the attempt so
+  // the summary and the notify text can say a fallback served the week. A no-op
+  // without a fallback client, so an unconfigured run writes no `llm` field.
+  const syncLlmRoute = async () => {
+    if (!llm || typeof llm.status !== 'function') return;
+    const next = llm.status();
+    if (JSON.stringify(attempt.llm || null) === JSON.stringify(next)) return;
+    try {
+      const updated = await store.updateAttempt(attempt.id, { llm: next });
+      Object.assign(attempt, updated);
+    } catch (e) {
+      warn(`could not record the LLM route on the attempt: ${redactSecrets(errorText(e))}`);
+    }
+    attempt.llm = next;
+  };
+  await syncLlmRoute();
+
   // Publish the identity before any work starts (T6): the wrapper checks the
   // attempt record it reads against this file and never patches a foreign
   // attempt. A run killed mid-flight leaves this file saying `running`.
@@ -868,8 +900,11 @@ export async function runWeekly(options = {}, deps = {}) {
     // selection can stay un-degraded while SerpApi answered with nothing.
     const serpReason = serpDegradedReason(result.availability, result.observations);
     const input = buildGenerationInput({ facts, selection, weekSpec, photos, history, policy });
-    let plan = applyDegraded(await generatePlan(input, { llm, meter, attemptId: attempt.id }), selection, degradedReason, serpReason);
+    // One wall-clock budget (WEEKLY_GENERATE_MAX_MS) covers the first call, its repair and the validation regeneration below.
+    const generateBudget = createGenerateBudget(generateMaxMs);
+    let plan = applyDegraded(await generatePlan(input, { llm, meter, attemptId: attempt.id, budget: generateBudget }), selection, degradedReason, serpReason);
     result.llmCalls += 1;
+    await syncLlmRoute();
     await stageEnd(store, attempt, 'generate', {}, clock());
 
     // ── validate (one regeneration with the errors appended) ─────────────
@@ -902,10 +937,12 @@ export async function runWeekly(options = {}, deps = {}) {
         task: `${input.task} A previous plan for this same request failed validation; every problem is listed under previous_attempt.validation_errors. Fix all of them and keep everything else within the rules.`,
         previous_attempt: { validation_errors: validation.errors, validation_warnings: validation.warnings, plan },
       };
-      plan = normalizePlan(applyDegraded(await generatePlan(retryInput, { llm, meter, attemptId: attempt.id }), selection, degradedReason, serpReason));
+      plan = normalizePlan(applyDegraded(await generatePlan(retryInput, { llm, meter, attemptId: attempt.id, budget: generateBudget }), selection, degradedReason, serpReason));
       result.llmCalls += 1;
+      await syncLlmRoute();
       validation = validatePlan(plan, validateCtx);
     }
+    generateBudget.stop();
     result.plan = plan;
     result.validation = validation;
     const validationError = validation.ok ? null : new ValidationFailed(
@@ -955,6 +992,7 @@ export async function runWeekly(options = {}, deps = {}) {
   const missing = unavailableSources(result.availability);
   const degraded = missing.length > 0 || Boolean(result.selection && result.selection.degraded) || Boolean(result.plan && result.plan.notes && result.plan.notes.degraded);
   const finalStatus = failure ? 'failed' : (degraded ? 'degraded' : 'succeeded');
+  await syncLlmRoute();
   try {
     await finishAttempt(store, attempt, { status: finalStatus, error: failure, spentUsd: result.spentUsd }, clock());
   } catch (e) {

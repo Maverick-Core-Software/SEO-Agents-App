@@ -166,6 +166,13 @@ export const AttemptSchema = z.object({
   spent_usd: z.number(),
   status: z.enum(['running', 'succeeded', 'degraded', 'failed']),
   error: z.string().nullable(),
+  // Present only when WEEKLY_FALLBACK_* is configured (see llm.mjs createFallbackLlm).
+  llm: z.object({
+    primary: z.string(),
+    fallback: z.string(),
+    fallback_used: z.boolean(),
+    reason: z.string().nullable(),
+  }).nullable().optional(),
 });
 
 export const RevisionSchema = z.object({
