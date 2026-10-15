@@ -53,6 +53,7 @@ the LXC fetches secrets, and no agent prints values.
    `MAV_BRIDGE_BIND`). After the data copy (section 4) re-run it with `--check-paths`: every directory and file name
    must resolve. `seo-weekly-run.service` runs `render-env.sh --check-paths` as `ExecStartPre`, so a bad `.env` fails
    the Friday unit before anything launches (F10).
+   Optional: set `WEEKLY_FALLBACK_*` so a DeepSeek outage degrades to OpenAI instead of failing the Friday.
 
 ## 3a. Network: mav-bridge bind (B8) [Carter approval: firewall + MCC env]
 

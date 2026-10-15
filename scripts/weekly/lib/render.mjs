@@ -575,6 +575,7 @@ function renderAttemptSection(attempt) {
     `- **Spend:** $${Number(attempt.spent_usd || 0).toFixed(2)} of $${Number(attempt.budget_usd || 0).toFixed(2)} budget`,
     `- **Versions:** schema ${attempt.versions?.schema || DASH}, prompt ${attempt.versions?.prompt || DASH}, policy ${attempt.versions?.policy || DASH}`,
   ];
+  if (attempt.llm?.fallback_used) out.push(`- LLM fallback used: ${inlineText(attempt.llm.fallback)} (${inlineText(attempt.llm.reason || 'unknown reason')})`);
   if (stages.length) {
     out.push('', '### Stages', '', '| Stage | Status | Duration | Error |', '|-------|--------|----------|-------|');
     for (const [name, s] of stages) {

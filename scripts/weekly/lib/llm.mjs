@@ -6,12 +6,24 @@
  * issues } so the caller can run one bounded repair. It throws on transport
  * failure, HTTP errors, timeout, or a tripped budget ceiling.
  *
+ * Transient failures (HTTP 5xx/429, network errors, timeouts, a body that
+ * dies mid-read) are tagged `transient: true` on the thrown error; the message
+ * text is unchanged.
+ *
  * `preflightModel` is the T7 probe: one tiny metered call that confirms the
  * pinned model id is servable, run before an attempt is created.
+ *
+ * `createFallbackLlm` (WEEKLY_FALLBACK_*) wraps the pinned client with one
+ * OpenAI-compatible fallback. Without it, nothing changes.
  */
 import { parseOrIssues } from './schemas.mjs';
+import { BudgetExceeded } from './errors.mjs';
 
 export const DEFAULT_BASE_URL = 'https://api.deepseek.com/v1';
+export const DEFAULT_FALLBACK_KEY_ENV = 'OPENAI_API_KEY';
+export const PREFLIGHT_LABEL = 'preflight';
+export const FALLBACK_RETRY_MS = 5000;
+const REASON_MAX = 200;
 
 /** Parse JSON that may be wrapped in a code fence or padded with prose. */
 export function parseJsonLoose(text) {
@@ -46,8 +58,9 @@ async function safeText(res) {
  * @param {function} [opts.fetchImpl]
  * @param {object} [opts.meter]      a cost meter from cost-meter.mjs
  * @param {number} [opts.timeoutMs]  default 60000
+ * @param {boolean} [opts.unpricedAsNull]  record an unpriced call as usd null (not 0)
  */
-export function createLlmClient({ apiKey, model, baseUrl = DEFAULT_BASE_URL, fetchImpl = fetch, meter = null, timeoutMs = 60000 }) {
+export function createLlmClient({ apiKey, model, baseUrl = DEFAULT_BASE_URL, fetchImpl = fetch, meter = null, timeoutMs = 60000, unpricedAsNull = false }) {
   if (!apiKey) throw new Error('llm: apiKey is required');
   if (!model) throw new Error('llm: model is required');
   const endpoint = `${baseUrl.replace(/\/$/, '')}/chat/completions`;
@@ -90,22 +103,34 @@ export function createLlmClient({ apiKey, model, baseUrl = DEFAULT_BASE_URL, fet
       });
     } catch (e) {
       const why = e && e.name === 'AbortError' ? `timeout after ${timeoutMs} ms` : (e && e.message) || String(e);
-      throw new Error(`llm ${label}: request failed (${why})`);
+      const err = new Error(`llm ${label}: request failed (${why})`);
+      err.transient = true;
+      throw err;
     } finally {
       clearTimeout(timer);
     }
 
     if (!res.ok) {
       const text = await safeText(res);
-      throw new Error(`llm ${label}: HTTP ${res.status} ${text.slice(0, 300)}`);
+      const err = new Error(`llm ${label}: HTTP ${res.status} ${text.slice(0, 300)}`);
+      err.status = res.status;
+      err.transient = res.status >= 500 || res.status === 429;
+      throw err;
     }
-    const json = await res.json();
+    let json;
+    try {
+      json = await res.json();
+    } catch (e) {
+      // A body that dies mid-read ("terminated") is a transport failure.
+      if (e && typeof e === 'object') e.transient = true;
+      throw e;
+    }
     const usage = {
       input: Number(json.usage?.prompt_tokens ?? 0),
       output: Number(json.usage?.completion_tokens ?? 0),
     };
     const usedModel = json.model || model;
-    if (meter) meter.record({ kind: 'llm', model: usedModel, requestedModel: model, fallbackModel: model, inputTokens: usage.input, outputTokens: usage.output, label });
+    if (meter) meter.record({ kind: 'llm', model: usedModel, requestedModel: model, fallbackModel: model, inputTokens: usage.input, outputTokens: usage.output, label, unpricedAsNull });
 
     const content = json.choices?.[0]?.message?.content ?? '';
     const parsed = parseJsonLoose(content);
@@ -119,6 +144,88 @@ export function createLlmClient({ apiKey, model, baseUrl = DEFAULT_BASE_URL, fet
   return { chatJSON, model, endpoint };
 }
 
+/** Error text without the leading "llm <label>: " prefix, for embedding in a reason. */
+function bareReason(e) {
+  const text = String(e instanceof Error ? e.message : e).replace(/^llm [^:]*: /, '');
+  return text.length > REASON_MAX ? `${text.slice(0, REASON_MAX)}…` : text;
+}
+
+const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Wrap the pinned primary client with one fallback client (WEEKLY_FALLBACK_*).
+ *
+ * A call that fails transiently on the primary (HTTP 5xx/429, network, timeout),
+ * and a failing preflight probe of any kind, is retried once on the primary
+ * after `retryDelayMs`. A second failure switches the rest of the attempt to the
+ * fallback. Other errors and budget refusals propagate unchanged. A failing
+ * fallback throws one error that names both providers and both reasons.
+ *
+ * `status()` reports the route for the attempt record and the notify text.
+ */
+export function createFallbackLlm({ primary, fallback, retryDelayMs = FALLBACK_RETRY_MS, sleep = defaultSleep } = {}) {
+  if (!primary || typeof primary.chatJSON !== 'function') throw new Error('createFallbackLlm: a primary llm client is required');
+  if (!fallback || typeof fallback.chatJSON !== 'function') throw new Error('createFallbackLlm: a fallback llm client is required');
+  let route = { fallback_used: false, reason: null };
+
+  const eligible = (e, label) => {
+    if (e instanceof BudgetExceeded) return false;
+    return label === PREFLIGHT_LABEL || (e !== null && typeof e === 'object' && e.transient === true);
+  };
+
+  async function callFallback(opts, label) {
+    try {
+      return await fallback.chatJSON(opts);
+    } catch (e) {
+      if (e instanceof BudgetExceeded) throw e;
+      throw new Error(`llm ${label}: fallback ${fallback.model} failed (${bareReason(e)}); primary ${primary.model} failed first (${route.reason})`);
+    }
+  }
+
+  async function chatJSON(opts = {}) {
+    const label = opts.label || 'chat';
+    if (route.fallback_used) return callFallback(opts, label);
+    try {
+      return await primary.chatJSON(opts);
+    } catch (first) {
+      if (!eligible(first, label)) throw first;
+    }
+    await sleep(retryDelayMs);
+    try {
+      return await primary.chatJSON(opts);
+    } catch (second) {
+      if (!eligible(second, label)) throw second;
+      route = { fallback_used: true, reason: `${primary.model}: ${bareReason(second)}` };
+    }
+    return callFallback(opts, label);
+  }
+
+  function status() {
+    return { primary: primary.model, fallback: fallback.model, fallback_used: route.fallback_used, reason: route.reason };
+  }
+
+  return { chatJSON, model: primary.model, endpoint: primary.endpoint, status };
+}
+
+/**
+ * Read the optional fallback config. Returns null when neither WEEKLY_FALLBACK_
+ * ENDPOINT nor WEEKLY_FALLBACK_MODEL is set. Setting only one of the two throws,
+ * so a half-written fallback fails at startup instead of silently not falling
+ * back. WEEKLY_FALLBACK_API_KEY names the env var that holds the key (default
+ * OPENAI_API_KEY); the key value is never returned in an error message.
+ */
+export function fallbackFromEnv(env = process.env) {
+  const endpoint = String(env.WEEKLY_FALLBACK_ENDPOINT || '').trim();
+  const model = String(env.WEEKLY_FALLBACK_MODEL || '').trim();
+  if (!endpoint && !model) return null;
+  if (!endpoint || !model) throw new Error('WEEKLY_FALLBACK_ENDPOINT and WEEKLY_FALLBACK_MODEL must both be set to enable the LLM fallback');
+  const keyVar = String(env.WEEKLY_FALLBACK_API_KEY || DEFAULT_FALLBACK_KEY_ENV).trim();
+  if (!/^[A-Z_][A-Z0-9_]*$/.test(keyVar)) throw new Error('WEEKLY_FALLBACK_API_KEY must name an environment variable, e.g. OPENAI_API_KEY');
+  const apiKey = env[keyVar];
+  if (!apiKey) throw new Error(`WEEKLY_FALLBACK_API_KEY names ${keyVar}, which is not set`);
+  return { endpoint, model, apiKey, keyVar };
+}
+
 /**
  * T7: one tiny metered probe of the pinned model, run before the attempt record
  * exists so a pinned id the provider no longer serves is visible up front. Never
@@ -128,7 +235,7 @@ export function createLlmClient({ apiKey, model, baseUrl = DEFAULT_BASE_URL, fet
  * @returns {Promise<{ ok: boolean, requested: string|null, served: string|null,
  *   issues: Array, usage: { input: number, output: number }, error: string|null }>}
  */
-export async function preflightModel({ llm, meter = null, label = 'preflight', maxTokens = 16 } = {}) {
+export async function preflightModel({ llm, meter = null, label = PREFLIGHT_LABEL, maxTokens = 16 } = {}) {
   if (!llm || typeof llm.chatJSON !== 'function') throw new Error('preflightModel: an llm client is required');
   const requested = llm.model || null;
   try {

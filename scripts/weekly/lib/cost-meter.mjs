@@ -28,7 +28,8 @@ export function createCostMeter({ ceilingUsd = Infinity, pricing = {} } = {}) {
   const entries = [];
 
   function spent() {
-    return round6(entries.reduce((sum, e) => sum + e.usd, 0));
+    // A null usd is an unpriced call (see unpricedAsNull); it is not counted.
+    return round6(entries.reduce((sum, e) => sum + (typeof e.usd === 'number' ? e.usd : 0), 0));
   }
 
   function assertUnder(nextUsd = 0) {
@@ -41,7 +42,7 @@ export function createCostMeter({ ceilingUsd = Infinity, pricing = {} } = {}) {
     }
   }
 
-  function record({ kind = 'llm', model = null, requestedModel = null, fallbackModel = null, inputTokens = 0, outputTokens = 0, usd, label = '', warning: given = null } = {}) {
+  function record({ kind = 'llm', model = null, requestedModel = null, fallbackModel = null, inputTokens = 0, outputTokens = 0, usd, label = '', warning: given = null, unpricedAsNull = false } = {}) {
     // `model` is the served id, `requestedModel` the one that was asked for.
     const requested = requestedModel ?? fallbackModel ?? null;
     const notes = given ? [given] : [];
@@ -53,8 +54,12 @@ export function createCostMeter({ ceilingUsd = Infinity, pricing = {} } = {}) {
         ? (typeof pricing.serpapi_per_call === 'number' ? pricing.serpapi_per_call : null)
         : (priceFor(pricing, model, inputTokens, outputTokens) ?? priceFor(pricing, requested, inputTokens, outputTokens));
       if (est === null) {
-        cost = 0;
-        notes.push(`no pricing for ${model || kind}`);
+        // unpricedAsNull (the LLM fallback): the call is kept with usd null and
+        // is not counted in spent(), so its missing price is visible, not a 0.
+        cost = unpricedAsNull ? null : 0;
+        notes.push(unpricedAsNull
+          ? `no pricing for ${model || kind}: usd recorded as null and not counted in spend`
+          : `no pricing for ${model || kind}`);
       } else {
         cost = est;
       }
@@ -62,7 +67,7 @@ export function createCostMeter({ ceilingUsd = Infinity, pricing = {} } = {}) {
     // T7: the served model is pinned, so a mismatch means the provider swapped
     // models under us and the price (and the attempt's record) may be wrong.
     if (requested && model && requested !== model) notes.push(`served ${model} but requested ${requested}`);
-    const entry = { kind, model, requested_model: requested, inputTokens, outputTokens, usd: round6(cost), label, warning: notes.length ? notes.join('; ') : null };
+    const entry = { kind, model, requested_model: requested, inputTokens, outputTokens, usd: cost === null ? null : round6(cost), label, warning: notes.length ? notes.join('; ') : null };
     entries.push(entry);
     return entry;
   }

@@ -167,7 +167,9 @@ export function createSupabaseStore(client, opts = {}) {
     async updateAttempt(id, patch) {
       const row = {};
       for (const [k, v] of Object.entries(patch || {})) {
-        if (k === 'id') continue;
+        // `llm` (LLM fallback route) has no seo_attempts column; sending it would
+        // fail the whole update. The route is still in the meter and the notify/summary.
+        if (k === 'id' || k === 'llm') continue;
         row[k] = v;
       }
       const data = must(await client.from('seo_attempts').update(row).eq('id', id).select().single(), 'seo_attempts update');

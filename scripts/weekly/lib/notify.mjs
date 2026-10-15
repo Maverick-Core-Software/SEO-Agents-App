@@ -44,6 +44,7 @@ export function formatAttemptMessage({ attempt, event, plan = null, validation =
   const runtime = attemptRuntime(attempt);
   if (runtime) lines.push(`Runtime: ${runtime}`);
   if (plan?.notes?.degraded && plan.notes.degraded_reason) lines.push(`Degraded: ${plan.notes.degraded_reason}`);
+  if (attempt?.llm?.fallback_used) lines.push(`LLM fallback used: ${attempt.llm.fallback} (${attempt.llm.reason})`);
   if (typeof attempt?.spent_usd === 'number') lines.push(`Spend: $${attempt.spent_usd.toFixed(4)}`);
   if (attempt?.error && event === 'failed') lines.push(`Error: ${String(attempt.error).slice(0, 300)}`);
   if (summary.path) lines.push(`Summary: ${summary.path}`);
