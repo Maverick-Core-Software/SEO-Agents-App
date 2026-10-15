@@ -204,3 +204,9 @@ PC side (reversal, plan done-criterion 1):
 
 F6 (Sat) is a reversal rehearsal on a non-posting window: re-enable one PC task, dry-run `pm2 resurrect`
 (`pm2 list` only), confirm the PC path is reachable, then re-disable. Record the result here.
+
+## Follow-ups (not before the flip)
+
+- Surface LLM preflight warnings (e.g. "served deepseek-flash for pinned deepseek-chat") and the "LLM fallback used" line in the Slack notify text, not only in the run log/summary (found 2026-10-15 during E6).
+- Watchdog log string says "Alert sent via hermes" even when the Slack hop delivered; relabel with the real channel.
+- Decide retention for outputs/e2e-evidence/ on the LXC.
