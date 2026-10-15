@@ -8,6 +8,12 @@ timer, starts a process or touches a publisher is marked **[Carter approval]**. 
 yes in chat for that step. Read-only checks are unmarked. Run every AIWA action from an Orca terminal (not SSH
 or SCP from an agent), per `aiwa-deployment.md`.
 
+> **Never `source` /opt/seo/.env in a shell.** Values are unquoted (e.g. `GBP_WORKBOOK_PATH=/srv/seo/gbp/Grizzly GBP Schedule.xlsx`)
+> because the app's own `.env` parsers take the raw remainder of the line and do not strip quotes; `set -a; . .env` would
+> execute `GBP` as a command. The services and systemd (`EnvironmentFile=`) load it correctly. For a one-off probe, export the
+> needed names explicitly (`env $(grep -E '^GBP_' /opt/seo/.env | xargs -d '
+') node scripts/gbp-access-probe.mjs`) — never print it.
+
 ## 0. Preconditions
 
 | Check | How | Pass |
