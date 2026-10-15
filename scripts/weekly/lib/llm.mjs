@@ -23,7 +23,23 @@ export const DEFAULT_BASE_URL = 'https://api.deepseek.com/v1';
 export const DEFAULT_FALLBACK_KEY_ENV = 'OPENAI_API_KEY';
 export const PREFLIGHT_LABEL = 'preflight';
 export const FALLBACK_RETRY_MS = 5000;
+export const DEFAULT_TIMEOUT_MS = 60000;
+export const TIMEOUT_MIN_MS = 10000;
+export const TIMEOUT_MAX_MS = 180000;
 const REASON_MAX = 200;
+
+/**
+ * Per-request timeout from an env var (WEEKLY_LLM_TIMEOUT_MS, WEEKLY_FALLBACK_
+ * TIMEOUT_MS). Unset or blank → `fallbackMs`. A number is clamped to 10 s–180 s.
+ * Anything else throws at startup rather than silently running with a default.
+ */
+export function timeoutMsFromEnv(env = process.env, name = 'WEEKLY_LLM_TIMEOUT_MS', fallbackMs = DEFAULT_TIMEOUT_MS) {
+  const raw = String(env[name] ?? '').trim();
+  if (!raw) return fallbackMs;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) throw new Error(`${name} must be a number of milliseconds (got a non-numeric value)`);
+  return Math.min(TIMEOUT_MAX_MS, Math.max(TIMEOUT_MIN_MS, Math.round(n)));
+}
 
 /** Parse JSON that may be wrapped in a code fence or padded with prose. */
 export function parseJsonLoose(text) {
@@ -92,38 +108,57 @@ export function createLlmClient({ apiKey, model, baseUrl = DEFAULT_BASE_URL, fet
     };
 
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
-    let res;
-    try {
-      res = await fetchImpl(endpoint, {
-        method: 'POST',
-        headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' },
-        body: JSON.stringify(body),
-        signal: ctrl.signal,
-      });
-    } catch (e) {
-      const why = e && e.name === 'AbortError' ? `timeout after ${timeoutMs} ms` : (e && e.message) || String(e);
-      const err = new Error(`llm ${label}: request failed (${why})`);
+    let timedOut = false;
+    const timer = setTimeout(() => { timedOut = true; ctrl.abort(); }, timeoutMs);
+    // Rejects when the timer fires. Racing against it bounds the request and the
+    // body read, so a fetch that ignores its signal, or a body that stalls after
+    // the headers, still ends at the timeout instead of hanging the stage.
+    const expired = new Promise((_, reject) => {
+      ctrl.signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+    });
+    expired.catch(() => {});
+    const timeoutError = () => {
+      const err = new Error(`llm ${label}: request failed (timeout after ${timeoutMs} ms)`);
       err.transient = true;
-      throw err;
-    } finally {
-      clearTimeout(timer);
-    }
-
-    if (!res.ok) {
-      const text = await safeText(res);
-      const err = new Error(`llm ${label}: HTTP ${res.status} ${text.slice(0, 300)}`);
-      err.status = res.status;
-      err.transient = res.status >= 500 || res.status === 429;
-      throw err;
-    }
+      return err;
+    };
     let json;
     try {
-      json = await res.json();
-    } catch (e) {
-      // A body that dies mid-read ("terminated") is a transport failure.
-      if (e && typeof e === 'object') e.transient = true;
-      throw e;
+      let res;
+      try {
+        res = await Promise.race([
+          fetchImpl(endpoint, {
+            method: 'POST',
+            headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' },
+            body: JSON.stringify(body),
+            signal: ctrl.signal,
+          }),
+          expired,
+        ]);
+      } catch (e) {
+        if (timedOut) throw timeoutError();
+        const err = new Error(`llm ${label}: request failed (${(e && e.message) || String(e)})`);
+        err.transient = true;
+        throw err;
+      }
+
+      if (!res.ok) {
+        const text = await Promise.race([safeText(res), expired]).catch(() => '');
+        const err = new Error(`llm ${label}: HTTP ${res.status} ${text.slice(0, 300)}`);
+        err.status = res.status;
+        err.transient = res.status >= 500 || res.status === 429;
+        throw err;
+      }
+      try {
+        json = await Promise.race([res.json(), expired]);
+      } catch (e) {
+        if (timedOut) throw timeoutError();
+        // A body that dies mid-read ("terminated") is a transport failure.
+        if (e && typeof e === 'object') e.transient = true;
+        throw e;
+      }
+    } finally {
+      clearTimeout(timer);
     }
     const usage = {
       input: Number(json.usage?.prompt_tokens ?? 0),
@@ -135,7 +170,9 @@ export function createLlmClient({ apiKey, model, baseUrl = DEFAULT_BASE_URL, fet
     const content = json.choices?.[0]?.message?.content ?? '';
     const parsed = parseJsonLoose(content);
     if (parsed.error) {
-      return { data: null, issues: [{ path: '', message: `model output is not JSON: ${parsed.error}` }], usage, model: usedModel, raw: content };
+      // `unparsed` lets the fallback wrapper treat an empty or non-JSON reply as
+      // transient (a stalled provider), not as a prompt problem to repair.
+      return { data: null, issues: [{ path: '', message: `model output is not JSON: ${parsed.error}` }], usage, model: usedModel, raw: content, unparsed: true };
     }
     const { data, issues } = schema ? parseOrIssues(schema, parsed.value) : { data: parsed.value, issues: [] };
     return { data, issues, usage, model: usedModel, raw: content };
@@ -182,17 +219,30 @@ export function createFallbackLlm({ primary, fallback, retryDelayMs = FALLBACK_R
     }
   }
 
+  // An empty or non-JSON reply from the primary is transient for this purpose:
+  // it is a stalled or broken provider, not a prompt problem, so it gets the
+  // retry and the switch instead of the single prompt repair.
+  async function primaryCall(opts) {
+    const out = await primary.chatJSON(opts);
+    if (out && out.unparsed) {
+      const err = new Error(`llm ${opts.label || 'chat'}: ${out.issues?.[0]?.message || 'model output is not JSON'}`);
+      err.transient = true;
+      throw err;
+    }
+    return out;
+  }
+
   async function chatJSON(opts = {}) {
     const label = opts.label || 'chat';
     if (route.fallback_used) return callFallback(opts, label);
     try {
-      return await primary.chatJSON(opts);
+      return await primaryCall(opts);
     } catch (first) {
       if (!eligible(first, label)) throw first;
     }
     await sleep(retryDelayMs);
     try {
-      return await primary.chatJSON(opts);
+      return await primaryCall(opts);
     } catch (second) {
       if (!eligible(second, label)) throw second;
       route = { fallback_used: true, reason: `${primary.model}: ${bareReason(second)}` };
@@ -214,7 +264,7 @@ export function createFallbackLlm({ primary, fallback, retryDelayMs = FALLBACK_R
  * back. WEEKLY_FALLBACK_API_KEY names the env var that holds the key (default
  * OPENAI_API_KEY); the key value is never returned in an error message.
  */
-export function fallbackFromEnv(env = process.env) {
+export function fallbackFromEnv(env = process.env, primaryTimeoutMs = DEFAULT_TIMEOUT_MS) {
   const endpoint = String(env.WEEKLY_FALLBACK_ENDPOINT || '').trim();
   const model = String(env.WEEKLY_FALLBACK_MODEL || '').trim();
   if (!endpoint && !model) return null;
@@ -223,7 +273,9 @@ export function fallbackFromEnv(env = process.env) {
   if (!/^[A-Z_][A-Z0-9_]*$/.test(keyVar)) throw new Error('WEEKLY_FALLBACK_API_KEY must name an environment variable, e.g. OPENAI_API_KEY');
   const apiKey = env[keyVar];
   if (!apiKey) throw new Error(`WEEKLY_FALLBACK_API_KEY names ${keyVar}, which is not set`);
-  return { endpoint, model, apiKey, keyVar };
+  // WEEKLY_FALLBACK_TIMEOUT_MS defaults to the primary's effective timeout.
+  const timeoutMs = timeoutMsFromEnv(env, 'WEEKLY_FALLBACK_TIMEOUT_MS', primaryTimeoutMs);
+  return { endpoint, model, apiKey, keyVar, timeoutMs };
 }
 
 /**

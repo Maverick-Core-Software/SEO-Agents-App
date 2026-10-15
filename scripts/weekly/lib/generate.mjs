@@ -15,7 +15,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { PROMPTS_DIR } from './paths.mjs';
 import { ModelPlanSchema, PlanSchema, parseOrIssues } from './schemas.mjs';
-import { GenerationInvalid } from './errors.mjs';
+import { GenerationInvalid, GenerateTimeout } from './errors.mjs';
 import { parseJsonLoose } from './llm.mjs';
 
 export const SYSTEM_PROMPT_PATH = path.join(PROMPTS_DIR, 'plan.system.md');
@@ -34,6 +34,50 @@ export const GBP_STATUS = 'Needs approval';
 /** The fixed first-comment line the Facebook poster publishes (crew.py build_facebook_crew). */
 export const CONTACT_LINE_TEMPLATE = '📲 Text us at {phone} to get a free instant quote — calls welcome too!';
 export const LABELS = Object.freeze({ first: 'generate', repair: 'generate-repair' });
+/** Total wall clock for one attempt's generate LLM work (WEEKLY_GENERATE_MAX_MS). */
+export const DEFAULT_GENERATE_MAX_MS = 600000;
+
+/** WEEKLY_GENERATE_MAX_MS in milliseconds: unset → 10 min; non-numeric or non-positive throws at startup. */
+export function generateMaxMsFromEnv(env = process.env) {
+  const raw = String(env.WEEKLY_GENERATE_MAX_MS ?? '').trim();
+  if (!raw) return DEFAULT_GENERATE_MAX_MS;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) throw new Error('WEEKLY_GENERATE_MAX_MS must be a positive number of milliseconds');
+  return Math.round(n);
+}
+
+/**
+ * Wall-clock budget for the generate LLM work of one attempt. It starts when
+ * created and covers every call made under it: the first call, the single
+ * repair, and the validation regeneration in run.mjs. bound(p) rejects with
+ * GenerateTimeout as soon as the budget runs out, even if the call underneath
+ * has not settled (that call still ends by its own timeout). check() throws
+ * before a call starts when the budget is already spent. stop() clears the
+ * timer when the stage is over.
+ */
+export function createGenerateBudget(maxMs = DEFAULT_GENERATE_MAX_MS) {
+  if (!Number.isFinite(maxMs) || maxMs <= 0) throw new Error('createGenerateBudget: maxMs must be a positive number');
+  const deadline = Date.now() + maxMs;
+  const message = 'generate exceeded ' + maxMs + ' ms';
+  let timer = null;
+  const expired = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new GenerateTimeout(message, maxMs)), maxMs);
+    if (timer && typeof timer.unref === 'function') timer.unref();
+  });
+  expired.catch(() => {});
+  return {
+    maxMs,
+    check() {
+      if (Date.now() >= deadline) throw new GenerateTimeout(message, maxMs);
+    },
+    bound(promise) {
+      return Promise.race([promise, expired]);
+    },
+    stop() {
+      clearTimeout(timer);
+    },
+  };
+}
 
 const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 // validate.mjs rejects a GBP headline or Facebook hook that repeats ANY published
@@ -438,26 +482,33 @@ export function buildRepairMessage(input, result, issues) {
  * @param {object} [opts.meter]        cost meter; checked before each call
  * @param {string} opts.attemptId
  * @param {string} [opts.systemPrompt] override (tests); default reads plan.system.md
+ * @param {object} [opts.budget]       createGenerateBudget(); bounds every call made here
  * @returns {Promise<object>} a PlanSchema-valid plan
  * @throws {GenerationInvalid} when the repair call still fails or assembly fails PlanSchema
+ * @throws {GenerateTimeout} when the budget runs out ("generate exceeded N ms")
  */
-export async function generatePlan(input, { llm, meter = null, attemptId, systemPrompt = null, maxTokens = 8000, temperature = 0.4 } = {}) {
+export async function generatePlan(input, { llm, meter = null, attemptId, systemPrompt = null, maxTokens = 8000, temperature = 0.4, budget = null } = {}) {
   if (!llm || typeof llm.chatJSON !== 'function') throw new Error('generatePlan: llm client with chatJSON is required');
   if (typeof attemptId !== 'string' || !attemptId) throw new Error('generatePlan: attemptId (non-empty string) is required');
   if (!input?.schedule || !input.week_of || !input.contact_line || !input.topic?.winner) throw new Error('generatePlan: input must come from buildGenerationInput');
 
   const system = systemPrompt ?? loadSystemPrompt();
   const common = { system, schema: ModelPlanSchema, maxTokens, temperature };
+  const call = (opts) => {
+    if (!budget) return llm.chatJSON(opts);
+    budget.check();
+    return budget.bound(Promise.resolve().then(() => llm.chatJSON(opts)));
+  };
 
   if (meter) meter.assertUnder(0);
-  const first = await llm.chatJSON({ ...common, user: input, label: LABELS.first });
+  const first = await call({ ...common, user: input, label: LABELS.first });
   let issues = collectIssues(first, input);
   let modelPlan = first.data;
 
   if (issues.length) {
     if (meter) meter.assertUnder(0);
     const repairUser = buildRepairMessage(input, first, issues);
-    const second = await llm.chatJSON({ ...common, user: repairUser, label: LABELS.repair });
+    const second = await call({ ...common, user: repairUser, label: LABELS.repair });
     issues = collectIssues(second, input);
     if (issues.length) {
       throw new GenerationInvalid(`generate: plan still invalid after one repair (${issues.length} issue(s))`, issues);

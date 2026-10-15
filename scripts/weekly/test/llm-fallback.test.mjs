@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { z } from 'zod';
 import { createCostMeter } from '../lib/cost-meter.mjs';
-import { createLlmClient, createFallbackLlm, fallbackFromEnv } from '../lib/llm.mjs';
+import { createLlmClient, createFallbackLlm, fallbackFromEnv, timeoutMsFromEnv } from '../lib/llm.mjs';
 import { BudgetExceeded } from '../lib/errors.mjs';
 import { formatAttemptMessage } from '../lib/notify.mjs';
 import { AttemptSchema } from '../lib/schemas.mjs';
@@ -152,7 +152,7 @@ describe('LLM fallback', () => {
     assert.throws(() => fallbackFromEnv({ WEEKLY_FALLBACK_MODEL: 'gpt-4o-mini' }), /both be set/);
     assert.throws(() => fallbackFromEnv({ WEEKLY_FALLBACK_ENDPOINT: FB.endpoint, WEEKLY_FALLBACK_MODEL: FB.model }), /OPENAI_API_KEY, which is not set/);
     const spec = fallbackFromEnv({ WEEKLY_FALLBACK_ENDPOINT: FB.endpoint, WEEKLY_FALLBACK_MODEL: FB.model, OPENAI_API_KEY: FB.apiKey });
-    assert.deepEqual(spec, { endpoint: FB.endpoint, model: FB.model, apiKey: FB.apiKey, keyVar: 'OPENAI_API_KEY' });
+    assert.deepEqual(spec, { endpoint: FB.endpoint, model: FB.model, apiKey: FB.apiKey, keyVar: 'OPENAI_API_KEY', timeoutMs: 60000 });
     const named = fallbackFromEnv({ WEEKLY_FALLBACK_ENDPOINT: FB.endpoint, WEEKLY_FALLBACK_MODEL: FB.model, WEEKLY_FALLBACK_API_KEY: 'MY_KEY', MY_KEY: 'v' });
     assert.equal(named.keyVar, 'MY_KEY');
     assert.throws(() => fallbackFromEnv({ WEEKLY_FALLBACK_ENDPOINT: FB.endpoint, WEEKLY_FALLBACK_MODEL: FB.model, WEEKLY_FALLBACK_API_KEY: 'not a name' }), /must name an environment variable/);
@@ -179,5 +179,102 @@ describe('LLM fallback', () => {
     assert.match(used, /^LLM fallback used: gpt-4o-mini \(deepseek-chat: HTTP 503 Service is too busy\)$/m);
     const unused = formatAttemptMessage({ attempt: { ...base, llm: { primary: 'deepseek-chat', fallback: FB.model, fallback_used: false, reason: null } }, event: 'succeeded' });
     assert.doesNotMatch(unused, /LLM fallback/);
+  });
+});
+
+describe('LLM fallback hardening (timeouts, empty replies)', () => {
+  // A fetch that never settles and ignores its abort signal: the timeout must still end the request.
+  const stalled = () => new Promise(() => {});
+
+  function buildTimed({ timeoutMs, fetchImpl, sleeps = [] }) {
+    const meter = createCostMeter({ ceilingUsd: 5, pricing: PRICING });
+    const primary = createLlmClient({ apiKey: 'k', model: 'deepseek-chat', fetchImpl, meter, timeoutMs });
+    const fallback = createLlmClient({ apiKey: FB.apiKey, model: FB.model, baseUrl: FB.endpoint, fetchImpl, meter, unpricedAsNull: true, timeoutMs });
+    const llm = createFallbackLlm({ primary, fallback, sleep: async (ms) => { sleeps.push(ms); } });
+    return { llm, primary, fallback };
+  }
+
+  it('a primary that never answers times out, is retried once after 5 s, and the fallback serves', { timeout: 5000 }, async () => {
+    const sleeps = [];
+    const calls = [];
+    const fetchImpl = async (url) => {
+      calls.push(url);
+      return calls.length <= 2 ? stalled() : okResponse('{"topic":"ok"}', FB.model);
+    };
+    const { llm, primary } = buildTimed({ timeoutMs: 50, fetchImpl, sleeps });
+
+    const out = await llm.chatJSON({ system: 'json', user: 'x', schema: Schema, label: 'generate' });
+
+    assert.deepEqual(out.data, { topic: 'ok' });
+    assert.deepEqual(sleeps, [5000]);
+    assert.deepEqual(calls, [primary.endpoint, primary.endpoint, `${FB.endpoint}/chat/completions`]);
+    assert.equal(llm.status().fallback_used, true);
+    assert.equal(llm.status().reason, 'deepseek-chat: request failed (timeout after 50 ms)');
+  });
+
+  it('a body that stalls after the headers is bounded by the same timeout (not only the request)', { timeout: 5000 }, async () => {
+    const primary = createLlmClient({ apiKey: 'k', model: 'deepseek-chat', timeoutMs: 50, fetchImpl: async () => ({ ok: true, status: 200, json: () => stalled() }) });
+    await assert.rejects(
+      () => primary.chatJSON({ system: 'json', user: 'x', label: 'generate' }),
+      (e) => e.transient === true && e.message === 'llm generate: request failed (timeout after 50 ms)',
+    );
+  });
+
+  it('an empty reply from the primary twice is transient: no prompt repair, one retry, then the fallback serves', async () => {
+    const sleeps = [];
+    const fetchImpl = scripted([okResponse(''), okResponse(''), okResponse('{"topic":"ok"}', FB.model)]);
+    const { llm } = build({ fetchImpl, sleeps });
+
+    const out = await llm.chatJSON({ system: 'json', user: 'x', schema: Schema, label: 'generate' });
+
+    assert.deepEqual(out.data, { topic: 'ok' });
+    assert.deepEqual(sleeps, [5000]);
+    assert.equal(fetchImpl.calls.length, 3);
+    assert.equal(llm.status().reason, 'deepseek-chat: model output is not JSON: empty response');
+  });
+
+  it('a non-JSON reply from the primary twice is transient too (same path as empty)', async () => {
+    const sleeps = [];
+    const fetchImpl = scripted([okResponse('Sorry, I cannot help with that.'), okResponse('Sorry, I cannot help with that.'), okResponse('{"topic":"ok"}', FB.model)]);
+    const { llm } = build({ fetchImpl, sleeps });
+    const out = await llm.chatJSON({ system: 'json', user: 'x', schema: Schema, label: 'generate' });
+    assert.deepEqual(out.data, { topic: 'ok' });
+    assert.equal(llm.status().fallback_used, true);
+    assert.equal(llm.status().reason, 'deepseek-chat: model output is not JSON: no JSON object found');
+  });
+
+  it('a valid JSON reply from the primary never reaches the fallback', async () => {
+    const fetchImpl = scripted([okResponse('{"topic":"ok"}')]);
+    const { llm } = build({ fetchImpl, sleeps: [] });
+    const out = await llm.chatJSON({ system: 'json', user: 'x', schema: Schema, label: 'generate' });
+    assert.deepEqual(out.data, { topic: 'ok' });
+    assert.equal(fetchImpl.calls.length, 1);
+    assert.equal(llm.status().fallback_used, false);
+  });
+
+  it('without a fallback, an empty reply keeps the old behaviour: issues returned for the single repair', async () => {
+    const fetchImpl = scripted([okResponse('')]);
+    const primary = createLlmClient({ apiKey: 'k', model: 'deepseek-chat', fetchImpl });
+    const out = await primary.chatJSON({ system: 'json', user: 'x', schema: Schema, label: 'generate' });
+    assert.equal(out.data, null);
+    assert.equal(out.unparsed, true);
+    assert.deepEqual(out.issues, [{ path: '', message: 'model output is not JSON: empty response' }]);
+    assert.equal(fetchImpl.calls.length, 1);
+  });
+
+  it('WEEKLY_LLM_TIMEOUT_MS: default 60 s, clamped to 10 s–180 s, junk throws', () => {
+    assert.equal(timeoutMsFromEnv({}), 60000);
+    assert.equal(timeoutMsFromEnv({ WEEKLY_LLM_TIMEOUT_MS: '  ' }), 60000);
+    assert.equal(timeoutMsFromEnv({ WEEKLY_LLM_TIMEOUT_MS: '5' }), 10000);
+    assert.equal(timeoutMsFromEnv({ WEEKLY_LLM_TIMEOUT_MS: '999999' }), 180000);
+    assert.equal(timeoutMsFromEnv({ WEEKLY_LLM_TIMEOUT_MS: '90000' }), 90000);
+    assert.throws(() => timeoutMsFromEnv({ WEEKLY_LLM_TIMEOUT_MS: 'soon' }), /non-numeric/);
+  });
+
+  it('WEEKLY_FALLBACK_TIMEOUT_MS defaults to the primary effective timeout, and honours its own value', () => {
+    const base = { WEEKLY_FALLBACK_ENDPOINT: FB.endpoint, WEEKLY_FALLBACK_MODEL: FB.model, OPENAI_API_KEY: FB.apiKey };
+    assert.equal(fallbackFromEnv(base, 90000).timeoutMs, 90000);
+    assert.equal(fallbackFromEnv({ ...base, WEEKLY_FALLBACK_TIMEOUT_MS: '120000' }, 90000).timeoutMs, 120000);
+    assert.equal(fallbackFromEnv({ ...base, WEEKLY_FALLBACK_TIMEOUT_MS: '1' }, 90000).timeoutMs, 10000);
   });
 });
