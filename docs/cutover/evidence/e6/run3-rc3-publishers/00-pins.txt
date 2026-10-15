@@ -1,0 +1,1 @@
+== pins: GBP_POSTER=api WEEK_OF=2026-10-19

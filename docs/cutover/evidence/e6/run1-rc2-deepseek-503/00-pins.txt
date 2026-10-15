@@ -1,0 +1,2 @@
+== env pins: SEO_PIPELINE=new SEO_AUTO_APPROVE=0 GBP_POSTER=api TZ=America/Chicago WEEK_OF=2026-10-19
+TZ probe: Wed Oct 14 2026 21:05:36 GMT-0500 (Central Daylight Time)

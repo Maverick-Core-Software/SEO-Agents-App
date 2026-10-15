@@ -1,0 +1,54 @@
+{
+  "id": "2026-10-19-20261015T020536Z-8fa945",
+  "week_of": "2026-10-19",
+  "mode": "new",
+  "git_sha": "5cd55b388a2cf0086127247024338e5e181527c1",
+  "versions": {
+    "policy": "2026-09-06.2",
+    "prompt": "ac607db0a313",
+    "schema": "2026-09-06.1"
+  },
+  "models": {
+    "fallback": null,
+    "generate": "deepseek-chat"
+  },
+  "started_at": "2026-10-15T02:05:36.968+00:00",
+  "finished_at": "2026-10-15T02:15:15.092+00:00",
+  "stages": {
+    "select": {
+      "error": null,
+      "status": "ok",
+      "started_at": "2026-10-15T02:08:13.699Z",
+      "finished_at": "2026-10-15T02:08:13.877Z"
+    },
+    "collect": {
+      "error": null,
+      "status": "ok",
+      "started_at": "2026-10-15T02:05:38.254Z",
+      "finished_at": "2026-10-15T02:08:13.568Z"
+    },
+    "generate": {
+      "error": "attempt finished (failed) while stage was running",
+      "status": "failed",
+      "started_at": "2026-10-15T02:08:14.002Z",
+      "finished_at": "2026-10-15T02:15:15.092Z"
+    },
+    "preflight": {
+      "error": "Error: llm preflight: HTTP 503 {\"error\":{\"message\":\"Service is too busy. We advise users to temporarily switch to alternative LLM API service providers. (request_id: 68f223ed-0a00-428d-8827-1e7d145cfa2a)\",\"type\":\"service_unavailable_error\",\"param\":null,\"code\":\"service_unavailable_error\"}}",
+      "status": "failed",
+      "started_at": "2026-10-15T02:05:38.103Z",
+      "finished_at": "2026-10-15T02:05:38.103Z"
+    },
+    "notify:failed": {
+      "started_at": "2026-10-15T02:15:15.562Z",
+      "finished_at": "2026-10-15T02:15:15.563Z",
+      "status": "ok",
+      "error": "via slack"
+    }
+  },
+  "lease_until": null,
+  "budget_usd": 5,
+  "spent_usd": 0.71,
+  "status": "failed",
+  "error": "TypeError: terminated"
+}
