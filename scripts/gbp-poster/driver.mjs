@@ -117,6 +117,13 @@ export async function exportSessionState(context, {
 // to the interactive persistent profile when it is missing or unreadable, and always
 // when GBP_SESSION_MODE=persistent. Either way the login/interstitial checks stay the
 // gate — this only decides which context the page is opened in.
+// Unattended runs stay headed (Google treats headless as a different client) but open
+// off-screen, so the 15-min session probe and posting never flash a window on the
+// desktop. --auth launches its own visible window and does not use this.
+export function offscreenArgs(headless) {
+    return headless ? [] : ['--window-position=-32000,-32000'];
+}
+
 export async function launchSessionContext({
     browserType = chromium,
     statePath = STORAGE_STATE_PATH,
@@ -135,7 +142,7 @@ export async function launchSessionContext({
         let browser = null;
         try {
             const state = JSON.parse(readFile(statePath));
-            browser = await browserType.launch({ headless });
+            browser = await browserType.launch({ headless, args: offscreenArgs(headless) });
             const context = await browser.newContext({ storageState: state, viewport });
             log('session context', { mode: 'storage_state' });
             return {
@@ -151,7 +158,7 @@ export async function launchSessionContext({
             log('exported session state unusable, using the persistent profile', { message: String(e.message || e) });
         }
     }
-    const context = await browserType.launchPersistentContext(persistentDir, { headless, viewport });
+    const context = await browserType.launchPersistentContext(persistentDir, { headless, viewport, args: offscreenArgs(headless) });
     const mode = persistentOnly ? 'persistent_profile_forced' : 'persistent_profile';
     log('session context', { mode });
     return { context, mode, close: () => context.close() };
@@ -351,7 +358,7 @@ async function checkSession({ headless = false } = {}) {
 async function exportSessionOnly({ headless = false } = {}) {
     let context;
     try {
-        context = await chromium.launchPersistentContext(USER_DATA_DIR, { headless, viewport: VIEWPORT });
+        context = await chromium.launchPersistentContext(USER_DATA_DIR, { headless, viewport: VIEWPORT, args: offscreenArgs(headless) });
         const exported = await exportSessionState(context);
         emitResult({ ok: true, cookies: exported.cookies });
         process.exitCode = 0;
