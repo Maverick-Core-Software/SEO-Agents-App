@@ -9,15 +9,29 @@
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import {
+import { exportSessionState, launchSessionContext, restrictStorageStateAcl, STORAGE_STATE_PATH } from './gbp-poster/driver.mjs';
+
+// Hermetic env. gbp-worker.mjs fills every *unset* key from the repo .env when it is
+// imported, and binds GBP_POSTER into a module constant (SESSION_PROBE_SUPPORTED), so
+// a host .env with GBP_POSTER=api would flip the session-probe cases. Each pin is
+// non-empty (the loader treats an empty value as unset) and is applied before the
+// dynamic import below, because static imports evaluate before any test code runs.
+Object.assign(process.env, {
+  GBP_POSTER: 'playwright',
+  GBP_WORKER_POLL_MS: '30000',
+  MAV_BRIDGE_POLL_MS: '30000',
+  GBP_WORKER_STUCK_MS: String(20 * 60 * 1000),
+  GBP_SESSION_PROBE_MS: '300000',
+  GBP_SESSION_PROBE_BACKOFF_MS: String(15 * 60 * 1000),
+});
+const {
   grokVerdictDecision,
   acquireGbpWorkerLock,
   gbpWorkerProcessExists,
   createGbpSessionState,
   createGbpPollGuard,
   parseSessionProbe,
-} from './gbp-worker.mjs';
-import { exportSessionState, launchSessionContext, restrictStorageStateAcl, STORAGE_STATE_PATH } from './gbp-poster/driver.mjs';
+} = await import('./gbp-worker.mjs');
 
 describe('grokVerdictDecision (Grok-verdict reconciliation policy)', () => {
   it('confirms a live verdict', () => {
